@@ -2,6 +2,9 @@
 
 > **Last audited:** 2026-11-05 (Allowlists module)
 > **Changelog:**
+> - 2026-11-05: **Allowlists list UI.** `/allowlists/web` and `/allowlists/apps` are
+>   infinite-scroll tables (search, created-by filter, creator + timestamps, add/edit
+>   dialogs) over `/dlp/lockdown/hosts|apps`. Default-deny switch + Publish stay on web.
 > - 2026-11-05: **Fail-closed copy.** Web Allow Lists: Publish opens allow hosts only;
 >   PCs block all sites after login without a prior Publish. Switch Off + Publish =
 >   admin opt-out.

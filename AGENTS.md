@@ -3,13 +3,25 @@
 > **Last audited:** 2026-11-05
 > **Changelog:**
 >
+> - 2026-11-05: **Allowlists list UI + audit.** Migration **062** adds id/note/created_by/
+>   updated_by on draft hosts + apps. Paginated CRUD `GET|POST|PATCH|DELETE
+>   /dlp/lockdown/hosts|apps` with search + createdBy filter. Pages `/allowlists/web` and
+>   `/allowlists/apps` use infinite scroll tables (creator, timestamps). Publish unchanged.
+>   Verified: `go build`/`go vet`, `npx tsc --noEmit`. Restart API for **062**.
+>
+> - 2026-11-05: **Network + hosts only (no Chromium HKLM enforce).** Web allow/deny is
+>   hosts + `AlphaAI-DLP-*` / `AlphaAI-DLP-LOCK-*` for every app. Service clears legacy
+>   Chrome/Edge URL/DoH/Quic policy leftovers; does not write them. Publish→allow is
+>   mid-session. Verified: `dotnet build` DlpService. Installer-Parity: rebuild Windows
+>   installer. Lab: `TESTING.md` §H.
+>
 > - 2026-11-05: **Fail-closed web by default (no Publish to block).** After DeviceAuth,
->   DlpService applies network + Chrome/Edge lockdown unless published `lockdown: false`
->   or pause. Publish is only required to expand `/allowlists/web` hosts. Migration
->   **061** flips historical snapshots to lockdown ON; local `fail_closed_default_deny_v1`
->   migrate sets `policy_lockdown=1`. Bundle JSON always emits `lockdown` true|false.
->   Verified: `go build`/`go vet`, `dotnet build` DlpService, `npx tsc --noEmit`.
->   Installer-Parity: rebuild Windows installer. Lab: `TESTING.md` §H.
+>   DlpService applies network lockdown unless published `lockdown: false` or pause.
+>   Publish is only required to expand `/allowlists/web` hosts. Migration **061** flips
+>   historical snapshots to lockdown ON; local `fail_closed_default_deny_v1` migrate sets
+>   `policy_lockdown=1`. Bundle JSON always emits `lockdown` true|false. Verified: `go
+>   build`/`go vet`, `dotnet build` DlpService, `npx tsc --noEmit`. Installer-Parity:
+>   rebuild Windows installer. Lab: `TESTING.md` §H.
 >
 > - 2026-11-05: **Allowlists module (server + web + DlpService).** New RBAC module
 >   `allowlists` with `allowlists/web` + `allowlists/apps`. Migration **060** adds

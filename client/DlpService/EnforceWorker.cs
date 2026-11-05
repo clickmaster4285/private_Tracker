@@ -433,8 +433,8 @@ public sealed class EnforceWorker : BackgroundService
     }
 
     /// <summary>
-    /// Chrome/Edge URLAllowlist hosts: platformAllow + allow.hosts + API bootstrap,
-    /// minus explicit web-block domains (block wins over allow in the address bar).
+    /// Fingerprint helpers for lockdown allow set (platformAllow + allow.hosts + API host,
+    /// minus explicit web-block domains). Enforcement is network lockdown, not browser HKLM.
     /// </summary>
     private static IReadOnlyList<string> BuildLockdownBrowserAllowHosts(
         PolicyBundle bundle,

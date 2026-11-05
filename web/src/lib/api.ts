@@ -120,7 +120,13 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
 
   if (raw) return response as unknown as T;
 
-  return response.json();
+  // 204 / empty body (e.g. DELETE allow-list rows)
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return undefined as T;
+  }
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 // ──────────────────────────
@@ -1806,6 +1812,50 @@ export interface DlpLockdownConfig {
   platformAllow: string[];
   maxAllowHosts: number;
   maxAllowApps: number;
+  hostCount: number;
+  appCount: number;
+}
+
+export interface AllowHostRow {
+  id: number;
+  host: string;
+  note?: string;
+  createdBy?: string;
+  createdByName?: string;
+  updatedBy?: string;
+  updatedByName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AllowHostListResponse {
+  hosts: AllowHostRow[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+}
+
+export interface AllowAppRow {
+  id: number;
+  publisher?: string;
+  product?: string;
+  sha256?: string;
+  note?: string;
+  createdBy?: string;
+  createdByName?: string;
+  updatedBy?: string;
+  updatedByName?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AllowAppListResponse {
+  apps: AllowAppRow[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
 }
 
 export const dlpApi = {
@@ -1816,6 +1866,40 @@ export const dlpApi = {
       allowHosts?: string[];
       allowApps?: DlpLockdownAllowApp[];
     }) => request<DlpLockdownConfig>('/dlp/lockdown', { method: 'PUT', body: data }),
+    hosts: {
+      list: (params?: { q?: string; createdBy?: string; page?: number; perPage?: number }) => {
+        const sp = new URLSearchParams();
+        if (params?.q) sp.set('q', params.q);
+        if (params?.createdBy) sp.set('createdBy', params.createdBy);
+        if (params?.page) sp.set('page', String(params.page));
+        if (params?.perPage) sp.set('perPage', String(params.perPage));
+        const qs = sp.toString();
+        return request<AllowHostListResponse>('/dlp/lockdown/hosts' + (qs ? `?${qs}` : ''));
+      },
+      create: (data: { host: string; note?: string }) =>
+        request<AllowHostRow>('/dlp/lockdown/hosts', { method: 'POST', body: data }),
+      update: (id: number, data: { host?: string; note?: string }) =>
+        request<AllowHostRow>(`/dlp/lockdown/hosts/${id}`, { method: 'PATCH', body: data }),
+      remove: (id: number) =>
+        request<void>(`/dlp/lockdown/hosts/${id}`, { method: 'DELETE' }),
+    },
+    apps: {
+      list: (params?: { q?: string; createdBy?: string; page?: number; perPage?: number }) => {
+        const sp = new URLSearchParams();
+        if (params?.q) sp.set('q', params.q);
+        if (params?.createdBy) sp.set('createdBy', params.createdBy);
+        if (params?.page) sp.set('page', String(params.page));
+        if (params?.perPage) sp.set('perPage', String(params.perPage));
+        const qs = sp.toString();
+        return request<AllowAppListResponse>('/dlp/lockdown/apps' + (qs ? `?${qs}` : ''));
+      },
+      create: (data: { publisher?: string; product?: string; sha256?: string; note?: string }) =>
+        request<AllowAppRow>('/dlp/lockdown/apps', { method: 'POST', body: data }),
+      update: (id: number, data: { publisher?: string; product?: string; sha256?: string; note?: string }) =>
+        request<AllowAppRow>(`/dlp/lockdown/apps/${id}`, { method: 'PATCH', body: data }),
+      remove: (id: number) =>
+        request<void>(`/dlp/lockdown/apps/${id}`, { method: 'DELETE' }),
+    },
   },
 
   issueRemovalCode: (data: {

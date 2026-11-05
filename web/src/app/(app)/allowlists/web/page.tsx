@@ -1,152 +1,154 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Globe2, Loader2, Lock, Upload } from 'lucide-react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
+import { Globe2, Loader2, Lock, Pencil, Plus, Search, Trash2, Upload } from 'lucide-react';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
-import { dlpApi } from '@/lib/api';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { dlpApi, type AllowHostRow } from '@/lib/api';
+import { formatDateTime } from '@/lib/format';
+import { useUrlQueryState } from '@/hooks/use-url-query-state';
 
-function uniqueDomains(list: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of list) {
-    const d = raw.trim().toLowerCase();
-    if (!d || seen.has(d)) continue;
-    seen.add(d);
-    out.push(d);
-  }
-  return out;
-}
+const PER_PAGE = 30;
 
-function DomainChipInput({
-  domains,
-  onChange,
-  placeholder,
-  max,
-}: {
-  domains: string[];
-  onChange: (next: string[]) => void;
-  placeholder?: string;
-  max?: number;
-}) {
-  const [draft, setDraft] = useState('');
-  const atCap = typeof max === 'number' && max > 0 && domains.length >= max;
-
-  const commit = (raw: string) => {
-    const parts = raw
-      .split(/[,;\s]+/)
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    if (parts.length === 0) return;
-    let next = uniqueDomains([...domains, ...parts]);
-    if (typeof max === 'number' && max > 0) next = next.slice(0, max);
-    onChange(next);
-    setDraft('');
-  };
-
-  return (
-    <div className="mt-1 rounded-md border border-border bg-background px-2 py-1.5 focus-within:ring-1 focus-within:ring-ring">
-      <div className="flex flex-wrap gap-1">
-        {domains.map((d) => (
-          <span
-            key={d}
-            className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[11px] font-mono"
-          >
-            {d}
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => onChange(domains.filter((x) => x !== d))}
-              aria-label={`Remove ${d}`}
-            >
-              ×
-            </button>
-          </span>
-        ))}
-        <input
-          className="min-w-[10rem] flex-1 bg-transparent text-sm outline-none disabled:opacity-50"
-          value={draft}
-          disabled={atCap}
-          placeholder={placeholder}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ',') {
-              e.preventDefault();
-              commit(draft);
-            } else if (e.key === 'Backspace' && draft === '' && domains.length > 0) {
-              onChange(domains.slice(0, -1));
-            }
-          }}
-          onBlur={() => {
-            if (draft.trim()) commit(draft);
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-/**
- * Web Allow Lists — RBAC `allowlists/web`.
- * Draft hosts + lockdown switch; Publish compiles into the DLP policy bundle.
- * After employee login the Windows service flushes DNS/CDN pins, pulls this
- * allow list, and default-denies everything else (bootstrap/API still open).
- */
-export default function WebAllowListsPage() {
+function WebAllowListsInner() {
   const qc = useQueryClient();
-  const { data, isLoading, isError } = useQuery({
+  const [filters, setFilters] = useUrlQueryState(
+    { q: {}, createdBy: {} },
+    { q: '', createdBy: '' },
+    { debounceMs: 300 },
+  );
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<AllowHostRow | null>(null);
+  const [host, setHost] = useState('');
+  const [note, setNote] = useState('');
+
+  const settings = useQuery({
     queryKey: ['dlp-lockdown'],
     queryFn: () => dlpApi.lockdown.get(),
   });
-  const [hosts, setHosts] = useState<string[]>([]);
-  const [dirty, setDirty] = useState(false);
 
+  const listQuery = useInfiniteQuery({
+    queryKey: ['dlp-allow-hosts', filters],
+    queryFn: ({ pageParam }) =>
+      dlpApi.lockdown.hosts.list({
+        q: filters.q || undefined,
+        createdBy: filters.createdBy || undefined,
+        page: pageParam,
+        perPage: PER_PAGE,
+      }),
+    initialPageParam: 1,
+    getNextPageParam: (last) =>
+      last.page * last.perPage < last.total ? last.page + 1 : undefined,
+    placeholderData: keepPreviousData,
+  });
+
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (data && !dirty) setHosts(data.allowHosts ?? []);
-  }, [data, dirty]);
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && listQuery.hasNextPage && !listQuery.isFetchingNextPage) {
+          listQuery.fetchNextPage();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [listQuery.hasNextPage, listQuery.isFetchingNextPage, listQuery.fetchNextPage]);
 
-  const max = data?.maxAllowHosts ?? 0;
+  const hosts = useMemo(
+    () => (listQuery.data?.pages ?? []).flatMap((p) => p.hosts),
+    [listQuery.data],
+  );
+  const total = listQuery.data?.pages[0]?.total ?? 0;
+
+  const creators = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const h of hosts) {
+      if (h.createdBy && h.createdByName) map.set(h.createdBy, h.createdByName);
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [hosts]);
+
+  const openCreate = () => {
+    setEditing(null);
+    setHost('');
+    setNote('');
+    setDialogOpen(true);
+  };
+
+  const openEdit = (row: AllowHostRow) => {
+    setEditing(row);
+    setHost(row.host);
+    setNote(row.note ?? '');
+    setDialogOpen(true);
+  };
 
   const switchMutation = useMutation({
     mutationFn: (lockdown: boolean) => dlpApi.lockdown.update({ lockdown }),
     onSuccess: (res) => {
       qc.setQueryData(['dlp-lockdown'], res);
-      toast.success(res.lockdown ? 'Default-deny kept on (draft)' : 'Open browsing (draft)', {
-        description: res.lockdown
-          ? 'PCs already block by default after login. Publish only to update the allow list.'
-          : 'Click Publish to open general browsing on employee PCs (opt-out).',
+      toast.success(res.lockdown ? 'Default-deny on (draft)' : 'Open browsing (draft)', {
+        description: 'Click Publish to push this to employee PCs.',
       });
     },
     onError: (err: Error) => toast.error('Failed to update', { description: err.message }),
   });
 
-  const hostsMutation = useMutation({
-    mutationFn: () => dlpApi.lockdown.update({ allowHosts: uniqueDomains(hosts) }),
-    onSuccess: (res) => {
-      qc.setQueryData(['dlp-lockdown'], res);
-      setHosts(res.allowHosts ?? []);
-      setDirty(false);
-      toast.success('Web allow list saved (draft)', {
-        description: 'Click Publish so employee PCs can reach these hosts.',
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (editing) {
+        return dlpApi.lockdown.hosts.update(editing.id, { host, note });
+      }
+      return dlpApi.lockdown.hosts.create({ host, note });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
+      qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
+      setDialogOpen(false);
+      toast.success(editing ? 'Host updated (draft)' : 'Host added (draft)', {
+        description: 'Publish so employee PCs can reach it.',
       });
     },
-    onError: (err: Error) => toast.error('Failed to save allow list', { description: err.message }),
+    onError: (err: Error) => toast.error('Save failed', { description: err.message }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => dlpApi.lockdown.hosts.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
+      qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
+      toast.success('Host removed (draft)');
+    },
+    onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
   });
 
   const publishMutation = useMutation({
     mutationFn: () => dlpApi.rules.publish(),
     onSuccess: (res) => {
       toast.success(`Published policy v${res.policyVersion}`, {
-        description: 'Employee PCs will pull the new allow list on the next policy poll.',
+        description: 'Employee PCs will pull the allow list on the next policy poll.',
       });
     },
     onError: (err: Error) => toast.error('Publish failed', { description: err.message }),
   });
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4 animate-fade-in">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-display font-bold text-foreground flex items-center gap-2">
@@ -154,122 +156,242 @@ export default function WebAllowListsPage() {
             Web Allow Lists
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            After install and login, Windows PCs block every website by default (no Publish needed).
-            Add hosts here, then Publish — only those sites (plus platform destinations) open.
+            After login, Windows PCs block every site by default. Add hosts here, then Publish
+            so only these destinations open (plus platform hosts).
           </p>
         </div>
-        <Button
-          onClick={() => publishMutation.mutate()}
-          disabled={publishMutation.isPending}
-        >
-          {publishMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin mr-1" />
-          ) : (
-            <Upload className="w-4 h-4 mr-1" />
-          )}
-          Publish
-        </Button>
-      </div>
-
-      <div className="bg-card rounded-xl border border-border p-5 shadow-card space-y-4">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="min-w-0">
-            <h2 className="font-display font-bold text-foreground flex items-center gap-2">
-              <Lock className="w-4 h-4 text-primary" /> Default-deny web
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Leave On (recommended). Employee PCs already block all sites after login.
-              Turn Off + Publish only to temporarily allow general browsing. The allow list
-              below still needs Publish to open specific hosts.
-            </p>
-          </div>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <Switch
-              checked={data?.lockdown ?? false}
-              disabled={isLoading || isError || switchMutation.isPending}
-              onCheckedChange={(checked) => switchMutation.mutate(checked)}
-              aria-label="Toggle default-deny web"
-            />
-            <span
-              className={`text-xs font-medium ${data?.lockdown ? 'text-success' : 'text-muted-foreground'}`}
-            >
-              {data?.lockdown ? 'On' : 'Off'}
-            </span>
-          </label>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => publishMutation.mutate()}
+            disabled={publishMutation.isPending}
+          >
+            {publishMutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin mr-1" />
+            ) : (
+              <Upload className="w-4 h-4 mr-1" />
+            )}
+            Publish
+          </Button>
+          <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
+            <Plus className="w-4 h-4 mr-1" /> Add host
+          </Button>
         </div>
-
-        {isLoading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-        {isError && <p className="text-xs text-destructive">Failed to load allow list settings</p>}
-
-        {data && (
-          <>
-            <div>
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-muted-foreground">Allowed websites</label>
-                <span className="text-[10px] text-muted-foreground">
-                  {hosts.length}/{max}
-                </span>
-              </div>
-              <DomainChipInput
-                domains={hosts}
-                max={max}
-                onChange={(next) => {
-                  setHosts(uniqueDomains(next));
-                  setDirty(true);
-                }}
-                placeholder="contoso.sharepoint.com — Enter to add"
-              />
-              {hosts.length >= max && max > 0 && (
-                <p className="text-[10px] text-warning mt-1">Maximum of {max} hosts reached.</p>
-              )}
-              <div className="mt-2 flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!dirty || hostsMutation.isPending}
-                  onClick={() => hostsMutation.mutate()}
-                >
-                  {hostsMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
-                  Save allow list
-                </Button>
-                {dirty && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      setHosts(data.allowHosts ?? []);
-                      setDirty(false);
-                    }}
-                  >
-                    Discard
-                  </Button>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">
-                Platform allow (always permitted, read-only)
-              </label>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {(data.platformAllow ?? []).length === 0 && (
-                  <span className="text-[10px] text-muted-foreground">
-                    None compiled yet — set INSTANCE_PUBLIC_URL / TURN on the API host.
-                  </span>
-                )}
-                {(data.platformAllow ?? []).map((d) => (
-                  <code
-                    key={d}
-                    className="bg-muted px-1.5 py-0.5 rounded text-[10px] text-muted-foreground"
-                  >
-                    {d}
-                  </code>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
       </div>
+
+      <div className="bg-card rounded-xl border border-border p-4 shadow-card flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <h2 className="font-display font-bold text-foreground flex items-center gap-2 text-sm">
+            <Lock className="w-4 h-4 text-primary" /> Default-deny web
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Leave On. Turn Off + Publish only to open general browsing.
+          </p>
+          {(settings.data?.platformAllow?.length ?? 0) > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {settings.data!.platformAllow.map((d) => (
+                <code
+                  key={d}
+                  className="bg-muted px-1.5 py-0.5 rounded text-[10px] text-muted-foreground"
+                >
+                  {d}
+                </code>
+              ))}
+            </div>
+          )}
+        </div>
+        <label className="inline-flex items-center gap-2 cursor-pointer">
+          <Switch
+            checked={settings.data?.lockdown ?? false}
+            disabled={settings.isLoading || switchMutation.isPending}
+            onCheckedChange={(checked) => switchMutation.mutate(checked)}
+            aria-label="Toggle default-deny web"
+          />
+          <span
+            className={`text-xs font-medium ${settings.data?.lockdown ? 'text-success' : 'text-muted-foreground'}`}
+          >
+            {settings.data?.lockdown ? 'On' : 'Off'}
+          </span>
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center bg-card border border-border rounded-lg px-3 py-2 gap-2 min-w-[14rem] flex-1 max-w-sm">
+          <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+          <input
+            value={filters.q}
+            onChange={(e) => setFilters({ q: e.target.value })}
+            placeholder="Search hosts or notes…"
+            className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
+          />
+        </div>
+        <Select
+          value={filters.createdBy || '__all__'}
+          onValueChange={(v) => setFilters({ createdBy: v === '__all__' ? '' : v })}
+        >
+          <SelectTrigger className="w-[180px] h-9">
+            <SelectValue placeholder="Created by" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All creators</SelectItem>
+            {creators.map(([id, name]) => (
+              <SelectItem key={id} value={id}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="text-xs text-muted-foreground ml-auto">
+          {total} / {settings.data?.maxAllowHosts ?? '—'} hosts
+        </span>
+      </div>
+
+      {listQuery.isLoading && (
+        <div className="flex justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        </div>
+      )}
+      {listQuery.isError && (
+        <p className="text-sm text-destructive">Failed to load web allow list</p>
+      )}
+
+      {!listQuery.isLoading && !listQuery.isError && (
+        <div className="bg-card rounded-xl border border-border overflow-x-auto shadow-card">
+          <table className="w-full min-w-[720px]">
+            <thead>
+              <tr className="border-b border-border">
+                {['Host', 'Note', 'Created by', 'Created', 'Updated', ''].map((h) => (
+                  <th
+                    key={h || 'actions'}
+                    className="text-left px-4 py-3 text-sm font-semibold text-muted-foreground"
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {hosts.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    No allowed hosts yet. Add a site, then Publish.
+                  </td>
+                </tr>
+              )}
+              {hosts.map((row, i) => (
+                <motion.tr
+                  key={row.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: Math.min(i, 20) * 0.02 }}
+                  className="border-b border-border last:border-0 hover:bg-muted/30"
+                >
+                  <td className="px-4 py-3 font-mono text-sm break-all">{row.host}</td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground max-w-[12rem] truncate">
+                    {row.note || '—'}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {row.createdByName || <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                    {formatDateTime(row.createdAt)}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                    {row.updatedByName ? `${row.updatedByName} · ` : ''}
+                    {formatDateTime(row.updatedAt)}
+                  </td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8"
+                      onClick={() => openEdit(row)}
+                      aria-label="Edit"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 text-destructive"
+                      disabled={deleteMutation.isPending}
+                      onClick={() => {
+                        if (confirm(`Remove ${row.host} from the allow list?`)) {
+                          deleteMutation.mutate(row.id);
+                        }
+                      }}
+                      aria-label="Delete"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </td>
+                </motion.tr>
+              ))}
+            </tbody>
+          </table>
+          <div ref={sentinelRef} className="h-8 flex items-center justify-center">
+            {listQuery.isFetchingNextPage && (
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+            )}
+          </div>
+        </div>
+      )}
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display">
+              {editing ? 'Edit host' : 'Add host'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Host</label>
+              <Input
+                value={host}
+                onChange={(e) => setHost(e.target.value)}
+                placeholder="contoso.sharepoint.com"
+                className="mt-1 font-mono text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>
+              <Input
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Why this site is allowed"
+                className="mt-1"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={!host.trim() || saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
+              >
+                {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+                Save
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+export default function WebAllowListsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <WebAllowListsInner />
+    </Suspense>
   );
 }

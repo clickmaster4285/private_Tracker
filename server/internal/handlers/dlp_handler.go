@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/alpha-ai-tracker/server/internal/models"
 	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/services"
+	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
 )
 
@@ -82,6 +84,152 @@ func (h *DlpHandler) UpdateLockdownDraft(c echo.Context) error {
 		return errorResponse(c, http.StatusInternalServerError, "Failed to save lockdown settings", err)
 	}
 	return c.JSON(http.StatusOK, resp)
+}
+
+func (h *DlpHandler) userID(c echo.Context) string {
+	uid, _ := c.Get("user_id").(string)
+	return uid
+}
+
+func (h *DlpHandler) allowListQuery(c echo.Context) dto.AllowListQuery {
+	page, _ := strconv.Atoi(c.QueryParam("page"))
+	perPage, _ := strconv.Atoi(c.QueryParam("perPage"))
+	return dto.AllowListQuery{
+		Q:         c.QueryParam("q"),
+		CreatedBy: c.QueryParam("createdBy"),
+		Page:      page,
+		PerPage:   perPage,
+	}
+}
+
+// ListAllowHosts handles GET /api/v1/dlp/lockdown/hosts
+func (h *DlpHandler) ListAllowHosts(c echo.Context) error {
+	resp, err := h.svc.ListAllowHosts(c.Request().Context(), h.allowListQuery(c))
+	if err != nil {
+		return errorResponse(c, http.StatusInternalServerError, "Failed to list allow hosts", err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// CreateAllowHost handles POST /api/v1/dlp/lockdown/hosts
+func (h *DlpHandler) CreateAllowHost(c echo.Context) error {
+	var req dto.CreateAllowHostRequest
+	if err := c.Bind(&req); err != nil {
+		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+	}
+	row, err := h.svc.CreateAllowHost(c.Request().Context(), req, h.userID(c))
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "required") || strings.Contains(msg, "already") || strings.Contains(msg, "cap exceeded") {
+			return errorResponse(c, http.StatusBadRequest, msg, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to add host", err)
+	}
+	return c.JSON(http.StatusCreated, row)
+}
+
+// UpdateAllowHost handles PATCH /api/v1/dlp/lockdown/hosts/:id
+func (h *DlpHandler) UpdateAllowHost(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 {
+		return errorResponse(c, http.StatusBadRequest, "Invalid id", err)
+	}
+	var req dto.UpdateAllowHostRequest
+	if err := c.Bind(&req); err != nil {
+		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+	}
+	row, err := h.svc.UpdateAllowHost(c.Request().Context(), id, req, h.userID(c))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errorResponse(c, http.StatusNotFound, "Host not found", err)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "required") || strings.Contains(strings.ToLower(msg), "unique") {
+			return errorResponse(c, http.StatusBadRequest, msg, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to update host", err)
+	}
+	return c.JSON(http.StatusOK, row)
+}
+
+// DeleteAllowHost handles DELETE /api/v1/dlp/lockdown/hosts/:id
+func (h *DlpHandler) DeleteAllowHost(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 {
+		return errorResponse(c, http.StatusBadRequest, "Invalid id", err)
+	}
+	if err := h.svc.DeleteAllowHost(c.Request().Context(), id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errorResponse(c, http.StatusNotFound, "Host not found", err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to delete host", err)
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+// ListAllowApps handles GET /api/v1/dlp/lockdown/apps
+func (h *DlpHandler) ListAllowApps(c echo.Context) error {
+	resp, err := h.svc.ListAllowApps(c.Request().Context(), h.allowListQuery(c))
+	if err != nil {
+		return errorResponse(c, http.StatusInternalServerError, "Failed to list allow apps", err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// CreateAllowApp handles POST /api/v1/dlp/lockdown/apps
+func (h *DlpHandler) CreateAllowApp(c echo.Context) error {
+	var req dto.CreateAllowAppRequest
+	if err := c.Bind(&req); err != nil {
+		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+	}
+	row, err := h.svc.CreateAllowApp(c.Request().Context(), req, h.userID(c))
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "needs") || strings.Contains(msg, "cap exceeded") {
+			return errorResponse(c, http.StatusBadRequest, msg, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to add app", err)
+	}
+	return c.JSON(http.StatusCreated, row)
+}
+
+// UpdateAllowApp handles PATCH /api/v1/dlp/lockdown/apps/:id
+func (h *DlpHandler) UpdateAllowApp(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 {
+		return errorResponse(c, http.StatusBadRequest, "Invalid id", err)
+	}
+	var req dto.UpdateAllowAppRequest
+	if err := c.Bind(&req); err != nil {
+		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+	}
+	row, err := h.svc.UpdateAllowApp(c.Request().Context(), id, req, h.userID(c))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errorResponse(c, http.StatusNotFound, "App entry not found", err)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "needs") {
+			return errorResponse(c, http.StatusBadRequest, msg, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to update app", err)
+	}
+	return c.JSON(http.StatusOK, row)
+}
+
+// DeleteAllowApp handles DELETE /api/v1/dlp/lockdown/apps/:id
+func (h *DlpHandler) DeleteAllowApp(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id < 1 {
+		return errorResponse(c, http.StatusBadRequest, "Invalid id", err)
+	}
+	if err := h.svc.DeleteAllowApp(c.Request().Context(), id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errorResponse(c, http.StatusNotFound, "App entry not found", err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to delete app", err)
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // PauseMachineLockdown handles POST /api/v1/employees/:id/machines/:machineId/lockdown-pause

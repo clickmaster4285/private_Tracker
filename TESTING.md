@@ -23,13 +23,13 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./
 9. Role without `allowlists/web` does not see the sidebar entry; `/allowlists/web` → `/unauthorized`.
 10. App Allow List: add a publisher/SHA draft → Publish → pulled bundle has `allow.apps` (enforce still P3).
 
-**P2 Chrome/Edge address bar (same publish):** under lockdown, Chrome and Edge get
-`HKLM\...\URLBlocklist` = `*` plus deny patterns, and `URLAllowlist` for
-platformAllow + allow.hosts + API host (explicit Web Blocker denies are subtracted
-from the allow set so block still wins). Lockdown off / teardown clears `URLAllowlist`
-the same way `URLBlocklist` clears (§F.1). Firefox and other browsers have **no**
-enterprise allow API here — they stay blocked by P1 network deny only; do not claim
-an address-bar interstitial for them.
+**Network + hosts only (no HKLM URL policy):** lockdown and web-blocker deny use
+hosts DNS sink + AdvFirewall (`AlphaAI-DLP-*` / `AlphaAI-DLP-LOCK-*`). The service
+does **not** write Chrome/Edge `URLBlocklist` / `URLAllowlist` / DoH / Quic — it only
+clears leftovers from older builds. After Publish, newly allowed hosts apply to
+every browser/app without a browser restart. Lab PCs that still show “blocked by
+administrator” need **one** Chrome/Edge quit after upgrade so the old interstitial
+drops.
 
 Honest limit: P3 AppLocker/WDAC is not built. AdvFirewall uses a complement deny
 (block wins over allow on Windows), not a literal allow-after-deny stack.

@@ -1,86 +1,143 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AppWindow, Loader2, Plus, Trash2, Upload } from 'lucide-react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { motion } from 'framer-motion';
+import { AppWindow, Loader2, Pencil, Plus, Search, Trash2, Upload } from 'lucide-react';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { dlpApi, type DlpLockdownAllowApp } from '@/lib/api';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { dlpApi, type AllowAppRow } from '@/lib/api';
+import { formatDateTime } from '@/lib/format';
+import { useUrlQueryState } from '@/hooks/use-url-query-state';
 
-function normalizeApp(a: DlpLockdownAllowApp): DlpLockdownAllowApp | null {
-  const publisher = (a.publisher ?? '').trim();
-  const product = (a.product ?? '').trim();
-  let sha256 = (a.sha256 ?? '').trim().toLowerCase().replace(/^sha256:/, '');
-  if (!publisher && sha256.length !== 64) return null;
-  if (sha256 && sha256.length !== 64) return null;
-  if (sha256 && !/^[0-9a-f]{64}$/.test(sha256)) return null;
-  return { publisher: publisher || undefined, product: product || undefined, sha256: sha256 || undefined };
-}
+const PER_PAGE = 30;
 
-/**
- * App Allow List — RBAC `allowlists/apps`.
- * Draft publisher / SHA-256 entries publish into `allow.apps`. Windows enforcement
- * (WDAC/AppLocker) is the next phase; the list is already snapshotted for agents.
- */
-export default function AppAllowListPage() {
+function AppAllowListInner() {
   const qc = useQueryClient();
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['dlp-lockdown'],
-    queryFn: () => dlpApi.lockdown.get(),
-  });
-  const [apps, setApps] = useState<DlpLockdownAllowApp[]>([]);
-  const [dirty, setDirty] = useState(false);
+  const [filters, setFilters] = useUrlQueryState(
+    { q: {}, createdBy: {} },
+    { q: '', createdBy: '' },
+    { debounceMs: 300 },
+  );
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<AllowAppRow | null>(null);
   const [publisher, setPublisher] = useState('');
   const [product, setProduct] = useState('');
   const [sha256, setSha256] = useState('');
+  const [note, setNote] = useState('');
 
+  const settings = useQuery({
+    queryKey: ['dlp-lockdown'],
+    queryFn: () => dlpApi.lockdown.get(),
+  });
+
+  const listQuery = useInfiniteQuery({
+    queryKey: ['dlp-allow-apps', filters],
+    queryFn: ({ pageParam }) =>
+      dlpApi.lockdown.apps.list({
+        q: filters.q || undefined,
+        createdBy: filters.createdBy || undefined,
+        page: pageParam,
+        perPage: PER_PAGE,
+      }),
+    initialPageParam: 1,
+    getNextPageParam: (last) =>
+      last.page * last.perPage < last.total ? last.page + 1 : undefined,
+    placeholderData: keepPreviousData,
+  });
+
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (data && !dirty) setApps(data.allowApps ?? []);
-  }, [data, dirty]);
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && listQuery.hasNextPage && !listQuery.isFetchingNextPage) {
+          listQuery.fetchNextPage();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [listQuery.hasNextPage, listQuery.isFetchingNextPage, listQuery.fetchNextPage]);
 
-  const max = data?.maxAllowApps ?? 0;
+  const apps = useMemo(
+    () => (listQuery.data?.pages ?? []).flatMap((p) => p.apps),
+    [listQuery.data],
+  );
+  const total = listQuery.data?.pages[0]?.total ?? 0;
+
+  const creators = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of apps) {
+      if (a.createdBy && a.createdByName) map.set(a.createdBy, a.createdByName);
+    }
+    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [apps]);
+
+  const openCreate = () => {
+    setEditing(null);
+    setPublisher('');
+    setProduct('');
+    setSha256('');
+    setNote('');
+    setDialogOpen(true);
+  };
+
+  const openEdit = (row: AllowAppRow) => {
+    setEditing(row);
+    setPublisher(row.publisher ?? '');
+    setProduct(row.product ?? '');
+    setSha256(row.sha256 ?? '');
+    setNote(row.note ?? '');
+    setDialogOpen(true);
+  };
 
   const saveMutation = useMutation({
-    mutationFn: () => dlpApi.lockdown.update({ allowApps: apps }),
-    onSuccess: (res) => {
-      qc.setQueryData(['dlp-lockdown'], res);
-      setApps(res.allowApps ?? []);
-      setDirty(false);
-      toast.success('App allow list saved (draft)', {
-        description: 'Click Publish to include in the next policy bundle.',
+    mutationFn: async () => {
+      const body = { publisher, product, sha256, note };
+      if (editing) return dlpApi.lockdown.apps.update(editing.id, body);
+      return dlpApi.lockdown.apps.create(body);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
+      qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
+      setDialogOpen(false);
+      toast.success(editing ? 'App entry updated (draft)' : 'App entry added (draft)', {
+        description: 'Publish to include in the next policy bundle.',
       });
     },
-    onError: (err: Error) => toast.error('Failed to save', { description: err.message }),
+    onError: (err: Error) => toast.error('Save failed', { description: err.message }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => dlpApi.lockdown.apps.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
+      qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
+      toast.success('App entry removed (draft)');
+    },
+    onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
   });
 
   const publishMutation = useMutation({
     mutationFn: () => dlpApi.rules.publish(),
-    onSuccess: (res) => {
-      toast.success(`Published policy v${res.policyVersion}`);
-    },
+    onSuccess: (res) => toast.success(`Published policy v${res.policyVersion}`),
     onError: (err: Error) => toast.error('Publish failed', { description: err.message }),
   });
 
-  const addRow = () => {
-    const row = normalizeApp({ publisher, product, sha256 });
-    if (!row) {
-      toast.error('Need a publisher (e.g. CN=…) and/or a 64-hex SHA-256');
-      return;
-    }
-    if (apps.length >= max && max > 0) {
-      toast.error(`Maximum of ${max} app entries`);
-      return;
-    }
-    setApps((prev) => [...prev, row]);
-    setDirty(true);
-    setPublisher('');
-    setProduct('');
-    setSha256('');
-  };
-
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4  animate-fade-in">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-display font-bold text-foreground flex items-center gap-2">
@@ -88,123 +145,231 @@ export default function AppAllowListPage() {
             App Allow List
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Allow programs by code-signing publisher and/or file SHA-256 — never by display name alone.
-            Entries publish into the policy bundle; Windows enforce mode ships in a later phase.
+            Allow programs by code-signing publisher and/or file SHA-256 — never by display name
+            alone. Entries publish into the policy bundle; Windows enforce mode ships later.
           </p>
-        </div>
-        <Button onClick={() => publishMutation.mutate()} disabled={publishMutation.isPending}>
-          {publishMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin mr-1" />
-          ) : (
-            <Upload className="w-4 h-4 mr-1" />
+          {settings.data && !settings.data.lockdown && (
+            <p className="text-xs text-warning mt-1">
+              Web default-deny is off — turn it on under Web Allow Lists for network lockdown.
+            </p>
           )}
-          Publish
-        </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={() => publishMutation.mutate()}
+            disabled={publishMutation.isPending}
+          >
+            {publishMutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin mr-1" />
+            ) : (
+              <Upload className="w-4 h-4 mr-1" />
+            )}
+            Publish
+          </Button>
+          <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
+            <Plus className="w-4 h-4 mr-1" /> Add app
+          </Button>
+        </div>
       </div>
 
-      <div className="bg-card rounded-xl border border-border p-5 shadow-card space-y-4">
-        {isLoading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-        {isError && <p className="text-xs text-destructive">Failed to load app allow list</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex items-center bg-card border border-border rounded-lg px-3 py-2 gap-2 min-w-[14rem] flex-1 max-w-sm">
+          <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+          <input
+            value={filters.q}
+            onChange={(e) => setFilters({ q: e.target.value })}
+            placeholder="Search publisher, product, hash…"
+            className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
+          />
+        </div>
+        <Select
+          value={filters.createdBy || '__all__'}
+          onValueChange={(v) => setFilters({ createdBy: v === '__all__' ? '' : v })}
+        >
+          <SelectTrigger className="w-[180px] h-9">
+            <SelectValue placeholder="Created by" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All creators</SelectItem>
+            {creators.map(([id, name]) => (
+              <SelectItem key={id} value={id}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="text-xs text-muted-foreground ml-auto">
+          {total} / {settings.data?.maxAllowApps ?? '—'} entries
+        </span>
+      </div>
 
-        {data && (
-          <>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>{apps.length}/{max} entries</span>
-              {!data.lockdown && (
-                <span className="text-warning">
-                  Web default-deny is off — turn it on under Web Allow Lists for network lockdown.
-                </span>
-              )}
-            </div>
+      {listQuery.isLoading && (
+        <div className="flex justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        </div>
+      )}
+      {listQuery.isError && (
+        <p className="text-sm text-destructive">Failed to load app allow list</p>
+      )}
 
-            <ul className="divide-y divide-border rounded-lg border border-border">
-              {apps.length === 0 && (
-                <li className="px-3 py-6 text-center text-sm text-muted-foreground">
-                  No allowed apps yet.
-                </li>
-              )}
-              {apps.map((a, i) => (
-                <li key={`${a.publisher}-${a.sha256}-${i}`} className="flex items-start gap-2 px-3 py-2">
-                  <div className="min-w-0 flex-1 text-xs font-mono break-all">
-                    {a.publisher && <div>publisher: {a.publisher}</div>}
-                    {a.product && <div className="text-muted-foreground">product: {a.product}</div>}
-                    {a.sha256 && <div>sha256: {a.sha256}</div>}
-                  </div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="shrink-0 h-8 w-8"
-                    onClick={() => {
-                      setApps((prev) => prev.filter((_, j) => j !== i));
-                      setDirty(true);
-                    }}
-                    aria-label="Remove"
+      {!listQuery.isLoading && !listQuery.isError && (
+        <div className="bg-card rounded-xl border border-border overflow-x-auto shadow-card">
+          <table className="w-full min-w-[800px]">
+            <thead>
+              <tr className="border-b border-border">
+                {['Publisher', 'Product', 'SHA-256', 'Created by', 'Created', ''].map((h) => (
+                  <th
+                    key={h || 'actions'}
+                    className="text-left px-4 py-3 text-sm font-semibold text-muted-foreground"
                   >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </li>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {apps.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    No allowed apps yet.
+                  </td>
+                </tr>
+              )}
+              {apps.map((row, i) => (
+                <motion.tr
+                  key={row.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: Math.min(i, 20) * 0.02 }}
+                  className="border-b border-border last:border-0 hover:bg-muted/30"
+                >
+                  <td className="px-4 py-3 text-xs font-mono break-all max-w-[14rem]">
+                    {row.publisher || '—'}
+                    {row.note ? (
+                      <div className="text-muted-foreground font-sans mt-0.5 truncate">{row.note}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3 text-sm">{row.product || '—'}</td>
+                  <td className="px-4 py-3 text-[11px] font-mono break-all max-w-[12rem]">
+                    {row.sha256 || '—'}
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {row.createdByName || <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                    {formatDateTime(row.createdAt)}
+                  </td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8"
+                      onClick={() => openEdit(row)}
+                      aria-label="Edit"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-8 w-8 text-destructive"
+                      disabled={deleteMutation.isPending}
+                      onClick={() => {
+                        if (confirm('Remove this app allow entry?')) {
+                          deleteMutation.mutate(row.id);
+                        }
+                      }}
+                      aria-label="Delete"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </td>
+                </motion.tr>
               ))}
-            </ul>
+            </tbody>
+          </table>
+          <div ref={sentinelRef} className="h-8 flex items-center justify-center">
+            {listQuery.isFetchingNextPage && (
+              <Loader2 className="w-4 h-4 animate-spin text-primary" />
+            )}
+          </div>
+        </div>
+      )}
 
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="sm:col-span-2">
-                <label className="text-xs font-medium text-muted-foreground">Publisher (subject)</label>
-                <Input
-                  value={publisher}
-                  onChange={(e) => setPublisher(e.target.value)}
-                  placeholder="CN=Microsoft Corporation, …"
-                  className="mt-1 font-mono text-xs"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Product (optional)</label>
-                <Input
-                  value={product}
-                  onChange={(e) => setProduct(e.target.value)}
-                  placeholder="Microsoft Office"
-                  className="mt-1"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">SHA-256 (64 hex)</label>
-                <Input
-                  value={sha256}
-                  onChange={(e) => setSha256(e.target.value)}
-                  placeholder="abcdef…"
-                  className="mt-1 font-mono text-xs"
-                />
-              </div>
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="font-display">
+              {editing ? 'Edit app entry' : 'Add app entry'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 mt-2">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Publisher (subject)</label>
+              <Input
+                value={publisher}
+                onChange={(e) => setPublisher(e.target.value)}
+                placeholder="CN=Microsoft Corporation, …"
+                className="mt-1 font-mono text-xs"
+              />
             </div>
-
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" onClick={addRow}>
-                <Plus className="w-4 h-4 mr-1" /> Add
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Product (optional)</label>
+              <Input
+                value={product}
+                onChange={(e) => setProduct(e.target.value)}
+                placeholder="Microsoft Office"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">SHA-256 (64 hex)</label>
+              <Input
+                value={sha256}
+                onChange={(e) => setSha256(e.target.value)}
+                placeholder="abcdef…"
+                className="mt-1 font-mono text-xs"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>
+              <Input
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Why this binary is allowed"
+                className="mt-1"
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="ghost" onClick={() => setDialogOpen(false)}>
+                Cancel
               </Button>
               <Button
-                size="sm"
-                variant="outline"
-                disabled={!dirty || saveMutation.isPending}
+                disabled={(!publisher.trim() && !sha256.trim()) || saveMutation.isPending}
                 onClick={() => saveMutation.mutate()}
               >
                 {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
-                Save draft
+                Save
               </Button>
-              {dirty && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setApps(data.allowApps ?? []);
-                    setDirty(false);
-                  }}
-                >
-                  Discard
-                </Button>
-              )}
             </div>
-          </>
-        )}
-      </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
+  );
+}
+
+export default function AppAllowListPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex justify-center py-12">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
+        </div>
+      }
+    >
+      <AppAllowListInner />
+    </Suspense>
   );
 }

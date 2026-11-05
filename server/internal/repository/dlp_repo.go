@@ -924,7 +924,9 @@ func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts
 		return err
 	}
 	for _, host := range hosts {
-		if _, err := tx.Exec(ctx, `INSERT INTO dlp_lockdown_allow_hosts (host) VALUES ($1)`, host); err != nil {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO dlp_lockdown_allow_hosts (host) VALUES ($1)
+			ON CONFLICT (host) DO NOTHING`, host); err != nil {
 			return err
 		}
 	}
@@ -939,6 +941,292 @@ func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// AllowHostListRow is a draft host with optional creator names.
+type AllowHostListRow struct {
+	ID            int64
+	Host          string
+	Note          string
+	CreatedBy     *string
+	CreatedByName string
+	UpdatedBy     *string
+	UpdatedByName string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// AllowAppListRow is a draft app allow entry with optional creator names.
+type AllowAppListRow struct {
+	ID            int64
+	Publisher     string
+	Product       string
+	Sha256        string
+	Note          string
+	CreatedBy     *string
+	CreatedByName string
+	UpdatedBy     *string
+	UpdatedByName string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+func clampAllowListPage(page, perPage int) (int, int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 30
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	return page, perPage, (page - 1) * perPage
+}
+
+func (r *DlpRepo) CountAllowHosts(ctx context.Context, q, createdBy string) (int, error) {
+	var total int
+	err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM dlp_lockdown_allow_hosts h
+		WHERE ($1 = '' OR h.host ILIKE '%' || $1 || '%' OR h.note ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR h.created_by::text = $2)`,
+		strings.TrimSpace(q), strings.TrimSpace(createdBy)).Scan(&total)
+	return total, err
+}
+
+func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy string, page, perPage int) ([]AllowHostListRow, error) {
+	page, perPage, offset := clampAllowListPage(page, perPage)
+	rows, err := r.pool.Query(ctx, `
+		SELECT h.id, h.host, h.note,
+		       h.created_by::text, COALESCE(cu.name, ''),
+		       h.updated_by::text, COALESCE(uu.name, ''),
+		       h.created_at, h.updated_at
+		FROM dlp_lockdown_allow_hosts h
+		LEFT JOIN users cu ON cu.id = h.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = h.updated_by AND uu.deleted_at IS NULL
+		WHERE ($1 = '' OR h.host ILIKE '%' || $1 || '%' OR h.note ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR h.created_by::text = $2)
+		ORDER BY h.created_at DESC, h.host
+		LIMIT $3 OFFSET $4`,
+		strings.TrimSpace(q), strings.TrimSpace(createdBy), perPage, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AllowHostListRow, 0)
+	for rows.Next() {
+		var row AllowHostListRow
+		var createdByNS, updatedByNS *string
+		if err := rows.Scan(
+			&row.ID, &row.Host, &row.Note,
+			&createdByNS, &row.CreatedByName,
+			&updatedByNS, &row.UpdatedByName,
+			&row.CreatedAt, &row.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		row.CreatedBy = createdByNS
+		row.UpdatedBy = updatedByNS
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, userID *string) (*AllowHostListRow, error) {
+	var row AllowHostListRow
+	var createdByNS, updatedByNS *string
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO dlp_lockdown_allow_hosts (host, note, created_by, updated_by)
+		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($3, '')::uuid)
+		RETURNING id, host, note, created_by::text, updated_by::text, created_at, updated_at`,
+		host, note, nullStr(userID),
+	).Scan(&row.ID, &row.Host, &row.Note, &createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	row.CreatedBy = createdByNS
+	row.UpdatedBy = updatedByNS
+	return &row, nil
+}
+
+func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, error) {
+	var row AllowAppListRow
+	var createdByNS, updatedByNS *string
+	err := r.pool.QueryRow(ctx, `
+		SELECT a.id, a.publisher, a.product, a.sha256, a.note,
+		       a.created_by::text, COALESCE(cu.name, ''),
+		       a.updated_by::text, COALESCE(uu.name, ''),
+		       a.created_at, a.updated_at
+		FROM dlp_lockdown_allow_apps a
+		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
+		WHERE a.id = $1`, id).Scan(
+		&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+		&createdByNS, &row.CreatedByName,
+		&updatedByNS, &row.UpdatedByName,
+		&row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	row.CreatedBy = createdByNS
+	row.UpdatedBy = updatedByNS
+	return &row, nil
+}
+
+func (r *DlpRepo) UpdateAllowHost(ctx context.Context, id int64, host, note *string, userID *string) (*AllowHostListRow, error) {
+	var row AllowHostListRow
+	var createdByNS, updatedByNS *string
+	err := r.pool.QueryRow(ctx, `
+		UPDATE dlp_lockdown_allow_hosts h
+		SET host = COALESCE($2, h.host),
+		    note = COALESCE($3, h.note),
+		    updated_by = NULLIF($4, '')::uuid,
+		    updated_at = NOW()
+		WHERE h.id = $1
+		RETURNING h.id, h.host, h.note, h.created_by::text, h.updated_by::text, h.created_at, h.updated_at`,
+		id, host, note, nullStr(userID),
+	).Scan(&row.ID, &row.Host, &row.Note, &createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	row.CreatedBy = createdByNS
+	row.UpdatedBy = updatedByNS
+	_ = r.pool.QueryRow(ctx, `
+		SELECT COALESCE(cu.name, ''), COALESCE(uu.name, '')
+		FROM dlp_lockdown_allow_hosts h
+		LEFT JOIN users cu ON cu.id = h.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = h.updated_by AND uu.deleted_at IS NULL
+		WHERE h.id = $1`, id).Scan(&row.CreatedByName, &row.UpdatedByName)
+	return &row, nil
+}
+
+func (r *DlpRepo) DeleteAllowHost(ctx context.Context, id int64) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM dlp_lockdown_allow_hosts WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (r *DlpRepo) CountAllowApps(ctx context.Context, q, createdBy string) (int, error) {
+	var total int
+	err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM dlp_lockdown_allow_apps a
+		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
+		       OR a.sha256 ILIKE '%' || $1 || '%' OR a.note ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR a.created_by::text = $2)`,
+		strings.TrimSpace(q), strings.TrimSpace(createdBy)).Scan(&total)
+	return total, err
+}
+
+func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy string, page, perPage int) ([]AllowAppListRow, error) {
+	page, perPage, offset := clampAllowListPage(page, perPage)
+	rows, err := r.pool.Query(ctx, `
+		SELECT a.id, a.publisher, a.product, a.sha256, a.note,
+		       a.created_by::text, COALESCE(cu.name, ''),
+		       a.updated_by::text, COALESCE(uu.name, ''),
+		       a.created_at, a.updated_at
+		FROM dlp_lockdown_allow_apps a
+		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
+		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
+		       OR a.sha256 ILIKE '%' || $1 || '%' OR a.note ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR a.created_by::text = $2)
+		ORDER BY a.created_at DESC, a.id DESC
+		LIMIT $3 OFFSET $4`,
+		strings.TrimSpace(q), strings.TrimSpace(createdBy), perPage, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AllowAppListRow, 0)
+	for rows.Next() {
+		var row AllowAppListRow
+		var createdByNS, updatedByNS *string
+		if err := rows.Scan(
+			&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+			&createdByNS, &row.CreatedByName,
+			&updatedByNS, &row.UpdatedByName,
+			&row.CreatedAt, &row.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		row.CreatedBy = createdByNS
+		row.UpdatedBy = updatedByNS
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (r *DlpRepo) InsertAllowApp(ctx context.Context, publisher, product, sha, note string, userID *string) (*AllowAppListRow, error) {
+	var row AllowAppListRow
+	var createdByNS, updatedByNS *string
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256, note, created_by, updated_by)
+		VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid, NULLIF($5, '')::uuid)
+		RETURNING id, publisher, product, sha256, note, created_by::text, updated_by::text, created_at, updated_at`,
+		publisher, product, sha, note, nullStr(userID),
+	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+		&createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	row.CreatedBy = createdByNS
+	row.UpdatedBy = updatedByNS
+	return &row, nil
+}
+
+func (r *DlpRepo) UpdateAllowApp(ctx context.Context, id int64, publisher, product, sha, note *string, userID *string) (*AllowAppListRow, error) {
+	var row AllowAppListRow
+	var createdByNS, updatedByNS *string
+	err := r.pool.QueryRow(ctx, `
+		UPDATE dlp_lockdown_allow_apps a
+		SET publisher = COALESCE($2, a.publisher),
+		    product = COALESCE($3, a.product),
+		    sha256 = COALESCE($4, a.sha256),
+		    note = COALESCE($5, a.note),
+		    updated_by = NULLIF($6, '')::uuid,
+		    updated_at = NOW()
+		WHERE a.id = $1
+		RETURNING a.id, a.publisher, a.product, a.sha256, a.note,
+		          a.created_by::text, a.updated_by::text, a.created_at, a.updated_at`,
+		id, publisher, product, sha, note, nullStr(userID),
+	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+		&createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	row.CreatedBy = createdByNS
+	row.UpdatedBy = updatedByNS
+	_ = r.pool.QueryRow(ctx, `
+		SELECT COALESCE(cu.name, ''), COALESCE(uu.name, '')
+		FROM dlp_lockdown_allow_apps a
+		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
+		WHERE a.id = $1`, id).Scan(&row.CreatedByName, &row.UpdatedByName)
+	return &row, nil
+}
+
+func (r *DlpRepo) DeleteAllowApp(ctx context.Context, id int64) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM dlp_lockdown_allow_apps WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func nullStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(*p)
 }
 
 // ── Alerts ──────────────────────────────────────────────────────────────────

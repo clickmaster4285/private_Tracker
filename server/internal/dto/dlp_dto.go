@@ -119,12 +119,89 @@ type LockdownDraftResponse struct {
 	PlatformAllow []string           `json:"platformAllow"` // compiled from server env (read-only)
 	MaxAllowHosts int                `json:"maxAllowHosts"`
 	MaxAllowApps  int                `json:"maxAllowApps"`
+	HostCount     int                `json:"hostCount"`
+	AppCount      int                `json:"appCount"`
 }
 
 type UpdateLockdownDraftRequest struct {
 	Lockdown   *bool               `json:"lockdown,omitempty"`
 	AllowHosts *[]string           `json:"allowHosts,omitempty"`
 	AllowApps  *[]LockdownAllowApp `json:"allowApps,omitempty"`
+}
+
+// AllowHostRow is one draft web allow-list entry (GET /dlp/lockdown/hosts).
+type AllowHostRow struct {
+	ID            int64     `json:"id"`
+	Host          string    `json:"host"`
+	Note          string    `json:"note,omitempty"`
+	CreatedBy     *string   `json:"createdBy,omitempty"`
+	CreatedByName string    `json:"createdByName,omitempty"`
+	UpdatedBy     *string   `json:"updatedBy,omitempty"`
+	UpdatedByName string    `json:"updatedByName,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type AllowHostListResponse struct {
+	Hosts      []AllowHostRow `json:"hosts"`
+	Total      int            `json:"total"`
+	Page       int            `json:"page"`
+	PerPage    int            `json:"perPage"`
+	TotalPages int            `json:"totalPages"`
+}
+
+type CreateAllowHostRequest struct {
+	Host string `json:"host"`
+	Note string `json:"note,omitempty"`
+}
+
+type UpdateAllowHostRequest struct {
+	Host *string `json:"host,omitempty"`
+	Note *string `json:"note,omitempty"`
+}
+
+// AllowAppRow is one draft app allow-list entry (GET /dlp/lockdown/apps).
+type AllowAppRow struct {
+	ID            int64     `json:"id"`
+	Publisher     string    `json:"publisher,omitempty"`
+	Product       string    `json:"product,omitempty"`
+	Sha256        string    `json:"sha256,omitempty"`
+	Note          string    `json:"note,omitempty"`
+	CreatedBy     *string   `json:"createdBy,omitempty"`
+	CreatedByName string    `json:"createdByName,omitempty"`
+	UpdatedBy     *string   `json:"updatedBy,omitempty"`
+	UpdatedByName string    `json:"updatedByName,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type AllowAppListResponse struct {
+	Apps       []AllowAppRow `json:"apps"`
+	Total      int           `json:"total"`
+	Page       int           `json:"page"`
+	PerPage    int           `json:"perPage"`
+	TotalPages int           `json:"totalPages"`
+}
+
+type CreateAllowAppRequest struct {
+	Publisher string `json:"publisher,omitempty"`
+	Product   string `json:"product,omitempty"`
+	Sha256    string `json:"sha256,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+type UpdateAllowAppRequest struct {
+	Publisher *string `json:"publisher,omitempty"`
+	Product   *string `json:"product,omitempty"`
+	Sha256    *string `json:"sha256,omitempty"`
+	Note      *string `json:"note,omitempty"`
+}
+
+type AllowListQuery struct {
+	Q         string
+	CreatedBy string
+	Page      int
+	PerPage   int
 }
 
 type PauseLockdownRequest struct {

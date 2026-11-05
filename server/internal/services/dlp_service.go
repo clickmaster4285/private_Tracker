@@ -443,7 +443,220 @@ func (s *DlpService) GetLockdownDraft(ctx context.Context) (*dto.LockdownDraftRe
 		PlatformAllow: platform,
 		MaxAllowHosts: repository.MaxLockdownAllowHosts,
 		MaxAllowApps:  repository.MaxLockdownAllowApps,
+		HostCount:     len(hosts),
+		AppCount:      len(outApps),
 	}, nil
+}
+
+func totalPages(total, perPage int) int {
+	if perPage < 1 {
+		perPage = 30
+	}
+	if total <= 0 {
+		return 0
+	}
+	return (total + perPage - 1) / perPage
+}
+
+func mapAllowHost(row repository.AllowHostListRow) dto.AllowHostRow {
+	return dto.AllowHostRow{
+		ID: row.ID, Host: row.Host, Note: row.Note,
+		CreatedBy: row.CreatedBy, CreatedByName: row.CreatedByName,
+		UpdatedBy: row.UpdatedBy, UpdatedByName: row.UpdatedByName,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func mapAllowApp(row repository.AllowAppListRow) dto.AllowAppRow {
+	return dto.AllowAppRow{
+		ID: row.ID, Publisher: row.Publisher, Product: row.Product, Sha256: row.Sha256, Note: row.Note,
+		CreatedBy: row.CreatedBy, CreatedByName: row.CreatedByName,
+		UpdatedBy: row.UpdatedBy, UpdatedByName: row.UpdatedByName,
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func (s *DlpService) ListAllowHosts(ctx context.Context, q dto.AllowListQuery) (*dto.AllowHostListResponse, error) {
+	page, perPage, _ := pagePer(q.Page, q.PerPage)
+	total, err := s.repo.CountAllowHosts(ctx, q.Q, q.CreatedBy)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.repo.ListAllowHosts(ctx, q.Q, q.CreatedBy, page, perPage)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dto.AllowHostRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapAllowHost(r))
+	}
+	return &dto.AllowHostListResponse{
+		Hosts: out, Total: total, Page: page, PerPage: perPage, TotalPages: totalPages(total, perPage),
+	}, nil
+}
+
+func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHostRequest, userID string) (*dto.AllowHostRow, error) {
+	host := NormalizeDomain(req.Host)
+	if host == "" {
+		return nil, fmt.Errorf("host is required")
+	}
+	count, err := s.repo.CountAllowHosts(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	if count >= repository.MaxLockdownAllowHosts {
+		return nil, fmt.Errorf("allow hosts cap exceeded: %d >= %d", count, repository.MaxLockdownAllowHosts)
+	}
+	var uid *string
+	if strings.TrimSpace(userID) != "" {
+		uid = &userID
+	}
+	row, err := s.repo.InsertAllowHost(ctx, host, strings.TrimSpace(req.Note), uid)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") ||
+			strings.Contains(err.Error(), "duplicate key") {
+			return nil, fmt.Errorf("host already on the allow list")
+		}
+		return nil, err
+	}
+	// Refresh names
+	list, err := s.repo.ListAllowHosts(ctx, host, "", 1, 1)
+	if err == nil && len(list) > 0 {
+		return ptrAllowHost(mapAllowHost(list[0])), nil
+	}
+	return ptrAllowHost(mapAllowHost(*row)), nil
+}
+
+func ptrAllowHost(r dto.AllowHostRow) *dto.AllowHostRow { return &r }
+
+func (s *DlpService) UpdateAllowHost(ctx context.Context, id int64, req dto.UpdateAllowHostRequest, userID string) (*dto.AllowHostRow, error) {
+	var hostPtr *string
+	if req.Host != nil {
+		n := NormalizeDomain(*req.Host)
+		if n == "" {
+			return nil, fmt.Errorf("host is required")
+		}
+		hostPtr = &n
+	}
+	var notePtr *string
+	if req.Note != nil {
+		n := strings.TrimSpace(*req.Note)
+		notePtr = &n
+	}
+	var uid *string
+	if strings.TrimSpace(userID) != "" {
+		uid = &userID
+	}
+	row, err := s.repo.UpdateAllowHost(ctx, id, hostPtr, notePtr, uid)
+	if err != nil {
+		return nil, err
+	}
+	return ptrAllowHost(mapAllowHost(*row)), nil
+}
+
+func (s *DlpService) DeleteAllowHost(ctx context.Context, id int64) error {
+	return s.repo.DeleteAllowHost(ctx, id)
+}
+
+func (s *DlpService) ListAllowApps(ctx context.Context, q dto.AllowListQuery) (*dto.AllowAppListResponse, error) {
+	page, perPage, _ := pagePer(q.Page, q.PerPage)
+	total, err := s.repo.CountAllowApps(ctx, q.Q, q.CreatedBy)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.repo.ListAllowApps(ctx, q.Q, q.CreatedBy, page, perPage)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dto.AllowAppRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, mapAllowApp(r))
+	}
+	return &dto.AllowAppListResponse{
+		Apps: out, Total: total, Page: page, PerPage: perPage, TotalPages: totalPages(total, perPage),
+	}, nil
+}
+
+func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppRequest, userID string) (*dto.AllowAppRow, error) {
+	rowIn, ok := normalizeAllowApp(dto.LockdownAllowApp{
+		Publisher: req.Publisher, Product: req.Product, Sha256: req.Sha256,
+	})
+	if !ok {
+		return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
+	}
+	count, err := s.repo.CountAllowApps(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+	if count >= repository.MaxLockdownAllowApps {
+		return nil, fmt.Errorf("allow apps cap exceeded: %d >= %d", count, repository.MaxLockdownAllowApps)
+	}
+	var uid *string
+	if strings.TrimSpace(userID) != "" {
+		uid = &userID
+	}
+	row, err := s.repo.InsertAllowApp(ctx, rowIn.Publisher, rowIn.Product, rowIn.Sha256, strings.TrimSpace(req.Note), uid)
+	if err != nil {
+		return nil, err
+	}
+	return ptrAllowApp(mapAllowApp(*row)), nil
+}
+
+func ptrAllowApp(r dto.AllowAppRow) *dto.AllowAppRow { return &r }
+
+func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.UpdateAllowAppRequest, userID string) (*dto.AllowAppRow, error) {
+	cur, err := s.repo.GetAllowApp(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	merged := dto.LockdownAllowApp{
+		Publisher: cur.Publisher, Product: cur.Product, Sha256: cur.Sha256,
+	}
+	if req.Publisher != nil {
+		merged.Publisher = *req.Publisher
+	}
+	if req.Product != nil {
+		merged.Product = *req.Product
+	}
+	if req.Sha256 != nil {
+		merged.Sha256 = *req.Sha256
+	}
+	rowIn, ok := normalizeAllowApp(merged)
+	if !ok {
+		return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
+	}
+	pub, prod, sha := rowIn.Publisher, rowIn.Product, rowIn.Sha256
+	var notePtr *string
+	if req.Note != nil {
+		n := strings.TrimSpace(*req.Note)
+		notePtr = &n
+	}
+	var uid *string
+	if strings.TrimSpace(userID) != "" {
+		uid = &userID
+	}
+	row, err := s.repo.UpdateAllowApp(ctx, id, &pub, &prod, &sha, notePtr, uid)
+	if err != nil {
+		return nil, err
+	}
+	return ptrAllowApp(mapAllowApp(*row)), nil
+}
+
+func (s *DlpService) DeleteAllowApp(ctx context.Context, id int64) error {
+	return s.repo.DeleteAllowApp(ctx, id)
+}
+
+func pagePer(page, perPage int) (int, int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 30
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	return page, perPage, (page - 1) * perPage
 }
 
 // UpdateLockdownDraft saves draft lockdown settings (Publish is required to enforce).

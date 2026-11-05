@@ -215,7 +215,7 @@ Apply policy only where the installed browser exposes an enterprise policy locat
 
 **Done when**
 
-- [x] Source: lockdown on → Chrome/Edge `URLBlocklist=*` + `URLAllowlist` for platform/allow/bootstrap minus explicit block hosts; lockdown off clears allowlist.
+- [x] Source: lockdown + web deny = network + hosts only (no Chromium HKLM URL/DoH/Quic writes; legacy keys cleared). Publish→allow mid-session without browser restart.
 - [x] Source: other browsers unchanged (network deny only — documented in `TESTING.md` §H).
 - [x] `dotnet build` DlpService (0 warnings). Docs updated.
 - [ ] Lab: allowed host loads in Chrome and Edge under lockdown.
