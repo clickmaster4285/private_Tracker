@@ -28,6 +28,8 @@ internal static class DomainBlockEnforcer
     private const string EdgePolicyKey = @"SOFTWARE\Policies\Microsoft\Edge";
     private const string ChromeUrlBlockKey = ChromePolicyKey + @"\URLBlocklist";
     private const string EdgeUrlBlockKey = EdgePolicyKey + @"\URLBlocklist";
+    private const string ChromeUrlAllowKey = ChromePolicyKey + @"\URLAllowlist";
+    private const string EdgeUrlAllowKey = EdgePolicyKey + @"\URLAllowlist";
 
     /// <summary>How long resolved A/AAAA stay cached before a background refresh.</summary>
     private static readonly TimeSpan IpCacheTtl = TimeSpan.FromMinutes(20);
@@ -83,7 +85,13 @@ internal static class DomainBlockEnforcer
         }
     }
 
-    public static Result Apply(IReadOnlyList<string> domains)
+    /// <param name="domains">Explicit deny-list hosts (web_navigate / shadowDeny).</param>
+    /// <param name="lockdownAllowHosts">
+    /// When non-null, lockdown is on: Chrome/Edge get <c>URLBlocklist=*</c> plus deny patterns
+    /// and <c>URLAllowlist</c> for these hosts (already minus explicit blocks). Null clears
+    /// URLAllowlist and keeps today's deny-list-only browser policy.
+    /// </param>
+    public static Result Apply(IReadOnlyList<string> domains, IReadOnlyList<string>? lockdownAllowHosts = null)
     {
         if (OperatingSystem.IsLinux())
             return ApplyLinux(domains);
@@ -121,7 +129,7 @@ internal static class DomainBlockEnforcer
             return new Result(false, desired.Count, 0, fwResult.Detail);
         }
 
-        var browserResult = ApplyBrowserPolicies(desired);
+        var browserResult = ApplyBrowserPolicies(desired, lockdownAllowHosts);
         var tcpKilled = 0;
         if (desired.Count > 0 && !fwResult.Detail.StartsWith("access_denied", StringComparison.Ordinal))
             tcpKilled = KillEstablishedTcp(desired);
@@ -190,13 +198,27 @@ internal static class DomainBlockEnforcer
         return new Result(changed, desired.Count, desired.Count, detail);
     }
 
-    public static Result Clear() => Apply(Array.Empty<string>());
+    /// <summary>Teardown clear: web-block artifacts AND any AlphaAI-DLP-LOCK-* lockdown rules.</summary>
+    public static Result Clear()
+    {
+        var lockClear = LockdownNetworkEnforcer.Clear();
+        var web = Apply(Array.Empty<string>());
+        return new Result(
+            web.Changed || lockClear.Changed,
+            web.DesiredCount,
+            web.AppliedCount,
+            $"{web.Detail}; lockdown={lockClear.Detail}");
+    }
 
     /// <summary>
-    /// True when hosts / owned firewall / Chrome·Edge URLBlocklist still show AlphaAI web-block
+    /// True when hosts / owned firewall / Chrome·Edge URL policies still show AlphaAI web-block
     /// artifacts after policy wants zero domains. Used by EnforceWorker to self-heal stale blocks.
     /// </summary>
-    public static bool HasLeftoverOsArtifacts()
+    /// <param name="ignoreBrowserPolicies">
+    /// When true (lockdown on), skip Chrome/Edge registry probes — lockdown intentionally leaves
+    /// URLBlocklist=* and URLAllowlist in place even with an empty deny-list domain set.
+    /// </param>
+    public static bool HasLeftoverOsArtifacts(bool ignoreBrowserPolicies = false)
     {
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
             return false;
@@ -229,14 +251,25 @@ internal static class DomainBlockEnforcer
             /* netsh failed */
         }
 
+        if (ignoreBrowserPolicies)
+            return false;
+
         try
         {
             using (var chrome = Registry.LocalMachine.OpenSubKey(ChromeUrlBlockKey))
             {
                 if (chrome is not null) return true;
             }
-            using var edge = Registry.LocalMachine.OpenSubKey(EdgeUrlBlockKey);
-            if (edge is not null) return true;
+            using (var edge = Registry.LocalMachine.OpenSubKey(EdgeUrlBlockKey))
+            {
+                if (edge is not null) return true;
+            }
+            using (var chromeAllow = Registry.LocalMachine.OpenSubKey(ChromeUrlAllowKey))
+            {
+                if (chromeAllow is not null) return true;
+            }
+            using var edgeAllow = Registry.LocalMachine.OpenSubKey(EdgeUrlAllowKey);
+            if (edgeAllow is not null) return true;
         }
         catch
         {
@@ -250,9 +283,14 @@ internal static class DomainBlockEnforcer
     /// Reconcile check: OS hosts + apex FW match <paramref name="domains"/>.
     /// Empty desired ⇒ no AlphaAI artifacts (including PIN-*). Non-empty ⇒ hosts set equal
     /// and no orphan apex rules (PIN-* allowed — pin worker re-learns under current gen).
+    /// When <paramref name="lockdownAllowHosts"/> is non-null, browser policy leftovers are
+    /// expected (URLAllowlist / URLBlocklist=*) and are not treated as drift.
     /// </summary>
-    public static bool OsStateMatchesDesired(IReadOnlyList<string> domains)
+    public static bool OsStateMatchesDesired(
+        IReadOnlyList<string> domains,
+        IReadOnlyList<string>? lockdownAllowHosts = null)
     {
+        var lockdownOn = lockdownAllowHosts is not null;
         if (OperatingSystem.IsLinux())
         {
             var desiredLinux = domains
@@ -260,7 +298,7 @@ internal static class DomainBlockEnforcer
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (desiredLinux.Count == 0)
-                return !HasLeftoverOsArtifacts();
+                return !HasLeftoverOsArtifacts(ignoreBrowserPolicies: lockdownOn);
             return ReadHostsBlockedDomains().SetEquals(desiredLinux);
         }
 
@@ -273,7 +311,7 @@ internal static class DomainBlockEnforcer
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         if (desired.Count == 0)
-            return !HasLeftoverOsArtifacts();
+            return !HasLeftoverOsArtifacts(ignoreBrowserPolicies: lockdownOn);
 
         var hostsDomains = ReadHostsBlockedDomains();
         if (!hostsDomains.SetEquals(desired))
@@ -911,7 +949,9 @@ internal static class DomainBlockEnforcer
         foreach (Match m in Regex.Matches(output, @"^Rule Name:\s*(.+)\s*$", RegexOptions.Multiline))
         {
             var name = m.Groups[1].Value.Trim();
-            if (name.StartsWith(FirewallRulePrefix, StringComparison.OrdinalIgnoreCase))
+            // AlphaAI-DLP-LOCK-* belongs to LockdownNetworkEnforcer — never diff/delete it here.
+            if (name.StartsWith(FirewallRulePrefix, StringComparison.OrdinalIgnoreCase) &&
+                !name.StartsWith(LockdownNetworkEnforcer.RulePrefix, StringComparison.OrdinalIgnoreCase))
                 list.Add(name);
         }
         _ownedRuleCache = list;
@@ -919,7 +959,7 @@ internal static class DomainBlockEnforcer
         return list;
     }
 
-    private static (bool Ok, string Output) RunNetsh(string args)
+    internal static (bool Ok, string Output) RunNetsh(string args)
     {
         try
         {
@@ -981,39 +1021,65 @@ internal static class DomainBlockEnforcer
     }
 
     /// <summary>
-    /// Chrome/Edge machine policies while web block is active:
-    /// DoH off, QuicAllowed=0, URLBlocklist wildcards for each apex (covers *.googlevideo.com).
-    /// URLBlocklist is what stops mid-watch YouTube — hosts cannot wildcard CDN subdomains.
+    /// Chrome/Edge machine policies (HKLM Policies\Google\Chrome and Policies\Microsoft\Edge).
+    /// Deny-list only: DoH off, QuicAllowed=0, URLBlocklist wildcards per apex.
+    /// Lockdown (<paramref name="lockdownAllowHosts"/> non-null): URLBlocklist starts with
+    /// <c>*</c> (default-deny address bar) + deny patterns; URLAllowlist = allow hosts.
+    /// Chrome/Edge: Allowlist takes precedence over Blocklist for a matching URL — so hosts
+    /// that must stay blocked are subtracted from the allow set by the caller. Other browsers
+    /// have no enterprise allow API here; network lockdown (P1) still denies them.
     /// </summary>
-    private static Result ApplyBrowserPolicies(IReadOnlyList<string> domains)
+    private static Result ApplyBrowserPolicies(
+        IReadOnlyList<string> blockDomains,
+        IReadOnlyList<string>? lockdownAllowHosts)
     {
         try
         {
             var changed = false;
-            if (domains.Count == 0)
+            var lockdown = lockdownAllowHosts is not null;
+
+            if (!lockdown && blockDomains.Count == 0)
             {
-                changed |= ClearBrowserPolicies(ChromePolicyKey, ChromeUrlBlockKey);
-                changed |= ClearBrowserPolicies(EdgePolicyKey, EdgeUrlBlockKey);
+                changed |= ClearBrowserPolicies(ChromePolicyKey, ChromeUrlBlockKey, ChromeUrlAllowKey);
+                changed |= ClearBrowserPolicies(EdgePolicyKey, EdgeUrlBlockKey, EdgeUrlAllowKey);
                 return new Result(changed, 0, 0, changed ? "browser_cleared" : "browser_absent");
             }
 
-            var patterns = BuildUrlBlockPatterns(domains);
             changed |= SetDohMode(ChromePolicyKey, "off");
             changed |= SetDohMode(EdgePolicyKey, "off");
             changed |= SetQuicAllowed(ChromePolicyKey, allowed: false);
             changed |= SetQuicAllowed(EdgePolicyKey, allowed: false);
-            changed |= SetUrlBlocklist(ChromeUrlBlockKey, patterns);
-            changed |= SetUrlBlocklist(EdgeUrlBlockKey, patterns);
-            return new Result(changed, domains.Count, patterns.Count,
-                $"urlblock={patterns.Count}; doh=off; quic=off");
+
+            List<string> blockPatterns;
+            if (lockdown)
+            {
+                // Default-deny address bar; explicit deny apexes still listed for clarity.
+                blockPatterns = new List<string> { "*" };
+                blockPatterns.AddRange(BuildUrlBlockPatterns(blockDomains));
+                var allowPatterns = BuildUrlAllowPatterns(lockdownAllowHosts!);
+                changed |= SetUrlList(ChromeUrlAllowKey, allowPatterns);
+                changed |= SetUrlList(EdgeUrlAllowKey, allowPatterns);
+                changed |= SetUrlList(ChromeUrlBlockKey, blockPatterns);
+                changed |= SetUrlList(EdgeUrlBlockKey, blockPatterns);
+                return new Result(changed, blockDomains.Count, blockPatterns.Count,
+                    $"lockdown=1; urlallow={allowPatterns.Count}; urlblock={blockPatterns.Count}; doh=off; quic=off");
+            }
+
+            changed |= ClearUrlList(ChromeUrlAllowKey);
+            changed |= ClearUrlList(EdgeUrlAllowKey);
+            blockPatterns = BuildUrlBlockPatterns(blockDomains);
+            changed |= SetUrlList(ChromeUrlBlockKey, blockPatterns);
+            changed |= SetUrlList(EdgeUrlBlockKey, blockPatterns);
+            return new Result(changed, blockDomains.Count, blockPatterns.Count,
+                $"urlblock={blockPatterns.Count}; urlallow=cleared; doh=off; quic=off");
         }
         catch (Exception ex) when (IsAccessDenied(ex))
         {
-            return new Result(false, domains.Count, 0, "access_denied_need_admin");
+            return new Result(false, blockDomains.Count, 0, "access_denied_need_admin");
         }
         catch (Exception ex)
         {
-            return new Result(false, domains.Count, 0, "browser_error:" + ex.Message);
+            return new Result(false, blockDomains.Count, 0, "browser_error:" + ex.Message);
         }
     }
 
@@ -1042,16 +1108,80 @@ internal static class DomainBlockEnforcer
         return patterns;
     }
 
-    private static bool SetUrlBlocklist(string keyPath, IReadOnlyList<string> patterns)
+    /// <summary>
+    /// Allowlist patterns for lockdown. Chrome/Edge match these before URLBlocklist=* .
+    /// </summary>
+    private static List<string> BuildUrlAllowPatterns(IReadOnlyList<string> hosts)
+    {
+        var apexes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var raw in hosts)
+        {
+            foreach (var n in PolicyBundleParser.NormalizeDomain(raw))
+            {
+                var d = n.Trim().ToLowerInvariant();
+                if (d.StartsWith("www.", StringComparison.Ordinal)) d = d[4..];
+                if (d.StartsWith("m.", StringComparison.Ordinal)) d = d[2..];
+                if (string.IsNullOrWhiteSpace(d))
+                    continue;
+                // IP literals: allow by host form only.
+                if (System.Net.IPAddress.TryParse(d, out _))
+                {
+                    apexes.Add(d);
+                    continue;
+                }
+                if (!d.Contains('.'))
+                    continue;
+                apexes.Add(d);
+            }
+        }
+
+        var patterns = new List<string>();
+        foreach (var a in apexes.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            if (System.Net.IPAddress.TryParse(a, out _))
+            {
+                patterns.Add(a);
+                patterns.Add($"*://{a}/*");
+                patterns.Add($"https://{a}/*");
+                patterns.Add($"http://{a}/*");
+                continue;
+            }
+            patterns.Add(a);
+            patterns.Add($"*.{a}");
+            patterns.Add($"*://{a}/*");
+            patterns.Add($"*://*.{a}/*");
+            patterns.Add($"https://{a}/*");
+            patterns.Add($"https://*.{a}/*");
+            patterns.Add($"http://{a}/*");
+            patterns.Add($"http://*.{a}/*");
+        }
+        return patterns;
+    }
+
+    private static bool SetUrlList(string keyPath, IReadOnlyList<string> patterns)
     {
         // Replace whole list so removals stick (Chrome reads numbered REG_SZ values).
         try { Registry.LocalMachine.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false); }
         catch { /* ignore */ }
 
+        if (patterns.Count == 0)
+            return true;
+
         using var key = Registry.LocalMachine.CreateSubKey(keyPath, writable: true);
         if (key is null) return false;
         for (var i = 0; i < patterns.Count; i++)
             key.SetValue((i + 1).ToString(), patterns[i], RegistryValueKind.String);
+        return true;
+    }
+
+    private static bool ClearUrlList(string keyPath)
+    {
+        using var existing = Registry.LocalMachine.OpenSubKey(keyPath, writable: false);
+        if (existing is null) return false;
+        Registry.LocalMachine.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false);
+        using var still = Registry.LocalMachine.OpenSubKey(keyPath, writable: false);
+        if (still is not null)
+            throw new InvalidOperationException("urllist_clear_failed:" + keyPath);
         return true;
     }
 
@@ -1068,24 +1198,14 @@ internal static class DomainBlockEnforcer
     }
 
     /// <summary>
-    /// Removes URLBlocklist + DoH/Quic keys we wrote. Failures must throw (no silent catch)
-    /// so Apply → EnforceWorker refuse to fingerprint-advance and retry next tick.
+    /// Removes URLBlocklist + URLAllowlist + DoH/Quic keys we wrote. Failures must throw
+    /// (no silent catch) so Apply → EnforceWorker refuse to fingerprint-advance and retry.
     /// </summary>
-    private static bool ClearBrowserPolicies(string policyKey, string urlBlockKey)
+    private static bool ClearBrowserPolicies(string policyKey, string urlBlockKey, string urlAllowKey)
     {
         var changed = false;
-
-        using (var existing = Registry.LocalMachine.OpenSubKey(urlBlockKey, writable: false))
-        {
-            if (existing is not null)
-            {
-                Registry.LocalMachine.DeleteSubKeyTree(urlBlockKey, throwOnMissingSubKey: false);
-                using var still = Registry.LocalMachine.OpenSubKey(urlBlockKey, writable: false);
-                if (still is not null)
-                    throw new InvalidOperationException("urlblocklist_clear_failed:" + urlBlockKey);
-                changed = true;
-            }
-        }
+        changed |= ClearUrlList(urlBlockKey);
+        changed |= ClearUrlList(urlAllowKey);
 
         using var key = Registry.LocalMachine.OpenSubKey(policyKey, writable: true);
         if (key is null) return changed;
@@ -1150,6 +1270,9 @@ internal static class DomainBlockEnforcer
     {
         var lower = domain.Trim().ToLowerInvariant();
         var s = Regex.Replace(lower, @"[^a-zA-Z0-9.\-_]", "_");
+        // Avoid colliding with the AlphaAI-DLP-LOCK-* lockdown namespace.
+        if (s.StartsWith("lock-", StringComparison.OrdinalIgnoreCase))
+            s = "d_" + s;
         if (s.Length <= 40)
             return s;
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(lower)))[..8]

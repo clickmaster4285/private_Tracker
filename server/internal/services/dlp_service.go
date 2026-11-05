@@ -29,6 +29,8 @@ var allowedAlertStatuses = map[string]bool{
 
 type DlpService struct {
 	repo              *repository.DlpRepo
+	deviceRepo        *repository.DeviceRepo // optional; pause unlock on policy pull
+	platformHosts     []string
 	removalCodeTTLMin int
 }
 
@@ -37,6 +39,35 @@ func NewDlpService(repo *repository.DlpRepo, removalCodeTTLMin int) *DlpService 
 		removalCodeTTLMin = 60
 	}
 	return &DlpService{repo: repo, removalCodeTTLMin: removalCodeTTLMin}
+}
+
+// WithPlatformAllow attaches the compiled platform host list (snapshotted on Publish).
+func (s *DlpService) WithPlatformAllow(hosts []string) *DlpService {
+	s.platformHosts = cleanStringsCopy(hosts)
+	return s
+}
+
+// WithDeviceRepo enables machine-scoped lockdown pause on policy pull / admin pause.
+func (s *DlpService) WithDeviceRepo(devices *repository.DeviceRepo) *DlpService {
+	s.deviceRepo = devices
+	return s
+}
+
+func cleanStringsCopy(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, v := range values {
+		v = NormalizeDomain(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 // ── Rules ───────────────────────────────────────────────────────────────────
@@ -331,7 +362,7 @@ func validateWebBlockerRule(rule models.WebBlockerRule) error {
 	return nil
 }
 
-// Publish compiles enabled rules + shadow deny into an immutable policy version.
+// Publish compiles enabled rules + shadow deny + lockdown draft into an immutable policy version.
 func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.PublishDlpPolicyResponse, error) {
 	rules, err := s.repo.ListEnabledRules(ctx)
 	if err != nil {
@@ -345,11 +376,23 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	if err != nil {
 		return nil, err
 	}
+	lockdown, allowHosts, err := s.repo.GetLockdownDraft(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if lockdown && len(allowHosts) > repository.MaxLockdownAllowHosts {
+		return nil, fmt.Errorf("allow hosts cap exceeded: %d > %d", len(allowHosts), repository.MaxLockdownAllowHosts)
+	}
+	platformHosts := s.platformHosts
+	if !lockdown {
+		platformHosts = nil
+		allowHosts = nil
+	}
 	ver, err := s.repo.InsertPolicyVersion(ctx, "pending", publishedBy)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains); err != nil {
+	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts); err != nil {
 		return nil, err
 	}
 	final, err := s.repo.AssembleBundleJSON(ctx, ver.Version)
@@ -370,12 +413,90 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	}, nil
 }
 
+// GetLockdownDraft returns the editable lockdown settings + compiled platform hosts.
+func (s *DlpService) GetLockdownDraft(ctx context.Context) (*dto.LockdownDraftResponse, error) {
+	lockdown, hosts, err := s.repo.GetLockdownDraft(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if hosts == nil {
+		hosts = []string{}
+	}
+	platform := s.platformHosts
+	if platform == nil {
+		platform = []string{}
+	}
+	return &dto.LockdownDraftResponse{
+		Lockdown:      lockdown,
+		AllowHosts:    hosts,
+		PlatformAllow: platform,
+		MaxAllowHosts: repository.MaxLockdownAllowHosts,
+	}, nil
+}
+
+// UpdateLockdownDraft saves draft lockdown settings (Publish is required to enforce).
+func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLockdownDraftRequest) (*dto.LockdownDraftResponse, error) {
+	lockdown, hosts, err := s.repo.GetLockdownDraft(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Lockdown != nil {
+		lockdown = *req.Lockdown
+	}
+	if req.AllowHosts != nil {
+		normalized := make([]string, 0, len(*req.AllowHosts))
+		for _, h := range *req.AllowHosts {
+			if n := NormalizeDomain(h); n != "" {
+				normalized = append(normalized, n)
+			}
+		}
+		hosts = normalized
+	}
+	if len(hosts) > repository.MaxLockdownAllowHosts {
+		return nil, fmt.Errorf("allow hosts cap exceeded: %d > %d", len(hosts), repository.MaxLockdownAllowHosts)
+	}
+	if err := s.repo.ReplaceLockdownDraft(ctx, lockdown, hosts); err != nil {
+		return nil, err
+	}
+	return s.GetLockdownDraft(ctx)
+}
+
+const maxLockdownPauseMinutes = 240
+
+// PauseLockdown sets a machine-scoped maintenance unlock (max 4 hours).
+func (s *DlpService) PauseLockdown(ctx context.Context, employeeCode, machineID string, minutes int) (*dto.PauseLockdownResponse, error) {
+	if s.deviceRepo == nil {
+		return nil, fmt.Errorf("device repo not configured")
+	}
+	if employeeCode == "" || machineID == "" {
+		return nil, fmt.Errorf("employee and machine are required")
+	}
+	if minutes <= 0 {
+		minutes = 60
+	}
+	if minutes > maxLockdownPauseMinutes {
+		minutes = maxLockdownPauseMinutes
+	}
+	until := time.Now().UTC().Add(time.Duration(minutes) * time.Minute)
+	if err := s.deviceRepo.SetLockdownPausedUntil(ctx, employeeCode, machineID, until); err != nil {
+		return nil, err
+	}
+	return &dto.PauseLockdownResponse{MachineID: machineID, LockdownPausedUntil: until}, nil
+}
+
 // ── Device policy ───────────────────────────────────────────────────────────
 
-func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64) (*dto.DlpPolicyPullResponse, error) {
+func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employeeID, machineID string) (*dto.DlpPolicyPullResponse, error) {
 	latest, err := s.repo.LatestPolicyVersion(ctx)
 	if err != nil {
 		return nil, err
+	}
+	var pauseUntil *time.Time
+	if s.deviceRepo != nil && employeeID != "" && machineID != "" {
+		pauseUntil, err = s.deviceRepo.GetLockdownPausedUntil(ctx, employeeID, machineID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if latest == nil {
 		empty, _ := json.Marshal(map[string]any{
@@ -384,10 +505,11 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64) (*dto.D
 			"shadowDeny":    map[string]any{"domains": []string{}, "publishers": []string{}, "appNames": []string{}},
 		})
 		return &dto.DlpPolicyPullResponse{
-			PolicyVersion: 0,
-			Hash:          "",
-			Bundle:        empty,
-			Unchanged:     sinceVersion == 0,
+			PolicyVersion:       0,
+			Hash:                "",
+			Bundle:              empty,
+			Unchanged:           sinceVersion == 0,
+			LockdownPausedUntil: pauseUntil,
 		}, nil
 	}
 	pub := latest.PublishedAt
@@ -397,18 +519,20 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64) (*dto.D
 	}
 	if sinceVersion > 0 && sinceVersion >= latest.Version {
 		return &dto.DlpPolicyPullResponse{
-			PolicyVersion: latest.Version,
-			Hash:          latest.BundleHash,
-			PublishedAt:   &pub,
-			Bundle:        bundle,
-			Unchanged:     true,
+			PolicyVersion:       latest.Version,
+			Hash:                latest.BundleHash,
+			PublishedAt:         &pub,
+			Bundle:              bundle,
+			Unchanged:           true,
+			LockdownPausedUntil: pauseUntil,
 		}, nil
 	}
 	return &dto.DlpPolicyPullResponse{
-		PolicyVersion: latest.Version,
-		Hash:          latest.BundleHash,
-		PublishedAt:   &pub,
-		Bundle:        bundle,
+		PolicyVersion:       latest.Version,
+		Hash:                latest.BundleHash,
+		PublishedAt:         &pub,
+		Bundle:              bundle,
+		LockdownPausedUntil: pauseUntil,
 	}, nil
 }
 

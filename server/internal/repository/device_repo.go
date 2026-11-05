@@ -167,6 +167,47 @@ func (r *DeviceRepo) ListEmployeeMachines(ctx context.Context, employeeID string
 	return ListEmployeeMachines(ctx, r.pool, employeeID)
 }
 
+// SetLockdownPausedUntil stamps a maintenance unlock deadline on one machine.
+func (r *DeviceRepo) SetLockdownPausedUntil(ctx context.Context, employeeID, machineID string, until time.Time) error {
+	if employeeID == "" || machineID == "" || until.IsZero() {
+		return fmt.Errorf("employee, machine, and until are required")
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE employee_machines
+		SET lockdown_paused_until = $3, updated_at = NOW()
+		WHERE employee_id = $1 AND machine_id = $2`,
+		employeeID, machineID, until.UTC())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("machine not found")
+	}
+	return nil
+}
+
+// GetLockdownPausedUntil returns the pause deadline when it is still in the future.
+func (r *DeviceRepo) GetLockdownPausedUntil(ctx context.Context, employeeID, machineID string) (*time.Time, error) {
+	if employeeID == "" || machineID == "" {
+		return nil, nil
+	}
+	var until *time.Time
+	err := r.pool.QueryRow(ctx, `
+		SELECT lockdown_paused_until
+		FROM employee_machines
+		WHERE employee_id = $1 AND machine_id = $2
+		  AND lockdown_paused_until IS NOT NULL
+		  AND lockdown_paused_until > NOW()`,
+		employeeID, machineID).Scan(&until)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return until, nil
+}
+
 // ── shared pool-level helpers (used by DeviceRepo, NewSchemaRepo and the services) ──
 
 // UpsertEmployeeMachineActive is the pool-level implementation behind the repo methods.

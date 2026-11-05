@@ -3,6 +3,25 @@
 > **Last audited:** 2026-11-05
 > **Changelog:**
 >
+> - 2026-11-05: **P2 Chrome/Edge URLAllowlist (DlpService).** Under published
+>   `lockdown: true`, `DomainBlockEnforcer` sets Chrome/Edge `URLBlocklist=*` and
+>   `URLAllowlist` for platformAllow + allow.hosts + API bootstrap, minus explicit
+>   web-block hosts. Lockdown off clears `URLAllowlist`. Other browsers: network deny
+>   only. Verified: `dotnet build` DlpService (0 warnings). Installer-Parity: next
+>   Windows installer. Lab: `TESTING.md` §H.
+>
+> - 2026-11-05: **P1 Windows network lockdown (server + DlpService + web).** Migration
+>   **059** adds lockdown draft tables, immutable publish snapshot hosts, and
+>   `employee_machines.lockdown_paused_until`. Publish snapshots `lockdown` /
+>   `platformAllow` / `allow.hosts` into the existing policy version (absent =
+>   today's deny-list). JWT `GET|PUT /dlp/lockdown`, `POST .../lockdown-pause`;
+>   DeviceAuth `GET /dlp/policy` returns `lockdownPausedUntil`. Web: Lockdown card
+>   on `/web-blocker` + Employees "Pause lockdown…". Service: `LockdownNetworkEnforcer`
+>   (AdvFirewall complement deny on outbound 80/443; bootstrap + allow IPs carved out).
+>   Missing `lockdown` keeps deny-list path. Teardown / `ALPHA_DLP_ENABLED=false` clears
+>   `AlphaAI-DLP-LOCK-*`. Verified: `go build`, `dotnet build` DlpService (0 warnings),
+>   `npx tsc --noEmit`. Installer-Parity: next Windows installer. Lab: `TESTING.md` §H.
+>
 > - 2026-11-05: **Tracking mode deleted (server + client + web).** Fixed/Roaming Start/Stop
 >   is gone. Migration **058** drops `device_tracking_*` / `device_control_meta` /
 >   `device_policy_audit` and the control columns on `employee_machines`. Routes
@@ -13,8 +32,7 @@
 >   Configuration, Set tracking mode, and mode badges. RBAC seeder deletes
 >   `configuration/device-configuration`. Collectors always run while logged in.
 >   Verified: `go build` / `go vet`, `dotnet build` client + DlpService (0 warnings),
->   `npx tsc --noEmit`. Ships in the next installer (Installer-Parity). Next in `plan.md`:
->   P1 Windows network default-deny.
+>   `npx tsc --noEmit`. Ships in the next installer (Installer-Parity).
 >
 > - 2026-11-05: **Terms & Conditions removed (server + client + web).** Settings page,
 >   client `--terms` window, `terms_consent` / `terms_content`, and the live-stream

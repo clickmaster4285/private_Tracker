@@ -9,6 +9,11 @@ internal sealed class PolicyBundle
     public long PolicyVersion { get; init; }
     public IReadOnlyList<PolicyRule> Rules { get; init; } = Array.Empty<PolicyRule>();
     public IReadOnlyList<string> ShadowDenyDomains { get; init; } = Array.Empty<string>();
+
+    /// <summary>P1 default-deny web: only platform + allow hosts (+ bootstrap) reachable on 80/443.</summary>
+    public bool Lockdown { get; init; }
+    public IReadOnlyList<string> PlatformAllowHosts { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> AllowHosts { get; init; } = Array.Empty<string>();
 }
 
 internal sealed class PolicyRule
@@ -78,11 +83,23 @@ internal static class PolicyBundleParser
             shadowDomains = ReadStringArrayElement(sdd).ToArray();
         }
 
+        // Missing / non-true lockdown = false (deny-list path only).
+        var lockdown = root.TryGetProperty("lockdown", out var ld) && ld.ValueKind == JsonValueKind.True;
+        var platformHosts = root.TryGetProperty("platformAllow", out var pa)
+            ? ReadStringArray(pa, "hosts")
+            : Array.Empty<string>();
+        var allowHosts = root.TryGetProperty("allow", out var al2)
+            ? ReadStringArray(al2, "hosts")
+            : Array.Empty<string>();
+
         return new PolicyBundle
         {
             PolicyVersion = version,
             Rules = rules,
             ShadowDenyDomains = shadowDomains,
+            Lockdown = lockdown,
+            PlatformAllowHosts = platformHosts,
+            AllowHosts = allowHosts,
         };
     }
 

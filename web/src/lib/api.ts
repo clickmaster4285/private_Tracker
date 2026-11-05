@@ -364,6 +364,13 @@ export const employeesApi = {
   removeDevice: (id: string) =>
     request<RemoveEmployeeDeviceResponse>('/employees/' + id + '/devices/remove', { method: 'POST' }),
 
+  // Temporarily pause DLP lockdown on one machine (default server-side duration when omitted).
+  pauseLockdown: (employeeUuid: string, machineId: string, minutes?: number) =>
+    request<PauseLockdownResponse>(
+      '/employees/' + employeeUuid + '/machines/' + encodeURIComponent(machineId) + '/lockdown-pause',
+      { method: 'POST', body: minutes != null ? { minutes } : {} },
+    ),
+
   create: (data: CreateEmployeePayload) =>
     request<Employee>('/employees', { method: 'POST', body: data }),
 
@@ -503,6 +510,12 @@ export interface EmployeeDevice {
   lastTrackAt: string;
   /** Set when an admin removed this device and the client still owes a local wipe. */
   wipeRequestedAt?: string | null;
+}
+
+/** Result of POST /employees/:id/machines/:machineId/lockdown-pause. */
+export interface PauseLockdownResponse {
+  machineId: string;
+  lockdownPausedUntil: string;
 }
 
 /** Result of POST /employees/:id/devices/remove ("Remove current device"). */
@@ -1779,7 +1792,21 @@ export interface IssueRemovalCodeResponse {
   machineId: string;
 }
 
+/** Draft web-lockdown policy (GET/PUT /dlp/lockdown). Enforced only after Publish. */
+export interface DlpLockdownConfig {
+  lockdown: boolean;
+  allowHosts: string[];
+  platformAllow: string[];
+  maxAllowHosts: number;
+}
+
 export const dlpApi = {
+  lockdown: {
+    get: () => request<DlpLockdownConfig>('/dlp/lockdown'),
+    update: (data: { lockdown?: boolean; allowHosts?: string[] }) =>
+      request<DlpLockdownConfig>('/dlp/lockdown', { method: 'PUT', body: data }),
+  },
+
   issueRemovalCode: (data: {
     machineId: string;
     employeeId: string;

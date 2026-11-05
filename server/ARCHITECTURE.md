@@ -1,7 +1,10 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-05 (tracking mode removed)
+> **Last audited:** 2026-11-05 (P1 lockdown)
 > **Changelog:**
+> - 2026-11-05: **P1 lockdown contract.** Migration **059** draft + snapshot tables;
+>   `GET|PUT /dlp/lockdown`; Publish embeds `lockdown` / `platformAllow` / `allow`;
+>   `GET /dlp/policy` returns `lockdownPausedUntil`; `POST .../lockdown-pause` (max 4h).
 > - 2026-11-05: **Tracking mode deleted.** Migration **058** drops the 056 control plane.
 >   DeviceAuth `/devices/control` and `/devices/tracking-events`, JWT
 >   `PATCH .../tracking-mode` and `/device-configuration/*` are unregistered. Sync responses

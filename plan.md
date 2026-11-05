@@ -1,8 +1,8 @@
 # Always-on Windows tracker + default-deny lockdown
 
-> **Status:** Terms & Conditions (2026-11-05) and tracking-mode deletion / P0 (2026-11-05) are implemented. Windows lockdown (P1–P3) is still plan-only.
+> **Status:** Terms (057), tracking-mode P0 (058), network lockdown P1 (059), and Chrome/Edge URLAllowlist P2 are implemented in source. P3 app control remains plan-only.
 > **Written:** 2026-11-05
-> **Updated:** 2026-11-05 — P0 tracking mode deleted (migration 058). Next: P1 Windows network default-deny. Enforcement in this plan is Windows-only.
+> **Updated:** 2026-11-05 — P2 Chrome/Edge URLAllowlist (`*` block + allow hosts minus explicit denies). Next: P3 application allowlist (audit then enforce).
 > **Owns:** delete the tracking-mode feature from server, client, and web, a Windows default-deny allowlist (network, web, applications), and the Terms & Conditions feature.
 > **Does not own:** Linux or macOS enforcement, or moving collectors, login, browser reading, or live capture into `AlphaAITracker.Service`.
 
@@ -197,13 +197,15 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 
 **Done when**
 
-- [ ] Publish without `lockdown` does not change a lab PC that was open.
-- [ ] Publish `lockdown: true` and an empty `allow.hosts`: browser cannot open a public site; tracker sync, policy pull, and presence still work.
-- [ ] Adding one host and publishing makes only that host load.
-- [ ] An explicit block rule for that host wins over the allow.
-- [ ] Pause unlock restores general network until the timestamp, then relocks.
-- [ ] Protected uninstall removes the filters (`TESTING.md` §C extended).
-- [ ] 20-host flap lab (publish add/remove) leaves no orphan filter (same bar as `TESTING.md` §F.2).
+- [x] Source: Publish without `lockdown` omits lockdown envelope (legacy deny-list bundle shape).
+- [x] Source: `lockdown: true` + empty `allow.hosts` → service applies complement deny (bootstrap + platform only).
+- [x] Source: allow hosts + pause API + web UI + teardown clear path compiled.
+- [ ] Lab: Publish without lockdown does not change an open lab PC.
+- [ ] Lab: Publish `lockdown: true` + empty allow — browser blocked; tracker sync / policy / presence OK.
+- [ ] Lab: One allow host loads; explicit block rule still wins for that host.
+- [ ] Lab: Pause unlock then auto-relock; protected uninstall clears `AlphaAI-DLP-LOCK-*`.
+- [ ] Lab: 20-host flap leaves no orphan filter (`TESTING.md` §H).
+- [x] `go build`, `dotnet build` DlpService, `npx tsc --noEmit`. Docs + §H playbook.
 
 ### P2 — Browser allowlist
 
@@ -213,10 +215,13 @@ Apply policy only where the installed browser exposes an enterprise policy locat
 
 **Done when**
 
-- [ ] Allowed host loads in Chrome and Edge.
-- [ ] Any other host shows the organization block page, and the connection also fails if policy is slow (network deny).
-- [ ] Inactive / lockdown off clears `URLAllowlist` the same way `URLBlocklist` clears today (`TESTING.md` §F.1).
-- [ ] A second browser with no enterprise allow API still cannot load the site (network deny). Document it. Do not claim browser-UI blocking for it.
+- [x] Source: lockdown on → Chrome/Edge `URLBlocklist=*` + `URLAllowlist` for platform/allow/bootstrap minus explicit block hosts; lockdown off clears allowlist.
+- [x] Source: other browsers unchanged (network deny only — documented in `TESTING.md` §H).
+- [x] `dotnet build` DlpService (0 warnings). Docs updated.
+- [ ] Lab: allowed host loads in Chrome and Edge under lockdown.
+- [ ] Lab: other host shows org block page; connection also fails via P1 network deny.
+- [ ] Lab: lockdown off / teardown clears `URLAllowlist` (`TESTING.md` §F.1 / §H).
+- [ ] Lab: Firefox (or similar) still cannot load (network deny only — no address-bar claim).
 
 ### P3 — Application allowlist (audit, then enforce)
 

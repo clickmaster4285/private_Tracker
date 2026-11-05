@@ -22,12 +22,12 @@ type CreateDlpRuleRequest struct {
 }
 
 type UpdateDlpRuleRequest struct {
-	Name       *string  `json:"name,omitempty"`
-	Enabled    *bool    `json:"enabled,omitempty"`
-	Trigger    *string  `json:"trigger,omitempty"`
-	Action     *string  `json:"action,omitempty"`
-	Severity   *string  `json:"severity,omitempty"`
-	ScopeAll   *bool    `json:"scopeAll,omitempty"`
+	Name       *string   `json:"name,omitempty"`
+	Enabled    *bool     `json:"enabled,omitempty"`
+	Trigger    *string   `json:"trigger,omitempty"`
+	Action     *string   `json:"action,omitempty"`
+	Severity   *string   `json:"severity,omitempty"`
+	ScopeAll   *bool     `json:"scopeAll,omitempty"`
 	Extensions *[]string `json:"extensions,omitempty"`
 	Patterns   *[]string `json:"patterns,omitempty"`
 }
@@ -45,36 +45,36 @@ type DlpRuleRevisionListResponse struct {
 // ── Admin: Web Blocker ──────────────────────────────────────────────────────
 
 type CreateWebBlockerRuleRequest struct {
-	Name              string   `json:"name"`
-	Enabled           *bool    `json:"enabled,omitempty"`
-	Action            string   `json:"action"`
-	Severity          string   `json:"severity"`
-	ScopeAll          *bool    `json:"scopeAll,omitempty"`
-	Domains           []string `json:"domains"`
-	Paths             []string `json:"paths"`
-	ScheduleEnabled   bool     `json:"scheduleEnabled"`
-	ScheduleStart     string   `json:"scheduleStart"`
-	ScheduleEnd       string   `json:"scheduleEnd"`
-	ScheduleTimezone  string   `json:"scheduleTimezone"`
-	ScheduleDays      []string `json:"scheduleDays"`
+	Name             string   `json:"name"`
+	Enabled          *bool    `json:"enabled,omitempty"`
+	Action           string   `json:"action"`
+	Severity         string   `json:"severity"`
+	ScopeAll         *bool    `json:"scopeAll,omitempty"`
+	Domains          []string `json:"domains"`
+	Paths            []string `json:"paths"`
+	ScheduleEnabled  bool     `json:"scheduleEnabled"`
+	ScheduleStart    string   `json:"scheduleStart"`
+	ScheduleEnd      string   `json:"scheduleEnd"`
+	ScheduleTimezone string   `json:"scheduleTimezone"`
+	ScheduleDays     []string `json:"scheduleDays"`
 	// ExpandRelated merges www./m. + curated CDN/alternate-apex packs into Domains.
 	ExpandRelated bool `json:"expandRelated,omitempty"`
 }
 
 type UpdateWebBlockerRuleRequest struct {
-	Name              *string   `json:"name,omitempty"`
-	Enabled           *bool     `json:"enabled,omitempty"`
-	Action            *string   `json:"action,omitempty"`
-	Severity          *string   `json:"severity,omitempty"`
-	ScopeAll          *bool     `json:"scopeAll,omitempty"`
-	Domains           *[]string `json:"domains,omitempty"`
-	Paths             *[]string `json:"paths,omitempty"`
-	ScheduleEnabled   *bool     `json:"scheduleEnabled,omitempty"`
-	ScheduleStart     *string   `json:"scheduleStart,omitempty"`
-	ScheduleEnd       *string   `json:"scheduleEnd,omitempty"`
-	ScheduleTimezone  *string   `json:"scheduleTimezone,omitempty"`
-	ScheduleDays      *[]string `json:"scheduleDays,omitempty"`
-	ExpandRelated     *bool     `json:"expandRelated,omitempty"`
+	Name             *string   `json:"name,omitempty"`
+	Enabled          *bool     `json:"enabled,omitempty"`
+	Action           *string   `json:"action,omitempty"`
+	Severity         *string   `json:"severity,omitempty"`
+	ScopeAll         *bool     `json:"scopeAll,omitempty"`
+	Domains          *[]string `json:"domains,omitempty"`
+	Paths            *[]string `json:"paths,omitempty"`
+	ScheduleEnabled  *bool     `json:"scheduleEnabled,omitempty"`
+	ScheduleStart    *string   `json:"scheduleStart,omitempty"`
+	ScheduleEnd      *string   `json:"scheduleEnd,omitempty"`
+	ScheduleTimezone *string   `json:"scheduleTimezone,omitempty"`
+	ScheduleDays     *[]string `json:"scheduleDays,omitempty"`
+	ExpandRelated    *bool     `json:"expandRelated,omitempty"`
 }
 
 type WebBlockerRuleListResponse struct {
@@ -103,6 +103,30 @@ type PublishDlpPolicyResponse struct {
 	RuleCount     int       `json:"ruleCount"`
 }
 
+// ── Admin: Lockdown draft ───────────────────────────────────────────────────
+
+type LockdownDraftResponse struct {
+	Lockdown      bool     `json:"lockdown"`
+	AllowHosts    []string `json:"allowHosts"`
+	PlatformAllow []string `json:"platformAllow"` // compiled from server env (read-only)
+	MaxAllowHosts int      `json:"maxAllowHosts"`
+}
+
+type UpdateLockdownDraftRequest struct {
+	Lockdown   *bool     `json:"lockdown,omitempty"`
+	AllowHosts *[]string `json:"allowHosts,omitempty"`
+}
+
+type PauseLockdownRequest struct {
+	// Minutes until lockdown resumes. Cap 240 (4h). Default 60 when omitted/zero.
+	Minutes int `json:"minutes,omitempty"`
+}
+
+type PauseLockdownResponse struct {
+	MachineID           string    `json:"machineId"`
+	LockdownPausedUntil time.Time `json:"lockdownPausedUntil"`
+}
+
 // ── Device: Policy pull (wire bundle still JSON — assembled from relational rows) ─
 
 type DlpPolicyPullResponse struct {
@@ -111,6 +135,8 @@ type DlpPolicyPullResponse struct {
 	PublishedAt   *time.Time      `json:"publishedAt,omitempty"`
 	Bundle        json.RawMessage `json:"bundle"`
 	Unchanged     bool            `json:"unchanged,omitempty"`
+	// LockdownPausedUntil is machine-scoped maintenance unlock. Omitted when not paused.
+	LockdownPausedUntil *time.Time `json:"lockdownPausedUntil,omitempty"`
 }
 
 // ── Device: Alert sync ──────────────────────────────────────────────────────
@@ -262,15 +288,15 @@ type DlpAlertHistoryResponse struct {
 }
 
 type DlpAlertListResponse struct {
-	Alerts         []any    `json:"alerts"`
-	Total          int      `json:"total"`
-	Page           int      `json:"page"`
-	PerPage        int      `json:"perPage"`
-	Open           int      `json:"open"`
-	Investigating  int      `json:"investigating"`
-	Resolved       int      `json:"resolved"`
-	FalsePositive  int      `json:"falsePositive"`
-	Types          []string `json:"types"`
+	Alerts        []any    `json:"alerts"`
+	Total         int      `json:"total"`
+	Page          int      `json:"page"`
+	PerPage       int      `json:"perPage"`
+	Open          int      `json:"open"`
+	Investigating int      `json:"investigating"`
+	Resolved      int      `json:"resolved"`
+	FalsePositive int      `json:"falsePositive"`
+	Types         []string `json:"types"`
 }
 
 // ── Shadow IT ───────────────────────────────────────────────────────────────

@@ -1,7 +1,14 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-05 (tracking mode removed)
+> **Last audited:** 2026-11-05 (P2 URLAllowlist)
 > **Changelog:**
+> - 2026-11-05: **P2 Chrome/Edge URLAllowlist.** Lockdown on → `URLBlocklist=*` +
+>   `URLAllowlist` for allow hosts (minus explicit denies) under the same HKLM policy
+>   keys already used for deny-list. Lockdown off clears allowlist.
+> - 2026-11-05: **P1 network lockdown.** `LockdownNetworkEnforcer` applies AdvFirewall
+>   complement deny on outbound TCP/UDP 80/443 when the published bundle has
+>   `lockdown: true`. Bootstrap = `ALPHA_SERVER_URL` / `device.auth`. Pause via
+>   `lockdownPausedUntil` on policy pull. Clear on teardown / DLP disabled.
 > - 2026-11-05: **Tracking mode / Start-Stop removed.** No Fixed/Roaming, no `--tracking-controls`,
 >   `--control-shell`, `--drain-only`, `control.json` control plane, or `ALPHA_CONTROL_POLL_SEC`.
 >   `ParkTrackingWork` / `ParkSyncWork` are `--gui` only. Watchdog always relaunches

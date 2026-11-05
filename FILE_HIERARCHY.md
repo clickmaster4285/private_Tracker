@@ -104,6 +104,7 @@ client/
 │   ├── NamedPipeHost.cs          (policy / teardown / update / health IPC)
 │   ├── Program.cs · AlphaAITracker.Service.csproj · install-service.ps1 · uninstall-service.ps1
 │   ├── PolicyPullWorker · EnforceWorker · DnsBlockPinWorker · UsbStorEnforcer · RemovableDriveMonitor
+│   ├── LockdownNetworkEnforcer.cs   P1 default-deny 80/443 (AlphaAI-DLP-LOCK-*)
 │   ├── DomainBlockEnforcer · TcpConnectionKiller · DnsCacheReader
 │   ├── AlertSyncWorker · PolicyStore · NamedPipeHost · ServiceAclHardener · TrackerWatchdogWorker
 │   └── DeviceCredentialStore · TeardownGate · UserSessionProcessLauncher · DlpConfig · WebBlockState

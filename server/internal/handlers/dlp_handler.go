@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/alpha-ai-tracker/server/internal/dto"
+	"github.com/alpha-ai-tracker/server/internal/models"
 	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/services"
 	"github.com/labstack/echo/v4"
@@ -13,11 +14,27 @@ import (
 
 // DlpHandler serves Security & DLP admin + device endpoints.
 type DlpHandler struct {
-	svc *services.DlpService
+	svc          *services.DlpService
+	employeeRepo *repository.EmployeeRepo
 }
 
-func NewDlpHandler(svc *services.DlpService) *DlpHandler {
-	return &DlpHandler{svc: svc}
+func NewDlpHandler(svc *services.DlpService, employeeRepo *repository.EmployeeRepo) *DlpHandler {
+	return &DlpHandler{svc: svc, employeeRepo: employeeRepo}
+}
+
+func (h *DlpHandler) resolveEmployee(c echo.Context) (*models.Employee, error) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		return nil, errorResponse(c, http.StatusBadRequest, "employee id is required", nil)
+	}
+	emp, err := h.employeeRepo.GetByID(c.Request().Context(), id)
+	if err != nil {
+		return nil, errorResponse(c, http.StatusInternalServerError, "Failed to load employee", err)
+	}
+	if emp == nil {
+		return nil, errorResponse(c, http.StatusNotFound, "Employee not found", nil)
+	}
+	return emp, nil
 }
 
 // ── Device (DeviceAuth) ─────────────────────────────────────────────────────
@@ -32,9 +49,59 @@ func (h *DlpHandler) GetPolicy(c echo.Context) error {
 		}
 		since = n
 	}
-	resp, err := h.svc.PullPolicy(c.Request().Context(), since)
+	employeeID, _ := c.Get("employee_id").(string)
+	machineID, _ := c.Get("device_machine_id").(string)
+	resp, err := h.svc.PullPolicy(c.Request().Context(), since, employeeID, machineID)
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, "Failed to pull DLP policy", err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// GetLockdownDraft handles GET /api/v1/dlp/lockdown
+func (h *DlpHandler) GetLockdownDraft(c echo.Context) error {
+	resp, err := h.svc.GetLockdownDraft(c.Request().Context())
+	if err != nil {
+		return errorResponse(c, http.StatusInternalServerError, "Failed to load lockdown settings", err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// UpdateLockdownDraft handles PUT /api/v1/dlp/lockdown
+func (h *DlpHandler) UpdateLockdownDraft(c echo.Context) error {
+	var req dto.UpdateLockdownDraftRequest
+	if err := c.Bind(&req); err != nil {
+		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+	}
+	resp, err := h.svc.UpdateLockdownDraft(c.Request().Context(), req)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "cap exceeded") {
+			return errorResponse(c, http.StatusBadRequest, msg, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to save lockdown settings", err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// PauseMachineLockdown handles POST /api/v1/employees/:id/machines/:machineId/lockdown-pause
+func (h *DlpHandler) PauseMachineLockdown(c echo.Context) error {
+	emp, err := h.resolveEmployee(c)
+	if err != nil {
+		return err
+	}
+	machineID := strings.TrimSpace(c.Param("machineId"))
+	if machineID == "" {
+		return errorResponse(c, http.StatusBadRequest, "machineId is required", nil)
+	}
+	var req dto.PauseLockdownRequest
+	_ = c.Bind(&req)
+	resp, err := h.svc.PauseLockdown(c.Request().Context(), emp.EmployeeID, machineID, req.Minutes)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return errorResponse(c, http.StatusNotFound, "Machine not found", err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to pause lockdown", err)
 	}
 	return c.JSON(http.StatusOK, resp)
 }
@@ -269,6 +336,9 @@ func (h *DlpHandler) Publish(c echo.Context) error {
 	}
 	resp, err := h.svc.Publish(c.Request().Context(), publishedBy)
 	if err != nil {
+		if strings.Contains(err.Error(), "cap exceeded") {
+			return errorResponse(c, http.StatusBadRequest, err.Error(), err)
+		}
 		return errorResponse(c, http.StatusInternalServerError, "Failed to publish DLP policy", err)
 	}
 	return c.JSON(http.StatusOK, resp)

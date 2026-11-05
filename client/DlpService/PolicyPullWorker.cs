@@ -108,6 +108,22 @@ public sealed class PolicyPullWorker : BackgroundService
 
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
+
+        // lockdownPausedUntil rides every successful response (also `unchanged`). Absent / null /
+        // unparseable = no pause. Stored separately from the bundle so EnforceWorker re-reads it each tick.
+        DateTimeOffset? pausedUntil = null;
+        if (root.TryGetProperty("lockdownPausedUntil", out var lp) &&
+            lp.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(
+                lp.GetString(),
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal,
+                out var parsedPause))
+        {
+            pausedUntil = parsedPause;
+        }
+        await _store.SetLockdownPausedUntilAsync(pausedUntil, ct);
+
         if (root.TryGetProperty("unchanged", out var u) && u.ValueKind == JsonValueKind.True)
         {
             _logger.LogDebug("Policy unchanged (version {Version})", version);

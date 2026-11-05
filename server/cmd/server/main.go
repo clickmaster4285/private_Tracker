@@ -87,7 +87,9 @@ func main() {
 	geofenceService := services.NewGeofenceService(geofenceRepo)
 	newSchemaService := services.NewNewSchemaService(newSchemaRepo, employeeRepo, geofenceService)
 	monitoringService := services.NewMonitoringService(monitoringRepo)
-	dlpService := services.NewDlpService(dlpRepo, cfg.DlpRemovalCodeTTLMin)
+	dlpService := services.NewDlpService(dlpRepo, cfg.DlpRemovalCodeTTLMin).
+		WithPlatformAllow(services.CompilePlatformAllowHosts(cfg)).
+		WithDeviceRepo(deviceRepo)
 	rbacService := services.NewRBACService(rbacRepo)
 	shiftService := services.NewShiftService(shiftRepo, cfg.DefaultShiftTimezone)
 	timeAttendanceService := services.NewTimeAttendanceService(timeAttendanceRepo)
@@ -104,7 +106,7 @@ func main() {
 	departmentHandler := handlers.NewDepartmentHandler(departmentService)
 	newSchemaHandler := handlers.NewNewSchemaHandler(newSchemaService, authService)
 	monitoringHandler := handlers.NewMonitoringHandler(monitoringService)
-	dlpHandler := handlers.NewDlpHandler(dlpService)
+	dlpHandler := handlers.NewDlpHandler(dlpService, employeeRepo)
 	rbacHandler := handlers.NewRBACHandler(rbacService)
 	shiftHandler := handlers.NewShiftHandler(shiftService)
 	timeAttendanceHandler := handlers.NewTimeAttendanceHandler(timeAttendanceService)

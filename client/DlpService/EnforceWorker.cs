@@ -20,6 +20,9 @@ public sealed class EnforceWorker : BackgroundService
     private DateTimeOffset _lastAccessDeniedLog = DateTimeOffset.MinValue;
     private bool _accessDeniedAlertQueued;
     private bool _webAccessDeniedAlertQueued;
+    private string? _lastLockdownState;
+    private bool _lockdownOverflowAudited;
+    private DateTimeOffset _lastLockdownWarn = DateTimeOffset.MinValue;
 
     public EnforceWorker(
         DlpConfig cfg,
@@ -40,6 +43,17 @@ public sealed class EnforceWorker : BackgroundService
         if (!_cfg.Enabled)
         {
             _logger.LogInformation("EnforceWorker parked (ALPHA_DLP_ENABLED=false)");
+            // Never strand a PC behind lockdown filters left by an earlier enabled run.
+            try
+            {
+                var parkClear = await Task.Run(LockdownNetworkEnforcer.Clear, stoppingToken);
+                if (parkClear.Changed || parkClear.Detail.StartsWith("lock_clear_failed", StringComparison.Ordinal))
+                    _logger.LogWarning("Parked: cleared lockdown filters ({Detail})", parkClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Lockdown clear on park failed");
+            }
             return;
         }
 
@@ -107,7 +121,84 @@ public sealed class EnforceWorker : BackgroundService
         _drives.SetUsbBlocked(wantUsbBlock);
 
         await ApplyUsbAsync(bundle, version, wantUsbBlock, ct);
+        // Lockdown (allow-world) first; explicit web-block domains below still apply inside it.
+        await ApplyLockdownAsync(bundle, ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
+    }
+
+    /// <summary>
+    /// P1 lockdown. Applied only when credentials exist AND bundle.lockdown AND not paused;
+    /// otherwise every AlphaAI-DLP-LOCK-* rule is cleared (idempotent, cheap when already clean).
+    /// </summary>
+    private async Task ApplyLockdownAsync(PolicyBundle bundle, CancellationToken ct)
+    {
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var want = bundle.Lockdown && hasCreds && !paused;
+
+        if (!want)
+        {
+            var clear = await Task.Run(LockdownNetworkEnforcer.Clear, ct);
+            var state = paused ? "paused" : "off";
+            if (clear.Changed || _lastLockdownState is not (null or "off" or "paused"))
+            {
+                await _store.AuditAsync("lockdown_clear", $"state={state} detail={clear.Detail}", ct);
+                _logger.LogInformation("Lockdown filters CLEARED (state={State}, detail={Detail})", state, clear.Detail);
+            }
+            if (!clear.Detail.StartsWith("lock_clear_failed", StringComparison.Ordinal))
+                _lastLockdownState = state;
+            _lockdownOverflowAudited = false;
+            return;
+        }
+
+        var hosts = bundle.PlatformAllowHosts.Concat(bundle.AllowHosts).ToList();
+        var serverUrl = _cfg.ServerUrl;
+        var result = await Task.Run(() => LockdownNetworkEnforcer.Apply(hosts, serverUrl), ct);
+
+        if (result.Overflow && !_lockdownOverflowAudited)
+        {
+            _lockdownOverflowAudited = true;
+            await _store.AuditAsync(
+                "lockdown_ip_overflow",
+                $"cap={LockdownNetworkEnforcer.MaxAllowIps} hosts={hosts.Count}",
+                ct);
+            _logger.LogWarning(
+                "Lockdown allow set exceeded {Cap} IPs — extra IPs dropped (bootstrap kept first)",
+                LockdownNetworkEnforcer.MaxAllowIps);
+        }
+        else if (!result.Overflow)
+        {
+            _lockdownOverflowAudited = false;
+        }
+
+        if (result.Applied)
+        {
+            if (result.Changed || _lastLockdownState != "on")
+            {
+                await _store.AuditAsync(
+                    "lockdown_apply",
+                    $"hosts={hosts.Count} ips={result.AllowIps} detail={result.Detail}",
+                    ct);
+                _logger.LogInformation(
+                    "Lockdown ENFORCED (hosts={Hosts}, allowIps={Ips}, detail={Detail})",
+                    hosts.Count, result.AllowIps, result.Detail);
+            }
+            _lastLockdownState = "on";
+            return;
+        }
+
+        // Not applied (bootstrap unresolved / access denied / netsh error / stale gen): never
+        // strand the PC — existing rules are left as-is, retry next tick; log at most every 2 min.
+        if (result.Detail != "stale_generation" &&
+            DateTimeOffset.UtcNow - _lastLockdownWarn > TimeSpan.FromMinutes(2))
+        {
+            _lastLockdownWarn = DateTimeOffset.UtcNow;
+            _logger.LogWarning("Lockdown not applied: {Detail}", result.Detail);
+            await _store.AuditAsync("lockdown_apply_failed", result.Detail, ct);
+        }
     }
 
     private async Task ApplyUsbAsync(
@@ -195,19 +286,33 @@ public sealed class EnforceWorker : BackgroundService
         string webFp,
         CancellationToken ct)
     {
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var lockdownOn = bundle.Lockdown && hasCreds && !paused;
+        var lockdownAllow = lockdownOn
+            ? BuildLockdownBrowserAllowHosts(bundle, wantDomains, _cfg.ServerUrl)
+            : null;
+        var allowFp = lockdownAllow is null
+            ? "allow=-"
+            : "allow=" + string.Join(",", lockdownAllow);
+        var combinedFp = webFp + "|" + allowFp;
+
         // Skip hosts write only on true cold start (no published policy yet) AND no
         // leftover OS artifacts. If URLBlocklist/hosts/FW still present, fall through
         // to Apply([]) so a wiped dlp.db / version-0 boot still self-heals.
-        if (wantDomains.Count == 0 && _lastWebFingerprint == "\0" && version <= 0 && _cfg.WebBlock
-            && !DomainBlockEnforcer.HasLeftoverOsArtifacts())
+        if (wantDomains.Count == 0 && !lockdownOn && _lastWebFingerprint == "\0" && version <= 0
+            && _cfg.WebBlock && !DomainBlockEnforcer.HasLeftoverOsArtifacts())
         {
             _lastWebFingerprint = "";
             _webBlock.Set(version, Array.Empty<string>(), DomainBlockEnforcer.CurrentGeneration);
             return;
         }
 
-        var drift = !DomainBlockEnforcer.OsStateMatchesDesired(wantDomains);
-        if (webFp == _lastWebFingerprint && !drift)
+        var drift = !DomainBlockEnforcer.OsStateMatchesDesired(wantDomains, lockdownAllow);
+        if (combinedFp == _lastWebFingerprint && !drift)
         {
             // Domain set + OS match — still refresh CDN IPs when cache TTL expires.
             if (wantDomains.Count > 0)
@@ -224,7 +329,7 @@ public sealed class EnforceWorker : BackgroundService
             return;
         }
 
-        if (webFp == _lastWebFingerprint && drift)
+        if (combinedFp == _lastWebFingerprint && drift)
         {
             _logger.LogWarning(
                 "Web block OS drift vs policy (count={Count}) — reconciling hosts/FW/PIN/URLBlocklist",
@@ -235,7 +340,7 @@ public sealed class EnforceWorker : BackgroundService
                 ct);
         }
 
-        var result = DomainBlockEnforcer.Apply(wantDomains);
+        var result = DomainBlockEnforcer.Apply(wantDomains, lockdownAllow);
         var auditAction = wantDomains.Count == 0 ? "web_domain_clear" : "web_domain_apply";
         await _store.AuditAsync(
             auditAction,
@@ -281,7 +386,7 @@ public sealed class EnforceWorker : BackgroundService
         }
 
         // Refuse fingerprint advance until OS matches desired (empty or shrunk set).
-        if (!DomainBlockEnforcer.OsStateMatchesDesired(wantDomains))
+        if (!DomainBlockEnforcer.OsStateMatchesDesired(wantDomains, lockdownAllow))
         {
             _logger.LogWarning(
                 "Web domain apply incomplete ({Detail}) — OS still drifts; will retry",
@@ -293,13 +398,17 @@ public sealed class EnforceWorker : BackgroundService
             return;
         }
 
-        _lastWebFingerprint = webFp;
+        _lastWebFingerprint = combinedFp;
         _webAccessDeniedAlertQueued = false;
         _webBlock.Set(version, wantDomains, DomainBlockEnforcer.CurrentGeneration);
         _logger.LogInformation(
-            "Web domains {State} (count={Count}, changed={Changed}, gen={Gen}, detail={Detail})",
-            wantDomains.Count > 0 ? "BLOCK" : "CLEAR",
-            wantDomains.Count, result.Changed, DomainBlockEnforcer.CurrentGeneration, result.Detail);
+            "Web domains {State} (count={Count}, lockdownAllow={Allow}, changed={Changed}, gen={Gen}, detail={Detail})",
+            wantDomains.Count > 0 ? "BLOCK" : (lockdownOn ? "LOCKDOWN" : "CLEAR"),
+            wantDomains.Count,
+            lockdownAllow?.Count ?? 0,
+            result.Changed,
+            DomainBlockEnforcer.CurrentGeneration,
+            result.Detail);
 
         if (result.Changed && wantDomains.Count > 0)
         {
@@ -321,5 +430,47 @@ public sealed class EnforceWorker : BackgroundService
                 }),
                 ct);
         }
+    }
+
+    /// <summary>
+    /// Chrome/Edge URLAllowlist hosts: platformAllow + allow.hosts + API bootstrap,
+    /// minus explicit web-block domains (block wins over allow in the address bar).
+    /// </summary>
+    private static IReadOnlyList<string> BuildLockdownBrowserAllowHosts(
+        PolicyBundle bundle,
+        IReadOnlyList<string> blockDomains,
+        string? serverUrl)
+    {
+        var blocked = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in blockDomains)
+        {
+            foreach (var n in PolicyBundleParser.NormalizeDomain(d))
+                blocked.Add(n);
+        }
+
+        var allow = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            foreach (var n in PolicyBundleParser.NormalizeDomain(raw))
+            {
+                if (!blocked.Contains(n))
+                    allow.Add(n);
+            }
+        }
+
+        foreach (var h in bundle.PlatformAllowHosts) Add(h);
+        foreach (var h in bundle.AllowHosts) Add(h);
+
+        if (!string.IsNullOrWhiteSpace(serverUrl))
+        {
+            var s = serverUrl.Trim();
+            if (!s.Contains("://", StringComparison.Ordinal))
+                s = "https://" + s;
+            if (Uri.TryCreate(s, UriKind.Absolute, out var u) && !string.IsNullOrEmpty(u.Host))
+                Add(u.Host.Trim('[', ']'));
+        }
+
+        return allow.ToList();
     }
 }

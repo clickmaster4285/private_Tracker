@@ -529,7 +529,16 @@ func (r *DlpRepo) InsertPolicyVersion(ctx context.Context, hash string, publishe
 	return &v, nil
 }
 
-func (r *DlpRepo) PublishSnapshot(ctx context.Context, version int64, rules []models.DlpRule, webRules []models.WebBlockerRule, shadowDomains []string) error {
+func (r *DlpRepo) PublishSnapshot(
+	ctx context.Context,
+	version int64,
+	rules []models.DlpRule,
+	webRules []models.WebBlockerRule,
+	shadowDomains []string,
+	lockdown bool,
+	allowHosts []string,
+	platformHosts []string,
+) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -581,6 +590,25 @@ func (r *DlpRepo) PublishSnapshot(ctx context.Context, version int64, rules []mo
 	}
 	for _, domain := range cleanStrings(shadowDomains, true) {
 		if _, err := tx.Exec(ctx, `INSERT INTO dlp_policy_domains (policy_version,rule_id,domain,source) VALUES ($1,NULL,$2,'shadow')`, version, domain); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO dlp_policy_lockdown (policy_version, lockdown)
+		VALUES ($1, $2)`, version, lockdown); err != nil {
+		return err
+	}
+	for _, host := range cleanStrings(allowHosts, true) {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO dlp_policy_allow_hosts (policy_version, host)
+			VALUES ($1, $2)`, version, host); err != nil {
+			return err
+		}
+	}
+	for _, host := range cleanStrings(platformHosts, true) {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO dlp_policy_platform_hosts (policy_version, host)
+			VALUES ($1, $2)`, version, host); err != nil {
 			return err
 		}
 	}
@@ -704,11 +732,34 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	if err := shadowRows.Err(); err != nil {
 		return nil, err
 	}
+
+	lockdown := false
+	if err := r.pool.QueryRow(ctx, `
+		SELECT lockdown FROM dlp_policy_lockdown WHERE policy_version=$1`, version).Scan(&lockdown); err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+	allowHosts, err := r.listPolicyHosts(ctx, `SELECT host FROM dlp_policy_allow_hosts WHERE policy_version=$1 ORDER BY host`, version)
+	if err != nil {
+		return nil, err
+	}
+	platformHosts, err := r.listPolicyHosts(ctx, `SELECT host FROM dlp_policy_platform_hosts WHERE policy_version=$1 ORDER BY host`, version)
+	if err != nil {
+		return nil, err
+	}
+
 	bundle := struct {
-		PolicyVersion int64      `json:"policyVersion"`
-		PublishedAt   string     `json:"publishedAt"`
-		Rules         []wireRule `json:"rules"`
-		ShadowDeny    struct {
+		PolicyVersion int64  `json:"policyVersion"`
+		PublishedAt   string `json:"publishedAt"`
+		Lockdown      bool   `json:"lockdown,omitempty"`
+		PlatformAllow struct {
+			Hosts []string `json:"hosts"`
+		} `json:"platformAllow,omitempty"`
+		Allow struct {
+			Hosts []string         `json:"hosts"`
+			Apps  []map[string]any `json:"apps"`
+		} `json:"allow,omitempty"`
+		Rules      []wireRule `json:"rules"`
+		ShadowDeny struct {
 			Domains    []string `json:"domains"`
 			Publishers []string `json:"publishers"`
 			AppNames   []string `json:"appNames"`
@@ -716,12 +767,111 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	}{
 		PolicyVersion: version,
 		PublishedAt:   header.PublishedAt.UTC().Format(time.RFC3339),
+		Lockdown:      lockdown,
 		Rules:         wireRules,
 	}
+	bundle.PlatformAllow.Hosts = platformHosts
+	bundle.Allow.Hosts = allowHosts
+	bundle.Allow.Apps = []map[string]any{}
 	bundle.ShadowDeny.Domains = shadowDomains
 	bundle.ShadowDeny.Publishers = []string{}
 	bundle.ShadowDeny.AppNames = []string{}
+	// Old clients ignore unknown fields. Omit lockdown envelope when false so
+	// a "lockdown off" publish looks like today's deny-list bundle shape.
+	if !lockdown && len(platformHosts) == 0 && len(allowHosts) == 0 {
+		legacy := struct {
+			PolicyVersion int64      `json:"policyVersion"`
+			PublishedAt   string     `json:"publishedAt"`
+			Rules         []wireRule `json:"rules"`
+			ShadowDeny    struct {
+				Domains    []string `json:"domains"`
+				Publishers []string `json:"publishers"`
+				AppNames   []string `json:"appNames"`
+			} `json:"shadowDeny"`
+		}{
+			PolicyVersion: version,
+			PublishedAt:   header.PublishedAt.UTC().Format(time.RFC3339),
+			Rules:         wireRules,
+		}
+		legacy.ShadowDeny.Domains = shadowDomains
+		legacy.ShadowDeny.Publishers = []string{}
+		legacy.ShadowDeny.AppNames = []string{}
+		return json.Marshal(legacy)
+	}
 	return json.Marshal(bundle)
+}
+
+func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int64) ([]string, error) {
+	rows, err := r.pool.Query(ctx, query, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var host string
+		if err := rows.Scan(&host); err != nil {
+			return nil, err
+		}
+		out = append(out, host)
+	}
+	return out, rows.Err()
+}
+
+// ── Lockdown draft (admin) ──────────────────────────────────────────────────
+
+const MaxLockdownAllowHosts = 500
+
+func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []string, err error) {
+	err = r.pool.QueryRow(ctx, `SELECT lockdown FROM dlp_lockdown_settings WHERE id = 1`).Scan(&lockdown)
+	if err == pgx.ErrNoRows {
+		return false, []string{}, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	rows, err := r.pool.Query(ctx, `SELECT host FROM dlp_lockdown_allow_hosts ORDER BY host`)
+	if err != nil {
+		return false, nil, err
+	}
+	defer rows.Close()
+	hosts = make([]string, 0)
+	for rows.Next() {
+		var host string
+		if err := rows.Scan(&host); err != nil {
+			return false, nil, err
+		}
+		hosts = append(hosts, host)
+	}
+	return lockdown, hosts, rows.Err()
+}
+
+// ReplaceLockdownDraft upserts the singleton settings row and replaces allow hosts.
+func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts []string) error {
+	hosts = cleanStrings(hosts, true)
+	if len(hosts) > MaxLockdownAllowHosts {
+		return fmt.Errorf("allow hosts cap exceeded: %d > %d", len(hosts), MaxLockdownAllowHosts)
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO dlp_lockdown_settings (id, lockdown, updated_at)
+		VALUES (1, $1, NOW())
+		ON CONFLICT (id) DO UPDATE SET lockdown = EXCLUDED.lockdown, updated_at = NOW()`, lockdown); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM dlp_lockdown_allow_hosts`); err != nil {
+		return err
+	}
+	for _, host := range hosts {
+		if _, err := tx.Exec(ctx, `INSERT INTO dlp_lockdown_allow_hosts (host) VALUES ($1)`, host); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ── Alerts ──────────────────────────────────────────────────────────────────

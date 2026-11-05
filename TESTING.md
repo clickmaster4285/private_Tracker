@@ -8,6 +8,31 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./
 
 ---
 
+## H. Windows network lockdown (P1)
+
+**Prereqs:** migration **059**; Windows PC with next installer (service half); DeviceAuth credentials; web admin with `web-blocker`.
+
+1. Draft off → Publish → lab PC that was open stays open (no `AlphaAI-DLP-LOCK-*` rules).
+2. Web Blocker → Lockdown **on**, empty allow list → **Publish**. After ≤ policy poll: browser cannot open a public site; tracker sync, `GET /dlp/policy`, and presence still work (bootstrap host allowed).
+3. Add one allow host → Save → Publish → only that host loads (plus platformAllow / API).
+4. Add an explicit Web Blocker **block** rule for that same host → Publish → host stays blocked (deny-list still applies).
+5. Employees → **Pause lockdown…** (30–240 min) → general web works until deadline; then relocks without waiting for a new publish.
+6. Protected uninstall / teardown → no leftover `AlphaAI-DLP-LOCK-*` (`netsh advfirewall firewall show rule name=all` filtered).
+7. Flap: publish add/remove 20 allow hosts → no orphan LOCK rules (same bar as §F.2).
+
+**P2 Chrome/Edge address bar (same publish):** under lockdown, Chrome and Edge get
+`HKLM\...\URLBlocklist` = `*` plus deny patterns, and `URLAllowlist` for
+platformAllow + allow.hosts + API host (explicit Web Blocker denies are subtracted
+from the allow set so block still wins). Lockdown off / teardown clears `URLAllowlist`
+the same way `URLBlocklist` clears (§F.1). Firefox and other browsers have **no**
+enterprise allow API here — they stay blocked by P1 network deny only; do not claim
+an address-bar interstitial for them.
+
+Honest limit: P3 AppLocker/WDAC is not built. AdvFirewall uses a complement deny
+(block wins over allow on Windows), not a literal allow-after-deny stack.
+
+---
+
 ## G. Tracking mode removed (always-on)
 
 Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, no Start/Stop modal, and no `control.json` control plane. Collectors run for the whole login.

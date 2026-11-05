@@ -1,7 +1,10 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-05 (tracking mode removed)
+> **Last audited:** 2026-11-05 (P1 lockdown)
 > **Changelog:**
+> - 2026-11-05: **P1 lockdown UI.** Lockdown draft card on `/web-blocker` (same
+>   `web-blocker` permission; Publish still enforces). Employees **Pause lockdown…**
+>   calls `POST .../lockdown-pause`.
 > - 2026-11-05: **Tracking mode removed.** `/configuration/device-configuration`,
 >   `SetTrackingModeDialog`, `TrackingModeBadge`, Employees "Set tracking mode…", and
 >   Device Specs mode chips are gone. `employeesApi.setMachineTrackingMode` and

@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff } from 'lucide-react';
+import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff, PauseCircle } from 'lucide-react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -93,6 +93,12 @@ function UsersListInner() {
   const [removalMachineId, setRemovalMachineId] = useState('');
   const [removalIssued, setRemovalIssued] = useState<IssueRemovalCodeResponse | null>(null);
   const [removalLoading, setRemovalLoading] = useState(false);
+  // Pause lockdown dialog: resolves the employee's active machine from detail, then POSTs.
+  const [showPause, setShowPause] = useState<Employee | null>(null);
+  const [pauseMachineId, setPauseMachineId] = useState('');
+  const [pauseMinutes, setPauseMinutes] = useState(60);
+  const [pauseLoading, setPauseLoading] = useState(false);
+  const [pauseSubmitting, setPauseSubmitting] = useState(false);
   // Which OS protected-uninstall command was last copied (Linux | Windows).
   const [copiedRemovalCmd, setCopiedRemovalCmd] = useState<string | null>(null);
   // Form state
@@ -733,6 +739,25 @@ function UsersListInner() {
                               <ShieldOff className="w-4 h-4 text-muted-foreground" />
                               Issue Removal Code
                             </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() => {
+                                setPauseMachineId('');
+                                setPauseMinutes(60);
+                                setShowPause(emp);
+                                setPauseLoading(true);
+                                employeesApi.detail(emp.id)
+                                  .then((d) => {
+                                    const active = (d.devices ?? []).find((x) => x.status === 'active');
+                                    if (active?.machineId) setPauseMachineId(active.machineId);
+                                  })
+                                  .catch(() => toast.error('Could not load devices for this employee'))
+                                  .finally(() => setPauseLoading(false));
+                              }}
+                              className="cursor-pointer gap-2.5 px-2.5 py-2"
+                            >
+                              <PauseCircle className="w-4 h-4 text-muted-foreground" />
+                              Pause lockdown…
+                            </DropdownMenuItem>
                           </>
                         ) : (
                           <DropdownMenuItem onSelect={() => handleGenerateSecret(emp)} className="cursor-pointer gap-2.5 px-2.5 py-2">
@@ -1171,6 +1196,78 @@ function UsersListInner() {
                 </div>
               </>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pause lockdown — temporary lockdown bypass on the employee's active machine */}
+      <Dialog
+        open={showPause !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setShowPause(null);
+            setPauseMachineId('');
+          }
+        }}
+      >
+        <DialogContent className="bg-card sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="font-display">Pause lockdown</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            {showPause && (
+              <p className="text-sm text-foreground">
+                Temporarily lift web lockdown on <span className="font-semibold">{showPause.name}</span>
+                {' '}({showPause.employeeId})&apos;s active device.
+              </p>
+            )}
+            {pauseLoading ? (
+              <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-primary" /></div>
+            ) : !pauseMachineId ? (
+              <p className="text-sm text-destructive">No active machine found for this employee.</p>
+            ) : (
+              <select
+                value={pauseMinutes}
+                onChange={(e) => setPauseMinutes(Number(e.target.value))}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-foreground"
+              >
+                {[30, 60, 120, 240].map((m) => (
+                  <option key={m} value={m}>
+                    {m < 60 ? `${m} minutes` : `${m / 60} hour${m === 60 ? '' : 's'}`}
+                  </option>
+                ))}
+              </select>
+            )}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowPause(null)}
+                className="flex-1 border border-border text-foreground py-2.5 rounded-lg text-sm font-medium hover:bg-muted"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={!pauseMachineId || !showPause || pauseLoading || pauseSubmitting}
+                onClick={async () => {
+                  if (!showPause || !pauseMachineId) return;
+                  setPauseSubmitting(true);
+                  try {
+                    const res = await employeesApi.pauseLockdown(showPause.id, pauseMachineId, pauseMinutes);
+                    toast.success('Lockdown paused', {
+                      description: `Until ${new Date(res.lockdownPausedUntil).toLocaleString()}`,
+                    });
+                    setShowPause(null);
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : 'Failed to pause lockdown');
+                  } finally {
+                    setPauseSubmitting(false);
+                  }
+                }}
+                className="flex-1 bg-primary text-primary-foreground py-2.5 rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {pauseSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <PauseCircle className="w-4 h-4" />}
+                Pause
+              </button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

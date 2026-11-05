@@ -53,7 +53,7 @@ func TestDlpPublishAndPullSmoke(t *testing.T) {
 		t.Fatalf("expected version >= 1, got %d", pub.PolicyVersion)
 	}
 
-	pull, err := svc.PullPolicy(ctx, 0)
+	pull, err := svc.PullPolicy(ctx, 0, "", "")
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}

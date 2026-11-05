@@ -101,6 +101,25 @@ public sealed class PolicyStore : IAsyncDisposable
                     PRIMARY KEY (rule_id, extension)
                 );
 
+                -- P1 lockdown: flag + allow hosts (kind = 'platform' | 'allow'), and a tiny
+                -- key/value table (lockdown_paused_until) written by PolicyPullWorker.
+                CREATE TABLE IF NOT EXISTS policy_lockdown (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    lockdown INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT OR IGNORE INTO policy_lockdown (id, lockdown) VALUES (1, 0);
+
+                CREATE TABLE IF NOT EXISTS policy_allow_hosts (
+                    kind TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    PRIMARY KEY (kind, host)
+                );
+
+                CREATE TABLE IF NOT EXISTS policy_kv (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS dlp_alerts_local (
                     id TEXT PRIMARY KEY,
                     rule_id TEXT,
@@ -454,6 +473,8 @@ public sealed class PolicyStore : IAsyncDisposable
                 DELETE FROM policy_paths;
                 DELETE FROM policy_schedule_days;
                 DELETE FROM policy_extensions;
+                DELETE FROM policy_allow_hosts;
+                UPDATE policy_lockdown SET lockdown = 0 WHERE id = 1;
                 """;
             await clear.ExecuteNonQueryAsync();
         }
@@ -463,6 +484,16 @@ public sealed class PolicyStore : IAsyncDisposable
 
         using var doc = JsonDocument.Parse(bundleJson);
         var root = doc.RootElement;
+
+        if (root.TryGetProperty("lockdown", out var ldEl) && ldEl.ValueKind == JsonValueKind.True)
+        {
+            await using var ld = _conn.CreateCommand();
+            ld.CommandText = "UPDATE policy_lockdown SET lockdown = 1 WHERE id = 1";
+            await ld.ExecuteNonQueryAsync();
+        }
+        await InsertAllowHostsAsync("platform", root, "platformAllow");
+        await InsertAllowHostsAsync("allow", root, "allow");
+
         if (root.TryGetProperty("rules", out var rules) && rules.ValueKind == JsonValueKind.Array)
         {
             foreach (var rule in rules.EnumerateArray())
@@ -526,6 +557,79 @@ public sealed class PolicyStore : IAsyncDisposable
                 cmd.Parameters.AddWithValue("$d", dom.Trim().ToLowerInvariant());
                 await cmd.ExecuteNonQueryAsync();
             }
+        }
+    }
+
+    private async Task InsertAllowHostsAsync(string kind, JsonElement root, string prop)
+    {
+        if (!root.TryGetProperty(prop, out var obj) || obj.ValueKind != JsonValueKind.Object ||
+            !obj.TryGetProperty("hosts", out var hosts) || hosts.ValueKind != JsonValueKind.Array)
+            return;
+        foreach (var el in hosts.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.String) continue;
+            var h = el.GetString();
+            if (string.IsNullOrWhiteSpace(h)) continue;
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = "INSERT OR IGNORE INTO policy_allow_hosts (kind, host) VALUES ($k,$h)";
+            cmd.Parameters.AddWithValue("$k", kind);
+            cmd.Parameters.AddWithValue("$h", h.Trim());
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    private const string KeyLockdownPausedUntil = "lockdown_paused_until";
+
+    /// <summary>
+    /// Persist the server's <c>lockdownPausedUntil</c> (UTC). Null clears the pause.
+    /// EnforceWorker reads it every tick via <see cref="GetLockdownPausedUntilAsync"/>.
+    /// </summary>
+    public async Task SetLockdownPausedUntilAsync(DateTimeOffset? until, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            EnsureOpen();
+            await using var cmd = _conn!.CreateCommand();
+            if (until is null)
+            {
+                cmd.CommandText = "DELETE FROM policy_kv WHERE key = $k";
+                cmd.Parameters.AddWithValue("$k", KeyLockdownPausedUntil);
+            }
+            else
+            {
+                cmd.CommandText = "INSERT OR REPLACE INTO policy_kv (key, value) VALUES ($k, $v)";
+                cmd.Parameters.AddWithValue("$k", KeyLockdownPausedUntil);
+                cmd.Parameters.AddWithValue("$v", until.Value.UtcDateTime.ToString("o"));
+            }
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<DateTimeOffset?> GetLockdownPausedUntilAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            EnsureOpen();
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = "SELECT value FROM policy_kv WHERE key = $k";
+            cmd.Parameters.AddWithValue("$k", KeyLockdownPausedUntil);
+            var v = await cmd.ExecuteScalarAsync(ct) as string;
+            if (string.IsNullOrWhiteSpace(v)) return null;
+            return DateTimeOffset.TryParse(
+                v, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal, out var parsed)
+                ? parsed
+                : null;
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -614,9 +718,27 @@ public sealed class PolicyStore : IAsyncDisposable
         var shadow = await LoadStringsAsync(
             "SELECT domain FROM policy_domains WHERE source='shadow'", null, ct);
 
+        long lockdown = 0;
+        await using (var ld = _conn!.CreateCommand())
+        {
+            ld.CommandText = "SELECT lockdown FROM policy_lockdown WHERE id = 1";
+            lockdown = Convert.ToInt64(await ld.ExecuteScalarAsync(ct) ?? 0L);
+        }
+        var platformHosts = await LoadStringsAsync(
+            "SELECT host FROM policy_allow_hosts WHERE kind='platform'", null, ct);
+        var allowHosts = await LoadStringsAsync(
+            "SELECT host FROM policy_allow_hosts WHERE kind='allow'", null, ct);
+
         return JsonSerializer.Serialize(new Dictionary<string, object?>
         {
             ["policyVersion"] = version,
+            ["lockdown"] = lockdown == 1,
+            ["platformAllow"] = new Dictionary<string, object?> { ["hosts"] = platformHosts },
+            ["allow"] = new Dictionary<string, object?>
+            {
+                ["hosts"] = allowHosts,
+                ["apps"] = Array.Empty<string>(),
+            },
             ["rules"] = rules,
             ["shadowDeny"] = new Dictionary<string, object?>
             {

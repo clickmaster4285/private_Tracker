@@ -168,6 +168,9 @@ func Setup(
 	employees.GET("/:id/detail", newSchemaHandler.GetEmployeeDetail)
 	employees.GET("/:id/devices", authHandler.ListEmployeeDevices)
 	employees.POST("/:id/devices/remove", newSchemaHandler.RemoveEmployeeDevice)
+	if dlpHandler != nil {
+		employees.POST("/:id/machines/:machineId/lockdown-pause", dlpHandler.PauseMachineLockdown)
+	}
 	employees.POST("/import", employeeHandler.ImportEmployees)
 	employees.GET("/export", employeeHandler.ExportEmployees)
 	employees.GET("/:id", employeeHandler.GetEmployee)
@@ -245,6 +248,8 @@ func Setup(
 		dlp.PATCH("/rules/:id", dlpHandler.UpdateRule)
 		dlp.DELETE("/rules/:id", dlpHandler.DeleteRule)
 		dlp.POST("/rules/publish", dlpHandler.Publish)
+		dlp.GET("/lockdown", dlpHandler.GetLockdownDraft)
+		dlp.PUT("/lockdown", dlpHandler.UpdateLockdownDraft)
 		dlp.GET("/alerts", dlpHandler.ListAlerts)
 		dlp.GET("/alerts/:id/history", dlpHandler.ListAlertHistory)
 		dlp.PATCH("/alerts/:id", dlpHandler.UpdateAlert)
