@@ -1,0 +1,172 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:client.ViewModels"
+             xmlns:conv="clr-namespace:client.Converters"
+             x:Class="client.Views.Pages.SplashPage"
+             x:DataType="vm:MainViewModel">
+
+    <!-- ═══ PAGE 1 — Splash / Loading ═══════════════════════════════════
+         Navy field with a floating white card. Every brand string comes
+         from AppInfo (APP_IDENTIFIERS + VERSION) via the view model.
+    ═════════════════════════════════════════════════════════════════════ -->
+
+    <UserControl.Resources>
+        <conv:PercentToGridLengthConverter x:Key="PercentToGridLength"/>
+    </UserControl.Resources>
+
+    <Border Background="{StaticResource LoginPanelBrush}">
+        <Grid>
+            <!-- Ambient glows so the flat gradient reads as depth -->
+            <Ellipse Width="620" Height="620" IsHitTestVisible="False"
+                     HorizontalAlignment="Left" VerticalAlignment="Top"
+                     Margin="-220,-220,0,0">
+                <Ellipse.Fill>
+                    <RadialGradientBrush>
+                        <GradientStop Offset="0" Color="#4C2563EB"/>
+                        <GradientStop Offset="1" Color="#002563EB"/>
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+            </Ellipse>
+            <Ellipse Width="520" Height="520" IsHitTestVisible="False"
+                     HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                     Margin="0,0,-200,-200">
+                <Ellipse.Fill>
+                    <RadialGradientBrush>
+                        <GradientStop Offset="0" Color="#380EA5E9"/>
+                        <GradientStop Offset="1" Color="#000EA5E9"/>
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+            </Ellipse>
+
+            <Border Classes="page-in"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Background="{StaticResource CardBrush}"
+                    CornerRadius="{StaticResource RadiusXl}"
+                    BoxShadow="{StaticResource ShadowXl}"
+                    Padding="44,40" MaxWidth="470" Margin="32">
+                <StackPanel Spacing="0">
+
+                    <!-- Logo mark -->
+                    <Border Width="66" Height="66" CornerRadius="20"
+                            Background="{StaticResource PrimarySoftBrush}"
+                            HorizontalAlignment="Center">
+                        <Grid>
+                            <Path Data="{StaticResource ShieldGeometry}"
+                                  Fill="{StaticResource PrimaryBrush}"
+                                  Stretch="Uniform" Width="36" Height="36"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Path Data="M8.5 12.5l2.5 2.5 5-5"
+                                  Stroke="White" StrokeThickness="2.6" StrokeLineCap="Round"
+                                  Width="30" Height="30"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Text="{Binding AppDisplayName}"
+                               FontSize="26" FontWeight="Bold"
+                               Foreground="{StaticResource FgBrush}"
+                               HorizontalAlignment="Center" Margin="0,16,0,0"/>
+                    <TextBlock Text="{Binding AppTagline}"
+                               FontSize="11" FontWeight="Medium"
+                               Foreground="{StaticResource FaintFgBrush}"
+                               LetterSpacing="2.2"
+                               HorizontalAlignment="Center" Margin="0,5,0,0"/>
+
+                    <!-- Boot checklist -->
+                    <Border Background="{StaticResource CanvasBrush}"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{StaticResource RadiusLg}"
+                            Padding="22,18" Margin="0,28,0,0">
+                        <StackPanel Spacing="14">
+
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Path Classes="spinner" Data="{StaticResource SpinnerArcGeometry}"
+                                      Stroke="{StaticResource PrimaryBrush}" StrokeThickness="2.2"
+                                      StrokeLineCap="Round" Stretch="Uniform"
+                                      Width="14" Height="14" VerticalAlignment="Center"
+                                      IsVisible="{Binding Step1Active}"/>
+                                <Path Data="{StaticResource CheckGeometry}"
+                                      Stroke="{StaticResource SuccessBrush}" StrokeThickness="2.4"
+                                      StrokeLineCap="Round" Stretch="Uniform"
+                                      Width="14" Height="14" VerticalAlignment="Center"
+                                      IsVisible="{Binding Step1Done}"/>
+                                <TextBlock Text="Checking authentication" FontSize="13"
+                                           Foreground="{StaticResource CardFgBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Path Classes="spinner" Data="{StaticResource SpinnerArcGeometry}"
+                                      Stroke="{StaticResource PrimaryBrush}" StrokeThickness="2.2"
+                                      StrokeLineCap="Round" Stretch="Uniform"
+                                      Width="14" Height="14" VerticalAlignment="Center"
+                                      IsVisible="{Binding Step2Active}"/>
+                                <Path Data="{StaticResource CheckGeometry}"
+                                      Stroke="{StaticResource SuccessBrush}" StrokeThickness="2.4"
+                                      StrokeLineCap="Round" Stretch="Uniform"
+                                      Width="14" Height="14" VerticalAlignment="Center"
+                                      IsVisible="{Binding Step2Done}"/>
+                                <Ellipse Width="12" Height="12" Stroke="#CBD5E1" StrokeThickness="2"
+                                         Fill="Transparent" VerticalAlignment="Center"
+                                         IsVisible="{Binding Step2Pending}"/>
+                                <TextBlock Text="Loading configuration" FontSize="13"
+                                           Foreground="{StaticResource MutedFgBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Path Classes="spinner" Data="{StaticResource SpinnerArcGeometry}"
+                                      Stroke="{StaticResource PrimaryBrush}" StrokeThickness="2.2"
+                                      StrokeLineCap="Round" Stretch="Uniform"
+                                      Width="14" Height="14" VerticalAlignment="Center"
+                                      IsVisible="{Binding Step3Active}"/>
+                                <Path Data="{StaticResource CheckGeometry}"
+                                      Stroke="{StaticResource SuccessBrush}" StrokeThickness="2.4"
+                                      StrokeLineCap="Round" Stretch="Uniform"
+                                      Width="14" Height="14" VerticalAlignment="Center"
+                                      IsVisible="{Binding Step3Done}"/>
+                                <Ellipse Width="12" Height="12" Stroke="#CBD5E1" StrokeThickness="2"
+                                         Fill="Transparent" VerticalAlignment="Center"
+                                         IsVisible="{Binding Step3Pending}"/>
+                                <TextBlock Text="Starting monitoring service" FontSize="13"
+                                           Foreground="{StaticResource MutedFgBrush}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+
+                            <!-- Determinate progress: two columns sized from SplashProgress -->
+                            <Grid Height="6" Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="{Binding SplashProgress, Converter={StaticResource PercentToGridLength}}"/>
+                                    <ColumnDefinition Width="{Binding SplashProgress, Converter={StaticResource PercentToGridLength}, ConverterParameter=remainder}"/>
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0" CornerRadius="3">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,0%">
+                                            <GradientStop Offset="0" Color="{StaticResource PrimaryColor}"/>
+                                            <GradientStop Offset="1" Color="{StaticResource SecondaryColor}"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <Border Grid.Column="1" Background="{StaticResource TrackBrush}"
+                                        CornerRadius="3" Margin="2,0,0,0"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Classes="badge ok" HorizontalAlignment="Center" Margin="0,24,0,0">
+                        <StackPanel Orientation="Horizontal" Spacing="7">
+                            <Ellipse Classes="pulse" Width="8" Height="8"
+                                     Fill="{StaticResource SuccessBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Text="SECURE CHANNEL" LetterSpacing="1.4" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="{Binding AppVersionDisplay}" FontSize="11"
+                               Foreground="{StaticResource FaintFgBrush}"
+                               HorizontalAlignment="Center" Margin="0,14,0,0"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
+</UserControl>

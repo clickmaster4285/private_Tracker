@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- AssemblyName comes from GeneratedIdentity.props (APP_IDENTIFIERS). -->
+    <RootNamespace>AlphaAITracker.Service</RootNamespace>
+    <AssemblyName Condition="'$(AssemblyName)'==''">AlphaAITracker.Service</AssemblyName>
+    <!-- Windows Service hosting; Linux/mac builds still compile but park workers. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)'=='Release'">false</DebugSymbols>
+  </PropertyGroup>
+
+  <!-- Prefer generated props from APP_IDENTIFIERS (publish/generate-windows-vars.sh). -->
+  <Import Project="GeneratedIdentity.props" Condition="Exists('GeneratedIdentity.props')" />
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\APP_IDENTIFIERS" LogicalName="APP_IDENTIFIERS" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)/../VERSION')">
+    <VersionFromFile>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/../VERSION').Trim())</VersionFromFile>
+    <Version>$(VersionFromFile)</Version>
+    <AssemblyVersion>$(VersionFromFile).0</AssemblyVersion>
+    <FileVersion>$(VersionFromFile).0</FileVersion>
+    <InformationalVersion>$(VersionFromFile)</InformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="client.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+  </ItemGroup>
+</Project>

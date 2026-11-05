@@ -1,0 +1,93 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- Exe (console) so PowerShell waits on protected-uninstall / remove-account.
+         Non-CLI launches FreeConsole in Program.cs so the GUI has no black box. -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
+    <DefaultServerUrl Condition="'$(DefaultServerUrl)'==''">http://localhost:8080</DefaultServerUrl>
+    <!-- Release/publish: no PDB next to the exe so unhandled stacks cannot leak
+         developer machine paths like C:\projects\alpha-ai-tracker\... -->
+    <DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)'=='Release'">false</DebugSymbols>
+  </PropertyGroup>
+
+  <!-- Read version from VERSION file (single source of truth).
+       Evaluated at project-evaluation time (NOT in a BeforeBuild target) so that
+       design-time builds from the IDE pick it up too. A target-based read is
+       skipped by design-time compiles, which silently fall back to 1.0.0. -->
+  <PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)/VERSION')">
+    <VersionFromFile>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/VERSION').Trim())</VersionFromFile>
+    <Version>$(VersionFromFile)</Version>
+    <AssemblyVersion>$(VersionFromFile).0</AssemblyVersion>
+    <FileVersion>$(VersionFromFile).0</FileVersion>
+    <InformationalVersion>$(VersionFromFile)</InformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AvaloniaResource Include="Assets\**" />
+    <AvaloniaResource Include="Styles\**" />
+  </ItemGroup>
+
+  <!-- APP_IDENTIFIERS is the single source of truth for app branding. Embedding it
+       in the assembly lets Core/AppInfo.cs read it at runtime, so the GUI picks up
+       edits on the next build with no extra wiring. Because it lives INSIDE
+       client.dll it needs no installer bundling (see AGENTS.md installer parity). -->
+  <ItemGroup>
+    <EmbeddedResource Include="APP_IDENTIFIERS" LogicalName="client.APP_IDENTIFIERS" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="DefaultServerUrl" Value="$(DefaultServerUrl)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.0" />
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="SIPSorcery" Version="8.0.23" />
+    <PackageReference Include="SIPSorceryMedia.Abstractions" Version="8.0.12" />
+    <PackageReference Include="SIPSorceryMedia.Encoders" Version="10.0.4" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" Condition="$(TargetFramework.Contains('-windows'))" />
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="10.0.10" />
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.2" />
+    <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".env.example" CopyToOutputDirectory="Never" />
+    <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Remove="Platform/Linux/alpha_atspi.py" />
+  </ItemGroup>
+
+  <!-- AlphaAITracker.Service is its own project under DlpService/. Without this
+       exclude, SDK glob picks up DlpService/**/*.cs into client.dll → CS8802
+       (two top-level Program.cs) and missing DlpService package refs. -->
+  <ItemGroup>
+    <Compile Remove="DlpService/**" />
+    <None Remove="DlpService/**" />
+    <EmbeddedResource Remove="DlpService/**" />
+    <Content Remove="DlpService/**" />
+    <Compile Remove="client.Tests/**" />
+    <None Remove="client.Tests/**" />
+    <EmbeddedResource Remove="client.Tests/**" />
+    <Content Remove="client.Tests/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="client.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,4 @@
+# Single-source branding/version files are sourced by bash build scripts — must be LF
+client/APP_IDENTIFIERS text eol=lf
+client/VERSION text eol=lf
+*.sh text eol=lf

@@ -1,0 +1,231 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:client.ViewModels"
+             xmlns:models="using:client.Core.Models"
+             x:Class="client.Views.Pages.SystemSpecsPage"
+             x:DataType="vm:SystemSpecsViewModel">
+
+    <!-- ═══ PAGE 5 — System Specifications ═══════════════════════════════
+         The newest device_hardware_info row plus its storage children,
+         the current network identity, and everything still plugged in.
+    ═══════════════════════════════════════════════════════════════════════ -->
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="18" Margin="26,22,26,32">
+
+            <!-- ── Hero band ── -->
+            <Border CornerRadius="{StaticResource RadiusLg}" ClipToBounds="True"
+                    Height="168" BoxShadow="{StaticResource ShadowSm}">
+                <Grid>
+                    <Image Source="avares://client/Assets/backgrounds/specs-hero.png"
+                           Stretch="UniformToFill" Classes="hero-drift"/>
+                    <Border Background="{StaticResource HeroScrimBrush}"/>
+
+                    <Grid Margin="30,0" VerticalAlignment="Center" ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="7">
+                            <TextBlock Text="HARDWARE SNAPSHOT" FontSize="10.5" FontWeight="SemiBold"
+                                       LetterSpacing="1.8" Foreground="#7DD3FC"/>
+                            <TextBlock Text="{Binding Hostname}" FontSize="26" FontWeight="Bold"
+                                       Foreground="White" TextTrimming="CharacterEllipsis"/>
+                            <TextBlock FontSize="12.5" Foreground="#BFD5E8">
+                                <Run Text="{Binding OsName}"/>
+                                <Run Text="{Binding OsVersion}"/>
+                            </TextBlock>
+                        </StackPanel>
+
+                        <Border Grid.Column="1" Classes="badge" VerticalAlignment="Center"
+                                Background="#26FFFFFF" BorderBrush="#3DFFFFFF" Padding="13,7">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="COLLECTED" Foreground="#94A9C0" FontSize="9.5"
+                                           LetterSpacing="1.2"/>
+                                <TextBlock Text="{Binding CollectedAt}" Foreground="#E2E8F0"
+                                           FontSize="11.5" FontWeight="Medium"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- ── Waiting state: collector has not written a snapshot yet ── -->
+            <Border Classes="card" Padding="28" IsVisible="{Binding !HasSnapshot}">
+                <StackPanel Spacing="8" HorizontalAlignment="Center">
+                    <TextBlock Text="No hardware snapshot yet" Classes="h2"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="The collector writes a snapshot on its first cycle. This page fills in automatically once it does."
+                               Classes="label" TextWrapping="Wrap" MaxWidth="420"
+                               TextAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ── Compute + identity ── -->
+            <Grid ColumnDefinitions="1*,1*" IsVisible="{Binding HasSnapshot}">
+
+                <Border Grid.Column="0" Classes="card" Margin="0,0,9,0">
+                    <StackPanel Spacing="15">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Border Width="32" Height="32" CornerRadius="10"
+                                    Background="{StaticResource PrimarySoftBrush}">
+                                <Path Data="{StaticResource ChipGeometry}"
+                                      Stroke="{StaticResource PrimarySoftFgBrush}" StrokeThickness="1.5"
+                                      Stretch="Uniform" Width="16" Height="16"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="Compute" Classes="h2" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Spacing="13">
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="PROCESSOR" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding CpuModel}" Classes="value" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding CpuCores}" Classes="label" FontSize="11.5"/>
+                            </StackPanel>
+                            <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="MEMORY" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding RamTotal}" Classes="value"/>
+                            </StackPanel>
+                            <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="GRAPHICS" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding GpuModel}" Classes="value" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding GpuVram}" Classes="label" FontSize="11.5"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Classes="card" Margin="9,0,0,0">
+                    <StackPanel Spacing="15">
+                        <StackPanel Orientation="Horizontal" Spacing="10">
+                            <Border Width="32" Height="32" CornerRadius="10"
+                                    Background="{StaticResource CyanSoftBrush}">
+                                <Path Data="{StaticResource GaugeGeometry}"
+                                      Stroke="{StaticResource CyanSoftFgBrush}" StrokeThickness="1.7"
+                                      Stretch="Uniform" Width="16" Height="16"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="Network identity" Classes="h2" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Spacing="13">
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="PRIVATE IP" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding PrivateIp}" Classes="value mono"/>
+                            </StackPanel>
+                            <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="PUBLIC IP" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding PublicIp}" Classes="value mono"/>
+                            </StackPanel>
+                            <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="INTERFACE" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding NetworkInterface}" Classes="value"/>
+                                <TextBlock Text="{Binding NetworkSince}" Classes="label" FontSize="11.5"/>
+                            </StackPanel>
+                            <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="MAC ADDRESS" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding MacAddress}" Classes="value mono"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ── Storage ── -->
+            <Border Classes="card" Padding="0">
+                <StackPanel>
+                    <Grid Margin="20,18,20,14" ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="Storage devices" Classes="h2"/>
+                            <TextBlock Text="Disks recorded in the latest hardware snapshot"
+                                       Classes="label" FontSize="11.5"/>
+                        </StackPanel>
+                        <Border Grid.Column="1" Classes="badge info" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding StorageDevices.Count}"/>
+                        </Border>
+                    </Grid>
+
+                    <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+
+                    <ItemsControl ItemsSource="{Binding StorageDevices}" IsVisible="{Binding HasStorage}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="models:StorageDevice">
+                                <Border Classes="row">
+                                    <Grid ColumnDefinitions="Auto,*,Auto">
+                                        <Border Grid.Column="0" Width="30" Height="30" CornerRadius="9"
+                                                Background="{StaticResource VioletSoftBrush}">
+                                            <Path Data="{StaticResource GridGeometry}"
+                                                  Stroke="{StaticResource VioletSoftFgBrush}" StrokeThickness="1.6"
+                                                  Stretch="Uniform" Width="14" Height="14"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="12,0" Spacing="2">
+                                            <TextBlock Text="{Binding Model}" Classes="value"/>
+                                            <TextBlock Text="{Binding DeviceType}" Classes="label" FontSize="11.5"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Classes="value" VerticalAlignment="Center"
+                                                   Text="{Binding CapacityMb, StringFormat='{}{0:N0} MB'}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="No storage devices recorded for this snapshot."
+                               Classes="label" Margin="20,22" HorizontalAlignment="Center"
+                               IsVisible="{Binding !HasStorage}"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ── Attached peripherals ── -->
+            <Border Classes="card" Padding="0">
+                <StackPanel>
+                    <Grid Margin="20,18,20,14" ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="Attached peripherals" Classes="h2"/>
+                            <TextBlock Text="Devices still plugged in (never unplugged)"
+                                       Classes="label" FontSize="11.5"/>
+                        </StackPanel>
+                        <Border Grid.Column="1" Classes="badge info" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding AttachedDevices.Count}"/>
+                        </Border>
+                    </Grid>
+
+                    <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+
+                    <ItemsControl ItemsSource="{Binding AttachedDevices}" IsVisible="{Binding HasAttached}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="models:HardwareDevice">
+                                <Border Classes="row">
+                                    <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+                                        <Border Grid.Column="0" Classes="badge" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding DeviceClass}"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="12,0" Spacing="2">
+                                            <TextBlock Text="{Binding Product}" Classes="value"/>
+                                            <TextBlock Text="{Binding Vendor}" Classes="label" FontSize="11.5"/>
+                                        </StackPanel>
+                                        <TextBlock Grid.Column="2" Text="{Binding DeviceNode}"
+                                                   Classes="label mono" FontSize="11"
+                                                   VerticalAlignment="Center" Margin="0,0,14,0"/>
+                                        <TextBlock Grid.Column="3" Classes="label mono" FontSize="11"
+                                                   VerticalAlignment="Center" MinWidth="120"
+                                                   TextAlignment="Right"
+                                                   Text="{Binding PluggedAt, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="No peripherals are currently attached."
+                               Classes="label" Margin="20,22" HorizontalAlignment="Center"
+                               IsVisible="{Binding !HasAttached}"/>
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

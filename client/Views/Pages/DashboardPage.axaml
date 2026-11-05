@@ -1,0 +1,334 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:client.ViewModels"
+             xmlns:models="using:client.Core.Models"
+             xmlns:conv="clr-namespace:client.Converters"
+             x:Class="client.Views.Pages.DashboardPage"
+             x:DataType="vm:DashboardViewModel">
+
+    <!-- ═══ PAGE 4 — Operational Overview ════════════════════════════════
+         Hero band carries the employee identity over the fibre-optic
+         artwork; below it the tiles aggregate what the collectors have
+         already persisted. Read-only — nothing here writes to the DB.
+    ═══════════════════════════════════════════════════════════════════════ -->
+
+    <UserControl.Resources>
+        <conv:StringNotEmptyConverter x:Key="StringNotEmpty"/>
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="18" Margin="26,22,26,32">
+
+            <!-- ── Software update banner ── -->
+            <Border Classes="card" IsVisible="{Binding Update.UpdateAvailable}"
+                    Background="{StaticResource PrimarySoftBrush}"
+                    BorderBrush="{StaticResource PrimaryBrush}" BorderThickness="1"
+                    BoxShadow="{StaticResource ShadowSm}">
+                <Grid ColumnDefinitions="*,Auto" Margin="0">
+                    <StackPanel Spacing="7" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="9">
+                            <Border Width="28" Height="28" CornerRadius="8"
+                                    Background="{StaticResource PrimaryBrush}">
+                                <Path Data="{StaticResource DownloadGeometry}"
+                                      Stroke="White" StrokeThickness="1.7" StrokeLineCap="Round"
+                                      Stretch="Uniform" Width="14" Height="14"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel Spacing="1">
+                                <TextBlock Text="Software update available" Classes="h2"/>
+                                <TextBlock Classes="label" FontSize="11.5">
+                                    <Run Text="Version"/>
+                                    <Run Text=" "/>
+                                    <Run Text="{Binding Update.LatestVersion, Mode=OneWay}"/>
+                                    <Run Text="is ready — installed"/>
+                                    <Run Text=" "/>
+                                    <Run Text="{Binding Update.VersionLabel, Mode=OneWay}"/>
+                                    <Run Text="is running now."/>
+                                </TextBlock>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding Update.ReleaseNotes}" Classes="label" FontSize="11.5"
+                                   TextWrapping="Wrap" MaxHeight="54"
+                                   IsVisible="{Binding Update.ReleaseNotes, Converter={StaticResource StringNotEmpty}}"/>
+
+                        <StackPanel Orientation="Horizontal" Spacing="10"
+                                    IsVisible="{Binding Update.IsDownloading}">
+                            <TextBlock Classes="label mono" FontSize="11.5" VerticalAlignment="Center">
+                                <Run Text="Downloading"/>
+                                <Run Text=" "/>
+                                <Run Text="{Binding Update.DownloadProgressText, Mode=OneWay}"/>
+                            </TextBlock>
+                            <ProgressBar Minimum="0" Maximum="100"
+                                         Value="{Binding Update.DownloadProgress}"
+                                         Width="220" Height="6" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"
+                                VerticalAlignment="Center">
+                        <Button Classes="primary" Command="{Binding Update.InstallUpdateCommand}"
+                                IsEnabled="{Binding !Update.IsDownloading}"
+                                ToolTip.Tip="Download and install">
+                            <TextBlock Text="{Binding Update.InstallButtonText}"/>
+                        </Button>
+                        <Button Classes="ghost" Command="{Binding Update.DismissUpdateCommand}"
+                                IsEnabled="{Binding !Update.IsDownloading}"
+                                ToolTip.Tip="Remind me later (this version)">
+                            <TextBlock Text="Later"/>
+                        </Button>
+                        <Button Classes="ghost" Command="{Binding Update.OpenReleasesPageCommand}"
+                                ToolTip.Tip="Open the releases page in your browser">
+                            <TextBlock Text="GitHub"/>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ── Identity hero ── -->
+            <Border CornerRadius="{StaticResource RadiusLg}" ClipToBounds="True"
+                    Height="188" BoxShadow="{StaticResource ShadowSm}">
+                <Grid>
+                    <Image Source="avares://client/Assets/backgrounds/dashboard-hero.png"
+                           Stretch="UniformToFill" Classes="hero-drift"/>
+                    <Border Background="{StaticResource HeroScrimBrush}"/>
+
+                    <Grid Margin="30,0" VerticalAlignment="Center"
+                          ColumnDefinitions="Auto,*,Auto">
+                        <Border Grid.Column="0" Width="66" Height="66" CornerRadius="33"
+                                Background="{Binding EmployeeAvatarColor}"
+                                BoxShadow="{StaticResource ShadowLg}">
+                            <TextBlock Text="{Binding EmployeeAvatar}"
+                                       FontSize="24" FontWeight="Bold" Foreground="White"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+
+                        <StackPanel Grid.Column="1" Margin="18,0,0,0" Spacing="5">
+                            <TextBlock Text="{Binding EmployeeName}"
+                                       FontSize="23" FontWeight="Bold" Foreground="White"
+                                       TextTrimming="CharacterEllipsis"/>
+                            <TextBlock Text="{Binding EmployeeDepartment}" FontSize="12.5"
+                                       Foreground="#BFD5E8"/>
+
+                            <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,3,0,0">
+                                <Border Classes="badge" Background="#26FFFFFF" BorderBrush="#3DFFFFFF">
+                                    <TextBlock Text="{Binding EmployeeId}" Foreground="#E2E8F0"/>
+                                </Border>
+                                <Border Classes="badge" Background="#26FFFFFF" BorderBrush="#3DFFFFFF"
+                                        IsVisible="{Binding EmployeeShift, Converter={StaticResource StringNotEmpty}}">
+                                    <TextBlock Text="{Binding EmployeeShift}" Foreground="#E2E8F0"/>
+                                </Border>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- Live tracking indicator -->
+                        <Border Grid.Column="2" Classes="badge" VerticalAlignment="Center"
+                                Background="#2610B981" BorderBrush="#5510B981" Padding="13,7">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Ellipse Classes="pulse" Width="9" Height="9" Fill="#34D399"
+                                         VerticalAlignment="Center"
+                                         IsVisible="{Binding IsTracking}"/>
+                                <Ellipse Width="9" Height="9" Fill="#FBBF24" VerticalAlignment="Center"
+                                         IsVisible="{Binding !IsTracking}"/>
+                                <TextBlock Text="{Binding TrackingLabel}" Foreground="#D1FAE5"
+                                           FontSize="12" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <!-- ── Metric tiles ── -->
+            <Grid ColumnDefinitions="*,*,*,*" >
+                <Border Grid.Column="0" Classes="card" Margin="0,0,7,0">
+                    <StackPanel Spacing="7">
+                        <StackPanel Orientation="Horizontal" Spacing="9">
+                            <Border Width="30" Height="30" CornerRadius="9"
+                                    Background="{StaticResource PrimarySoftBrush}">
+                                <Path Data="{StaticResource GridGeometry}"
+                                      Stroke="{StaticResource PrimarySoftFgBrush}" StrokeThickness="1.7"
+                                      Stretch="Uniform" Width="15" Height="15"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="APPLICATIONS" Classes="eyebrow" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding InstalledAppCount}" Classes="metric"/>
+                        <TextBlock Text="Detected on this machine" Classes="label" FontSize="11.5"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Classes="card" Margin="7,0">
+                    <StackPanel Spacing="7">
+                        <StackPanel Orientation="Horizontal" Spacing="9">
+                            <Border Width="30" Height="30" CornerRadius="9"
+                                    Background="{StaticResource CyanSoftBrush}">
+                                <Path Data="{StaticResource ChipGeometry}"
+                                      Stroke="{StaticResource CyanSoftFgBrush}" StrokeThickness="1.5"
+                                      Stretch="Uniform" Width="15" Height="15"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="PERIPHERALS" Classes="eyebrow" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding AttachedDeviceCount}" Classes="metric"/>
+                        <TextBlock Text="Currently plugged in" Classes="label" FontSize="11.5"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Classes="card" Margin="7,0">
+                    <StackPanel Spacing="7">
+                        <StackPanel Orientation="Horizontal" Spacing="9">
+                            <Border Width="30" Height="30" CornerRadius="9"
+                                    Background="{StaticResource VioletSoftBrush}">
+                                <Path Data="{StaticResource GaugeGeometry}"
+                                      Stroke="{StaticResource VioletSoftFgBrush}" StrokeThickness="1.7"
+                                      Stretch="Uniform" Width="15" Height="15"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="STORAGE" Classes="eyebrow" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding StorageDeviceCount}" Classes="metric"/>
+                        <TextBlock Text="Disks in the last snapshot" Classes="label" FontSize="11.5"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="3" Classes="card" Margin="7,0,0,0">
+                    <StackPanel Spacing="7">
+                        <StackPanel Orientation="Horizontal" Spacing="9">
+                            <Border Width="30" Height="30" CornerRadius="9"
+                                    Background="{StaticResource SuccessSoftBrush}">
+                                <Path Data="{StaticResource RefreshGeometry}"
+                                      Stroke="{StaticResource SuccessSoftFgBrush}" StrokeThickness="1.7"
+                                      Stretch="Uniform" Width="15" Height="15"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="SESSION" Classes="eyebrow" VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding SessionUptime}" Classes="metric" FontSize="22"/>
+                        <TextBlock Text="Since this app started" Classes="label" FontSize="11.5"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ── Pipeline health + system snapshot ── -->
+            <Grid ColumnDefinitions="1*,1.25*">
+
+                <Border Grid.Column="0" Classes="card" Margin="0,0,9,0">
+                    <StackPanel Spacing="15">
+                        <TextBlock Text="Sync pipeline" Classes="h2"/>
+
+                        <Border Classes="badge ok" HorizontalAlignment="Left"
+                                IsVisible="{Binding IsSyncHealthy}">
+                            <TextBlock Text="{Binding SyncStateLabel}"/>
+                        </Border>
+                        <Border Classes="badge warn" HorizontalAlignment="Left"
+                                IsVisible="{Binding !IsSyncHealthy}">
+                            <TextBlock Text="{Binding SyncStateLabel}"/>
+                        </Border>
+
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto">
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="Last heartbeat" Classes="label"/>
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding LastHeartbeat}"
+                                       Classes="value" HorizontalAlignment="Right"/>
+
+                            <Rectangle Grid.Row="1" Grid.ColumnSpan="2" Height="1"
+                                       Fill="{StaticResource BorderBrush}" Margin="0,11"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Classes="card" Margin="9,0,0,0">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="This machine" Classes="h2"/>
+                        <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto"
+                              >
+                            <StackPanel Grid.Row="0" Grid.Column="0" Spacing="3" Margin="0,0,12,14">
+                                <TextBlock Text="HOSTNAME" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding Hostname}" Classes="value"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="0" Grid.Column="1" Spacing="3" Margin="0,0,0,14">
+                                <TextBlock Text="OPERATING SYSTEM" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding OsSummary}" Classes="value"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="1" Grid.Column="0" Spacing="3" Margin="0,0,12,14">
+                                <TextBlock Text="PROCESSOR" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding CpuSummary}" Classes="value"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="3" Margin="0,0,0,14">
+                                <TextBlock Text="MEMORY" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding RamSummary}" Classes="value"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="2" Grid.Column="0" Spacing="3" Margin="0,0,12,14">
+                                <TextBlock Text="PRIVATE IP" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding PrivateIp}" Classes="value mono" FontSize="12.5"/>
+                            </StackPanel>
+                            <StackPanel Grid.Row="2" Grid.Column="1" Spacing="3" Margin="0,0,0,14">
+                                <TextBlock Text="PUBLIC IP" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding PublicIp}" Classes="value mono" FontSize="12.5"/>
+                            </StackPanel>
+
+                            <StackPanel Grid.Row="3" Grid.Column="0" Spacing="3" Margin="0,0,12,0">
+                                <TextBlock Text="INTERFACE" Classes="eyebrow"/>
+                                <TextBlock Text="{Binding NetworkInterface}" Classes="value"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ── Attached devices ── -->
+            <Border Classes="card" Padding="0">
+                <StackPanel>
+                    <Grid Margin="20,18,20,14" ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="Attached devices" Classes="h2"/>
+                            <TextBlock Text="Peripherals plugged in right now" Classes="label" FontSize="11.5"/>
+                        </StackPanel>
+                        <Border Grid.Column="1" Classes="badge info" VerticalAlignment="Center">
+                            <TextBlock Text="{Binding AttachedDeviceCount}"/>
+                        </Border>
+                    </Grid>
+
+                    <Rectangle Height="1" Fill="{StaticResource BorderBrush}"/>
+
+                    <ItemsControl ItemsSource="{Binding AttachedDevices}"
+                                  IsVisible="{Binding HasAttachedDevices}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="models:HardwareDevice">
+                                <Border Classes="row">
+                                    <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+                                        <Border Grid.Column="0" Width="30" Height="30" CornerRadius="9"
+                                                Background="{StaticResource MutedBrush}">
+                                            <Path Data="{StaticResource ChipGeometry}"
+                                                  Stroke="{StaticResource MutedFgBrush}" StrokeThickness="1.5"
+                                                  Stretch="Uniform" Width="14" Height="14"
+                                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" Margin="12,0" Spacing="2">
+                                            <TextBlock Text="{Binding Product}" Classes="value"/>
+                                            <TextBlock Text="{Binding Vendor}" Classes="label" FontSize="11.5"/>
+                                        </StackPanel>
+                                        <Border Grid.Column="2" Classes="badge" VerticalAlignment="Center"
+                                                Margin="0,0,10,0">
+                                            <TextBlock Text="{Binding DeviceClass}"/>
+                                        </Border>
+                                        <TextBlock Grid.Column="3" Classes="label mono" FontSize="11"
+                                                   VerticalAlignment="Center" MinWidth="120"
+                                                   TextAlignment="Right"
+                                                   Text="{Binding PluggedAt, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="No peripherals are currently attached."
+                               Classes="label" Margin="20,22" HorizontalAlignment="Center"
+                               IsVisible="{Binding !HasAttachedDevices}"/>
+                </StackPanel>
+            </Border>
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

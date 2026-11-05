@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# generate-windows-vars.sh — Create a temporary Inno Setup include file
+# from APP_IDENTIFIERS + client/.env so the .iss script doesn't hardcode
+# app metadata or DLP/service.env poll knobs.
+# Output: publish/windows/windows_vars.iss
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+if [ ! -f "$PROJECT_DIR/APP_IDENTIFIERS" ]; then
+  echo "ERROR: $PROJECT_DIR/APP_IDENTIFIERS not found"
+  exit 1
+fi
+
+OUT="$SCRIPT_DIR/windows/windows_vars.iss"
+mkdir -p "$(dirname "$OUT")"
+
+# shellcheck disable=SC1090
+source "$PROJECT_DIR/APP_IDENTIFIERS"
+
+# Fallbacks if older APP_IDENTIFIERS omit the DLP keys.
+: "${WINDOWS_SERVICE_NAME:=${APP_MUTEX}.Service}"
+: "${WINDOWS_SERVICE_DISPLAY_NAME:=${DISPLAY_NAME} DLP}"
+: "${WINDOWS_DLP_PIPE_NAME:=${APP_MUTEX}.Dlp}"
+: "${WINDOWS_SERVICE_MAINT_TASK:=${APP_MUTEX}SvcMaint}"
+
+# ─── Bake DLP / control knobs from client/.env (fallback .env.example → hard default)
+# These become Inno #defines and are written into %ProgramData%\...\service.env
+# on every install/upgrade (upsert), so lab .env CONTROL_POLL=60 ships in the installer.
+env_get() {
+  local key="$1"
+  local fallback="$2"
+  local file val
+  for file in "$PROJECT_DIR/.env" "$PROJECT_DIR/.env.example"; do
+    if [ -f "$file" ]; then
+      val=$(grep -E "^${key}=" "$file" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^"//;s/"$//;s/^'\''//;s/'\''$//')
+      if [ -n "${val:-}" ]; then
+        printf '%s' "$val"
+        return 0
+      fi
+    fi
+  done
+  printf '%s' "$fallback"
+}
+
+ALPHA_DLP_ENABLED_V=$(env_get ALPHA_DLP_ENABLED true)
+ALPHA_DLP_USB_BLOCK_V=$(env_get ALPHA_DLP_USB_BLOCK true)
+ALPHA_DLP_WEB_BLOCK_V=$(env_get ALPHA_DLP_WEB_BLOCK true)
+ALPHA_DLP_POLICY_POLL_SEC_V=$(env_get ALPHA_DLP_POLICY_POLL_SEC 300)
+ALPHA_DLP_ALERT_SYNC_SEC_V=$(env_get ALPHA_DLP_ALERT_SYNC_SEC 60)
+ALPHA_DLP_WATCHDOG_V=$(env_get ALPHA_DLP_WATCHDOG true)
+ALPHA_DLP_WATCHDOG_POLL_SEC_V=$(env_get ALPHA_DLP_WATCHDOG_POLL_SEC 8)
+ALPHA_UPDATE_ENABLED_V=$(env_get ALPHA_UPDATE_ENABLED true)
+ALPHA_UPDATE_AUTO_INSTALL_V=$(env_get ALPHA_UPDATE_AUTO_INSTALL true)
+ALPHA_UPDATE_AUTO_CHECK_HOURS_V=$(env_get ALPHA_UPDATE_AUTO_CHECK_HOURS 24)
+ALPHA_CONTROL_POLL_SEC_V=$(env_get ALPHA_CONTROL_POLL_SEC 3600)
+
+cat > "$OUT" <<EOF
+; Auto-generated from APP_IDENTIFIERS + client/.env — do not edit manually
+#define MyAppName "$DISPLAY_NAME"
+#define MyAppPublisher "$PUBLISHER"
+#define MyAppURL "$APP_URL"
+#define MyAppExeName "$EXECUTABLE_NAME.exe"
+#define APP_MUTEX "$APP_MUTEX"
+#define WINDOWS_INSTALLER_NAME "$WINDOWS_INSTALLER_NAME"
+#define WINDOWS_SERVICE_NAME "$WINDOWS_SERVICE_NAME"
+#define WINDOWS_SERVICE_DISPLAY_NAME "$WINDOWS_SERVICE_DISPLAY_NAME"
+#define WINDOWS_DLP_PIPE_NAME "$WINDOWS_DLP_PIPE_NAME"
+#define WINDOWS_SERVICE_MAINT_TASK "$WINDOWS_SERVICE_MAINT_TASK"
+#define WINDOWS_SERVICE_EXE_NAME "$WINDOWS_SERVICE_NAME.exe"
+; DLP / Fixed-Roaming knobs baked from .env at build time
+#define ALPHA_DLP_ENABLED "$ALPHA_DLP_ENABLED_V"
+#define ALPHA_DLP_USB_BLOCK "$ALPHA_DLP_USB_BLOCK_V"
+#define ALPHA_DLP_WEB_BLOCK "$ALPHA_DLP_WEB_BLOCK_V"
+#define ALPHA_DLP_POLICY_POLL_SEC "$ALPHA_DLP_POLICY_POLL_SEC_V"
+#define ALPHA_DLP_ALERT_SYNC_SEC "$ALPHA_DLP_ALERT_SYNC_SEC_V"
+#define ALPHA_DLP_WATCHDOG "$ALPHA_DLP_WATCHDOG_V"
+#define ALPHA_DLP_WATCHDOG_POLL_SEC "$ALPHA_DLP_WATCHDOG_POLL_SEC_V"
+#define ALPHA_UPDATE_ENABLED "$ALPHA_UPDATE_ENABLED_V"
+#define ALPHA_UPDATE_AUTO_INSTALL "$ALPHA_UPDATE_AUTO_INSTALL_V"
+#define ALPHA_UPDATE_AUTO_CHECK_HOURS "$ALPHA_UPDATE_AUTO_CHECK_HOURS_V"
+#define ALPHA_CONTROL_POLL_SEC "$ALPHA_CONTROL_POLL_SEC_V"
+EOF
+
+echo "Generated $OUT (CONTROL_POLL=${ALPHA_CONTROL_POLL_SEC_V}s POLICY_POLL=${ALPHA_DLP_POLICY_POLL_SEC_V}s)"
+
+# MSBuild props so DlpService AssemblyName / exe match APP_IDENTIFIERS.
+PROPS="$PROJECT_DIR/DlpService/GeneratedIdentity.props"
+cat > "$PROPS" <<EOF
+<!-- Auto-generated from APP_IDENTIFIERS — do not edit manually -->
+<Project>
+  <PropertyGroup>
+    <AssemblyName>$WINDOWS_SERVICE_NAME</AssemblyName>
+  </PropertyGroup>
+</Project>
+EOF
+echo "Generated $PROPS"

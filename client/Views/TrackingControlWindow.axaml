@@ -1,0 +1,151 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:client.ViewModels"
+        x:Class="client.Views.TrackingControlWindow"
+        x:DataType="vm:TrackingControlViewModel"
+        Title=""
+        CanResize="False"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowDecorations="None"
+        TransparencyLevelHint="Transparent"
+        Background="Transparent"
+        WindowStartupLocation="CenterScreen">
+
+  <!--
+    Size / padding / type scale from primary screen in code-behind (10%×5% target,
+    screen-relative min/max). ─ / × → tray.
+    Window is transparent so RootBorder CornerRadius is visible (no square HWND fill).
+  -->
+  <Border x:Name="RootBorder"
+          Background="#F5F5F5"
+          BorderBrush="#D0D0D0"
+          BorderThickness="1"
+          CornerRadius="4"
+          ClipToBounds="True">
+    <Grid x:Name="RootGrid" RowDefinitions="*,Auto">
+      <!-- 3-col: left spacer mirrors caption width so HH:MM:SS stays optically centered. -->
+      <Grid x:Name="TimerRow" Grid.Row="0" ColumnDefinitions="Auto,*,Auto" Margin="0">
+        <Border x:Name="DragArea"
+                Grid.Column="0" Grid.ColumnSpan="3"
+                Background="Transparent"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                PointerPressed="OnCaptionPointerPressed"/>
+        <Border x:Name="CaptionSpacer"
+                Grid.Column="0"
+                Width="40"
+                IsHitTestVisible="False"/>
+        <StackPanel x:Name="TimerPanel"
+                    Grid.Column="1"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Spacing="0"
+                    IsHitTestVisible="False">
+          <TextBlock x:Name="TimerText"
+                     Text="{Binding ElapsedHmText}"
+                     FontFamily="Cascadia Code, Cascadia Mono, Consolas, Courier New"
+                     FontSize="18"
+                     FontWeight="SemiBold"
+                     Foreground="#1A1A1A"
+                     VerticalAlignment="Center"
+                     LetterSpacing="1"/>
+          <TextBlock x:Name="TimerSecondsText"
+                     Text="{Binding ElapsedSecText}"
+                     FontFamily="Cascadia Code, Cascadia Mono, Consolas, Courier New"
+                     FontSize="12"
+                     FontWeight="SemiBold"
+                     Foreground="#555555"
+                     VerticalAlignment="Center"
+                     Margin="0,2,0,0"
+                     LetterSpacing="0"/>
+        </StackPanel>
+        <StackPanel x:Name="CaptionButtons"
+                    Grid.Column="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="0,1,2,0"
+                    Spacing="2">
+          <Button x:Name="MinimizeButton"
+                  Content="─"
+                  Width="18" Height="18"
+                  FontSize="13"
+                  Padding="0"
+                  Foreground="#333333"
+                  Cursor="Hand"
+                  Click="OnMinimizeClick"
+                  ToolTip.Tip="Minimize to tray">
+            <Button.Template>
+              <ControlTemplate>
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  Background="Transparent"/>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
+          <Button x:Name="CloseButton"
+                  Content="×"
+                  Width="18" Height="18"
+                  FontSize="14"
+                  Padding="0"
+                  Foreground="#333333"
+                  Cursor="Hand"
+                  Click="OnCloseClick"
+                  ToolTip.Tip="Close to tray">
+            <Button.Template>
+              <ControlTemplate>
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  Background="Transparent"/>
+              </ControlTemplate>
+            </Button.Template>
+          </Button>
+        </StackPanel>
+      </Grid>
+
+      <StackPanel x:Name="ActionRow"
+                  Grid.Row="1"
+                  Orientation="Horizontal"
+                  Spacing="6"
+                  HorizontalAlignment="Center"
+                  Margin="4,0,4,4">
+        <Button x:Name="StartButton"
+                Content="Start"
+                Command="{Binding StartTrackingCommand}"
+                Width="56" MinWidth="56" Height="22"
+                Padding="0"
+                FontSize="11"
+                FontWeight="SemiBold"
+                HorizontalContentAlignment="Center"
+                VerticalContentAlignment="Center"
+                Background="#E8E8F0"
+                Foreground="#1A237E"
+                BorderBrush="#1A237E"
+                BorderThickness="1"
+                CornerRadius="2"
+                Opacity="{Binding StartOpacity}"
+                Cursor="Hand"/>
+        <Button x:Name="StopButton"
+                Content="Stop"
+                Command="{Binding StopTrackingCommand}"
+                Width="56" MinWidth="56" Height="22"
+                Padding="0"
+                FontSize="11"
+                FontWeight="SemiBold"
+                HorizontalContentAlignment="Center"
+                VerticalContentAlignment="Center"
+                Background="#FCE8E8"
+                Foreground="#E53935"
+                BorderBrush="#E53935"
+                BorderThickness="1"
+                CornerRadius="2"
+                Opacity="{Binding StopOpacity}"
+                Cursor="Hand"/>
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>

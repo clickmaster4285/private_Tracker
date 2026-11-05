@@ -1,0 +1,229 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:client.ViewModels"
+             xmlns:conv="clr-namespace:client.Converters"
+             x:Class="client.Views.Pages.PermissionSetupPage"
+             x:DataType="vm:MainViewModel">
+
+    <!-- ═══ PAGE 3 — Permission Setup ═════════════════════════════════════
+         One card per wizard step. The step panels are mutually exclusive
+         (driven by MainViewModel.CurrentPermissionStep) and share the
+         stepper header, so adding a step touches the VM only.
+    ═══════════════════════════════════════════════════════════════════════ -->
+
+    <UserControl.Resources>
+        <conv:BoolInvertConverter x:Key="BoolInvert"/>
+        <conv:StringNotEmptyConverter x:Key="StringNotEmpty"/>
+        <conv:PercentToGridLengthConverter x:Key="PercentToGridLength"/>
+    </UserControl.Resources>
+
+    <Border Background="{StaticResource CanvasBrush}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <Border Classes="page-in" Margin="32,40">
+                <StackPanel MaxWidth="620" HorizontalAlignment="Center" Spacing="0">
+
+                    <!-- ── Stepper header ── -->
+                    <StackPanel Spacing="10" HorizontalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" Spacing="9" HorizontalAlignment="Center">
+                            <Border Width="34" Height="34" CornerRadius="10"
+                                    Background="{StaticResource PrimarySoftBrush}">
+                                <Path Data="{StaticResource ShieldGeometry}"
+                                      Fill="{StaticResource PrimaryBrush}"
+                                      Stretch="Uniform" Width="18" Height="18"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="{Binding AppDisplayName}" Classes="h2"
+                                       FontSize="17" VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <TextBlock Classes="eyebrow" HorizontalAlignment="Center" FontSize="11">
+                            <Run Text="SETUP STEP"/>
+                            <Run Text="{Binding CurrentPermissionStepNumber}"/>
+                            <Run Text="OF"/>
+                            <Run Text="{Binding TotalPermissionSteps}"/>
+                        </TextBlock>
+
+                        <!-- Progress track: filled fraction = step / total -->
+                        <Grid Height="5" Width="260">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="{Binding SetupProgressPercent, Converter={StaticResource PercentToGridLength}}"/>
+                                <ColumnDefinition Width="{Binding SetupProgressPercent, Converter={StaticResource PercentToGridLength}, ConverterParameter=remainder}"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Background="{StaticResource PrimaryBrush}" CornerRadius="3"/>
+                            <Border Grid.Column="1" Background="{StaticResource TrackBrush}" CornerRadius="3" Margin="2,0,0,0"/>
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- ── Step 1: Auto-start ── -->
+                    <Border Classes="card fade-in" Margin="0,28,0,0"
+                            Padding="32,30" IsVisible="{Binding IsAutoStartStep}">
+                        <StackPanel Spacing="14">
+                            <Border Width="50" Height="50" CornerRadius="{StaticResource RadiusLg}"
+                                    Background="{StaticResource PrimaryBrush}" HorizontalAlignment="Left"
+                                    BoxShadow="{StaticResource CardShadow}">
+                                <TextBlock Text="1" FontSize="21" FontWeight="Bold"
+                                           Foreground="{StaticResource PrimaryFgBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="{Binding StepTitle}" Classes="h1" FontSize="21"/>
+                            <TextBlock Text="{Binding StepDescription}" Classes="label"
+                                       FontSize="13.5" TextWrapping="Wrap" LineHeight="21"/>
+                            <Button Classes="primary" HorizontalAlignment="Left" MinWidth="210"
+                                    Margin="0,6,0,0"
+                                    Command="{Binding GrantCurrentStepPermissionCommand}"
+                                    IsEnabled="{Binding IsStepWorking, Converter={StaticResource BoolInvert}}"
+                                    Content="{Binding StepButtonText}"/>
+                            <TextBlock Text="{Binding StepStatusText}" FontSize="12"
+                                       Foreground="{StaticResource SuccessSoftFgBrush}"
+                                       TextWrapping="Wrap"
+                                       IsVisible="{Binding StepStatusText, Converter={StaticResource StringNotEmpty}}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ── Step 2: Background guard ── -->
+                    <Border Classes="card fade-in" Margin="0,28,0,0"
+                            Padding="32,30" IsVisible="{Binding IsBackgroundStep}">
+                        <StackPanel Spacing="14">
+                            <Border Width="50" Height="50" CornerRadius="{StaticResource RadiusLg}"
+                                    Background="{StaticResource InfoBrush}" HorizontalAlignment="Left"
+                                    BoxShadow="{StaticResource CardShadow}">
+                                <TextBlock Text="2" FontSize="21" FontWeight="Bold"
+                                           Foreground="{StaticResource InfoFgBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="{Binding StepTitle}" Classes="h1" FontSize="21"/>
+                            <TextBlock Text="{Binding StepDescription}" Classes="label"
+                                       FontSize="13.5" TextWrapping="Wrap" LineHeight="21"/>
+                            <Button Classes="success" HorizontalAlignment="Left" MinWidth="210"
+                                    Margin="0,6,0,0"
+                                    Command="{Binding GrantCurrentStepPermissionCommand}"
+                                    IsEnabled="{Binding IsStepWorking, Converter={StaticResource BoolInvert}}"
+                                    Content="{Binding StepButtonText}"/>
+                            <TextBlock Text="{Binding StepStatusText}" FontSize="12"
+                                       Foreground="{StaticResource SuccessSoftFgBrush}"
+                                       TextWrapping="Wrap"
+                                       IsVisible="{Binding StepStatusText, Converter={StaticResource StringNotEmpty}}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ── Step 3: Dependencies (Linux) ── -->
+                    <Border Classes="card fade-in" Margin="0,28,0,0"
+                            Padding="32,30" IsVisible="{Binding IsDependencyStep}">
+                        <StackPanel Spacing="14">
+                            <Border Width="50" Height="50" CornerRadius="{StaticResource RadiusLg}"
+                                    Background="{StaticResource WarningBrush}" HorizontalAlignment="Left"
+                                    BoxShadow="{StaticResource CardShadow}">
+                                <TextBlock Text="3" FontSize="21" FontWeight="Bold"
+                                           Foreground="{StaticResource WarningFgBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="{Binding StepTitle}" Classes="h1" FontSize="21"/>
+                            <TextBlock Text="{Binding StepDescription}" Classes="label"
+                                       FontSize="13.5" TextWrapping="Wrap" LineHeight="21"/>
+
+                            <Border Background="{StaticResource DangerSoftBrush}"
+                                    BorderBrush="{StaticResource DangerSoftBorderBrush}"
+                                    BorderThickness="1" CornerRadius="{StaticResource RadiusSm}"
+                                    Padding="14,11">
+                                <TextBlock Text="{Binding MissingDependenciesList}"
+                                           Classes="mono" FontSize="12.5"
+                                           Foreground="{StaticResource DangerSoftFgBrush}"
+                                           TextWrapping="Wrap"/>
+                            </Border>
+
+                            <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
+                                <Button Classes="primary" MinWidth="200"
+                                        Command="{Binding GrantCurrentStepPermissionCommand}"
+                                        IsEnabled="{Binding IsStepWorking, Converter={StaticResource BoolInvert}}"
+                                        Content="Install Automatically"/>
+                                <Button Classes="secondary"
+                                        Command="{Binding ShowManualInstallCommand}"
+                                        Content="Install Manually"/>
+                            </StackPanel>
+
+                            <TextBox Text="{Binding StepStatusText}" Classes="readonly mono"
+                                     IsReadOnly="True" TextWrapping="Wrap" MaxHeight="180"
+                                     AcceptsReturn="True"
+                                     IsVisible="{Binding StepStatusText, Converter={StaticResource StringNotEmpty}}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ── Step: Location (when ALPHA_LOCATION_ENABLED) ── -->
+                    <Border Classes="card fade-in" Margin="0,28,0,0"
+                            Padding="32,30" IsVisible="{Binding IsLocationStep}">
+                        <StackPanel Spacing="14">
+                            <Border Width="50" Height="50" CornerRadius="{StaticResource RadiusLg}"
+                                    Background="{StaticResource SuccessBrush}" HorizontalAlignment="Left"
+                                    BoxShadow="{StaticResource CardShadow}">
+                                <TextBlock Text="{Binding CurrentPermissionStepNumber}"
+                                           FontSize="21" FontWeight="Bold"
+                                           Foreground="{StaticResource SuccessFgBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="{Binding StepTitle}" Classes="h1" FontSize="21"/>
+                            <TextBlock Text="{Binding StepDescription}" Classes="label"
+                                       FontSize="13.5" TextWrapping="Wrap" LineHeight="21"/>
+                            <Button Classes="primary" HorizontalAlignment="Left" MinWidth="210"
+                                    Margin="0,6,0,0"
+                                    Command="{Binding GrantCurrentStepPermissionCommand}"
+                                    IsEnabled="{Binding IsStepWorking, Converter={StaticResource BoolInvert}}"
+                                    Content="{Binding StepButtonText}"/>
+                            <TextBlock Text="{Binding StepStatusText}" FontSize="12"
+                                       Classes="label" TextWrapping="Wrap"
+                                       IsVisible="{Binding StepStatusText, Converter={StaticResource StringNotEmpty}}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ── Final step: platform permissions ── -->
+                    <Border Classes="card fade-in" Margin="0,28,0,0"
+                            Padding="32,30" IsVisible="{Binding IsPermissionStep}">
+                        <StackPanel Spacing="14">
+                            <Border Width="50" Height="50" CornerRadius="{StaticResource RadiusLg}"
+                                    Background="{StaticResource WarningBrush}" HorizontalAlignment="Left"
+                                    BoxShadow="{StaticResource CardShadow}">
+                                <TextBlock Text="{Binding CurrentPermissionStepNumber}"
+                                           FontSize="21" FontWeight="Bold"
+                                           Foreground="{StaticResource WarningFgBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <TextBlock Text="{Binding StepTitle}" Classes="h1" FontSize="21"/>
+                            <TextBlock Text="{Binding StepDescription}" Classes="label"
+                                       FontSize="13.5" TextWrapping="Wrap" LineHeight="21"/>
+                            <Button Classes="primary" HorizontalAlignment="Left" MinWidth="210"
+                                    Margin="0,6,0,0"
+                                    Command="{Binding GrantCurrentStepPermissionCommand}"
+                                    IsEnabled="{Binding IsStepWorking, Converter={StaticResource BoolInvert}}"
+                                    Content="{Binding StepButtonText}"/>
+                            <TextBlock Text="{Binding StepStatusText}" FontSize="12"
+                                       Classes="label" TextWrapping="Wrap"
+                                       IsVisible="{Binding StepStatusText, Converter={StaticResource StringNotEmpty}}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ── Footnote: browser journeys need no setup ── -->
+                    <Border Classes="card" Margin="0,16,0,0" Padding="20,16"
+                            Background="{StaticResource CyanSoftBrush}"
+                            BorderBrush="#A5F3FC">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Border Width="34" Height="34" CornerRadius="10" Background="#CFFAFE"
+                                    VerticalAlignment="Top">
+                                <Path Data="{StaticResource GridGeometry}"
+                                      Stroke="{StaticResource CyanSoftFgBrush}" StrokeThickness="1.6"
+                                      Stretch="Uniform" Width="17" Height="17"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Border>
+                            <StackPanel Spacing="3">
+                                <TextBlock Text="Browser journeys need no extra setup" Classes="h2"
+                                           FontSize="13.5" Foreground="{StaticResource CyanSoftFgBrush}"/>
+                                <TextBlock Text="Activity is read from the OS accessibility tree (AT-SPI / UI Automation / macOS Accessibility). No debugger port, no browser extension."
+                                           FontSize="12" Foreground="#0E7490" TextWrapping="Wrap"
+                                           MaxWidth="470" LineHeight="18"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                </StackPanel>
+            </Border>
+        </ScrollViewer>
+    </Border>
+</UserControl>

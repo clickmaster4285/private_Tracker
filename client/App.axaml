@@ -1,0 +1,433 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="client.App"
+             xmlns:local="using:client"
+             RequestedThemeVariant="Light">
+
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceInclude Source="/Styles/AppTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+
+    <Application.DataTemplates>
+        <local:ViewLocator />
+    </Application.DataTemplates>
+
+    <Application.Styles>
+        <FluentTheme />
+
+        <!-- TextBox -->
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="TextBox:focus">
+            <Setter Property="BorderBrush" Value="{StaticResource PrimaryBrush}"/>
+        </Style>
+        <Style Selector="TextBox:pointerover">
+            <Setter Property="BorderBrush" Value="{StaticResource RingBrush}"/>
+        </Style>
+
+        <!-- Search field: pill-shaped, sits in page toolbars -->
+        <Style Selector="TextBox.search">
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusPill}"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+        </Style>
+
+        <!-- Read-only detail field (dependency output, copyable paths) -->
+        <Style Selector="TextBox.readonly">
+            <Setter Property="Background" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedFgBrush}"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+
+        <!-- Button: primary -->
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource PrimaryFgBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="16,10"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.primary:pointerover">
+            <Setter Property="Background" Value="{StaticResource PrimaryHoverBrush}"/>
+        </Style>
+        <Style Selector="Button.primary:pressed">
+            <Setter Property="Background" Value="{StaticResource PrimaryPressedBrush}"/>
+        </Style>
+        <Style Selector="Button.primary:disabled">
+            <Setter Property="Opacity" Value="0.5"/>
+        </Style>
+
+        <!-- Button: secondary -->
+        <Style Selector="Button.secondary">
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedFgBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.secondary:pointerover">
+            <Setter Property="Background" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+        </Style>
+
+        <!-- Button: success -->
+        <Style Selector="Button.success">
+            <Setter Property="Background" Value="{StaticResource SuccessBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource SuccessFgBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="14,10"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.success:pointerover">
+            <Setter Property="Background" Value="#047857"/>
+        </Style>
+
+        <!-- Button: danger -->
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource DestructiveBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.danger:pointerover">
+            <Setter Property="Background" Value="{StaticResource MutedBrush}"/>
+        </Style>
+
+        <!-- Button: ghost (icon/text button with no chrome until hover) -->
+        <Style Selector="Button.ghost">
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedFgBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.ghost:pointerover">
+            <Setter Property="Background" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+        </Style>
+
+        <!-- Button: nav rail item. Content is set per-item; the rail supplies the
+             dark palette, so these override the default light-theme button look. -->
+        <Style Selector="Button.nav">
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource RailFgBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusMd}"/>
+            <Setter Property="Padding" Value="12,10"/>
+            <Setter Property="FontSize" Value="13.5"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.nav:pointerover">
+            <Setter Property="Background" Value="{StaticResource RailHoverBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource RailFgActiveBrush}"/>
+        </Style>
+        <Style Selector="Button.nav.active">
+            <Setter Property="Background" Value="{StaticResource RailActiveBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource RailFgActiveBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="Button.nav.active:pointerover">
+            <Setter Property="Background" Value="{StaticResource RailActiveBrush}"/>
+        </Style>
+
+        <!-- Nav icons follow the item's own state. Stroke is not an inherited
+             property, so the descendant selector does what Foreground can't. -->
+        <Style Selector="Button.nav Path">
+            <Setter Property="Stroke" Value="{StaticResource RailFgBrush}"/>
+        </Style>
+        <Style Selector="Button.nav:pointerover Path">
+            <Setter Property="Stroke" Value="{StaticResource RailFgActiveBrush}"/>
+        </Style>
+        <Style Selector="Button.nav.active Path">
+            <Setter Property="Stroke" Value="{StaticResource RailFgActiveBrush}"/>
+        </Style>
+
+        <!-- Nav labels follow the same ramp as the item's state. Foreground is
+             inherited from the button, but pinning it here guarantees the label
+             stays white on hover (and matches the icon stroke on every state). -->
+        <Style Selector="Button.nav TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource RailFgBrush}"/>
+        </Style>
+        <Style Selector="Button.nav:pointerover TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource RailFgActiveBrush}"/>
+        </Style>
+        <Style Selector="Button.nav.active TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource RailFgActiveBrush}"/>
+        </Style>
+
+        <!-- Segmented tab button (Applications / Packages switcher) -->
+        <Style Selector="Button.tab">
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedFgBrush}"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusSm}"/>
+            <Setter Property="Padding" Value="16,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+        <Style Selector="Button.tab:pointerover">
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+        </Style>
+        <!-- Button has no BoxShadow property (Border does), so the selected tab
+             is distinguished by the raised card fill + primary text instead. -->
+        <Style Selector="Button.tab.active">
+            <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+
+        <!-- Card surface -->
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{StaticResource CardBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusLg}"/>
+            <Setter Property="BoxShadow" Value="{StaticResource ShadowSm}"/>
+            <Setter Property="Padding" Value="20"/>
+        </Style>
+
+        <!-- Pill badge -->
+        <Style Selector="Border.badge">
+            <Setter Property="CornerRadius" Value="{StaticResource RadiusPill}"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Background" Value="{StaticResource MutedBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style Selector="Border.badge > TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedFgBrush}"/>
+        </Style>
+        <Style Selector="Border.badge.ok">
+            <Setter Property="Background" Value="{StaticResource SuccessSoftBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource SuccessSoftBorderBrush}"/>
+        </Style>
+        <Style Selector="Border.badge.ok > TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource SuccessSoftFgBrush}"/>
+        </Style>
+        <Style Selector="Border.badge.warn">
+            <Setter Property="Background" Value="{StaticResource WarningSoftBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource WarningSoftBorderBrush}"/>
+        </Style>
+        <Style Selector="Border.badge.warn > TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource WarningSoftFgBrush}"/>
+        </Style>
+        <Style Selector="Border.badge.info">
+            <Setter Property="Background" Value="{StaticResource PrimarySoftBrush}"/>
+            <Setter Property="BorderBrush" Value="#C7DAFB"/>
+        </Style>
+        <Style Selector="Border.badge.info > TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource PrimarySoftFgBrush}"/>
+        </Style>
+
+        <!-- Typography helpers -->
+        <Style Selector="TextBlock.h1">
+            <Setter Property="FontSize" Value="24"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+        </Style>
+        <Style Selector="TextBlock.h2">
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+        </Style>
+        <Style Selector="TextBlock.eyebrow">
+            <Setter Property="FontSize" Value="10.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="LetterSpacing" Value="1.4"/>
+            <Setter Property="Foreground" Value="{StaticResource FaintFgBrush}"/>
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{StaticResource MutedFgBrush}"/>
+        </Style>
+        <Style Selector="TextBlock.value">
+            <Setter Property="FontSize" Value="13.5"/>
+            <Setter Property="FontWeight" Value="Medium"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        </Style>
+        <Style Selector="TextBlock.metric">
+            <Setter Property="FontSize" Value="26"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}"/>
+        </Style>
+        <Style Selector="TextBlock.mono">
+            <Setter Property="FontFamily" Value="Cascadia Mono,Consolas,DejaVu Sans Mono,Menlo,Courier New,monospace"/>
+        </Style>
+
+        <!-- Data rows: zebra + hover, used by the specs and app-inventory tables -->
+        <Style Selector="Border.row">
+            <Setter Property="Padding" Value="14,11"/>
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+        </Style>
+        <Style Selector="Border.row:pointerover">
+            <Setter Property="Background" Value="{StaticResource RowHoverBrush}"/>
+        </Style>
+        <Style Selector="Border.row.alt">
+            <Setter Property="Background" Value="{StaticResource RowAltBrush}"/>
+        </Style>
+        <Style Selector="Border.row.alt:pointerover">
+            <Setter Property="Background" Value="{StaticResource RowHoverBrush}"/>
+        </Style>
+
+        <!-- ListBox used as a virtualised data table: strip the Fluent chrome -->
+        <Style Selector="ListBox.table">
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+        <Style Selector="ListBox.table ListBoxItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="MinHeight" Value="0"/>
+            <Setter Property="Background" Value="{StaticResource TransparentBrush}"/>
+        </Style>
+
+        <!-- ScrollViewer -->
+        <Style Selector="ScrollViewer">
+            <Setter Property="Background" Value="Transparent"/>
+        </Style>
+
+        <!-- TextBlock -->
+        <Style Selector="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource BodyFont}"/>
+        </Style>
+
+        <!-- Fade-in animation for step transitions -->
+        <Style Selector="Border.fade-in">
+            <Setter Property="Opacity" Value="0"/>
+            <Style.Animations>
+                <Animation Duration="0:0:0.35" FillMode="Both">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="0"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Page transition: fade + slight rise. Applied to each page root so
+             switching nav items reads as a deliberate transition, not a flicker. -->
+        <Style Selector="Border.page-in">
+            <Setter Property="Opacity" Value="0"/>
+            <Style.Animations>
+                <Animation Duration="0:0:0.32" FillMode="Both" Easing="CubicEaseOut">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="0"/>
+                        <Setter Property="TranslateTransform.Y" Value="10"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1"/>
+                        <Setter Property="TranslateTransform.Y" Value="0"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Slow drift on hero photography so static screens feel alive -->
+        <Style Selector="Image.hero-drift">
+            <Setter Property="RenderTransformOrigin" Value="50% 50%"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                </Setter.Value>
+            </Setter>
+            <Style.Animations>
+                <Animation Duration="0:0:24" IterationCount="Infinite"
+                           PlaybackDirection="Alternate" Easing="SineEaseInOut">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="ScaleTransform.ScaleX" Value="1.0"/>
+                        <Setter Property="ScaleTransform.ScaleY" Value="1.0"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="ScaleTransform.ScaleX" Value="1.08"/>
+                        <Setter Property="ScaleTransform.ScaleY" Value="1.08"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Live-status pulse for the "tracking active" dot -->
+        <Style Selector="Ellipse.pulse">
+            <Style.Animations>
+                <Animation Duration="0:0:1.8" IterationCount="Infinite" Easing="SineEaseInOut">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="Opacity" Value="1"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="50%">
+                        <Setter Property="Opacity" Value="0.28"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="Opacity" Value="1"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+        <!-- Circular spinner (rotating arc) — Avalonia 12 has no ProgressRing.
+             Animate RotateTransform.Angle (registered animator) rather than the
+             RenderTransform property itself, which has no default animator. -->
+        <Style Selector="Path.spinner">
+            <Setter Property="RenderTransformOrigin" Value="50% 50%"/>
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <RotateTransform Angle="0"/>
+                </Setter.Value>
+            </Setter>
+            <Style.Animations>
+                <Animation Duration="0:0:0.9" IterationCount="Infinite" PlaybackDirection="Normal">
+                    <KeyFrame Cue="0%">
+                        <Setter Property="RotateTransform.Angle" Value="0"/>
+                    </KeyFrame>
+                    <KeyFrame Cue="100%">
+                        <Setter Property="RotateTransform.Angle" Value="360"/>
+                    </KeyFrame>
+                </Animation>
+            </Style.Animations>
+        </Style>
+
+    </Application.Styles>
+</Application>

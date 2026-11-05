@@ -1,0 +1,81 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+build/
+bld/
+
+## NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+## .NET
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Publish (scripts tracked, binaries ignored)
+publish/windows/
+publish/linux/
+publish/macos/
+publish/*.exe
+publish/*.dll
+!publish/*.sh
+!publish/*.iss
+
+## IDE
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.sw?
+
+## Rider
+.idea/
+.idea/**/*.xml
+
+## Rider misc
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+## NCrunch
+_NCrunch_*
+.*crunch*.local.xml
+nCrunchTemp_*
+
+## Chutzpah
+_Chutzpah*
+
+## Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+## macOS
+.DS_Store
+._*
+
+## Backup & swap files
+*~
+*.bak
+*.tmp
+*.orig
+*.swp
+/installers/
+
+## Environment
+.env
+/data/
+/config.enc

@@ -1,0 +1,781 @@
+================================================================================
+  BUG REPORT: Auto-Start Not Working on Linux Mint 22.2 (Cinnamon)
+  Date Found: 2026-08-29
+  Environment: Linux Mint 22.2, Kernel 7.0.0.28, Intel i7-4600U
+  Works On: Ubuntu (GNOME), Windows
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+  1. Bug #1 — Systemd Service File Never Created (Infinite Permission Wizard Loop)
+  2. Bug #2 — EnableAutoStartForced() Tries to Enable Non-Existent Service
+  3. Bug #3 — Stale Mutex Blocks Background Launch After Crash/Reboot
+  4. Bug #4 — Cinnamon Autostart Reliability Gap
+  5. Bug #5 — Shift Management: Soft-Deleted Shift Names Block Re-Creation
+  6. Bug #6 — installed_applications: version and publisher always empty on Linux
+   7. Bug #7 — device_hardware_info: Windows 11 shows as "Windows 10"
+   8. Bug #8 — Orphan app-items silently lost: client marks all sent IDs as synced
+  9. How Each Fix Should Be Applied (No Code Changes Yet)
+  10. Diagnostic Commands for Linux Mint 22.2
+
+
+================================================================================
+  BUG #1 — Systemd Service File Never Created (Infinite Permission Wizard Loop)
+================================================================================
+
+SEVERITY: HIGH
+AFFECTS: All fresh Linux installs (Ubuntu AND Mint)
+MASKED ON: Ubuntu (GNOME's XDG autostart is reliable enough without systemd)
+
+DESCRIPTION:
+  On a fresh install, the permission wizard's "Background Running" step (Step 2)
+  can NEVER be completed. The user is stuck in an infinite loop where Step 2
+  always re-appears, even after clicking "Grant".
+
+ROOT CAUSE:
+  The flow is:
+
+  1. User clicks "Grant" on Step 2 (BackgroundRunning)
+  2. MainViewModel.GrantBackgroundRunningAsync() is called
+     (MainViewModel.cs:863-868)
+  3. It calls _autoStart.EnableAutoStartForced()
+     (AutoStartService.cs:58-112)
+  4. EnableAutoStartForced() does TWO things:
+     a) Creates the .desktop autostart file  <-- this works
+     b) Runs: systemctl --user enable alpha-ai-tracker.service
+  5. BUT the .service FILE does not exist yet!
+     The ONLY place that creates it is:
+       BackgroundGuardService.InstallSystemdServiceAsync()
+       (BackgroundGuardService.cs:169-261)
+     And it is GUARDED by:
+       if (_systemdWasInstalled && _systemdServiceName != null)
+       (BackgroundGuardService.cs:100)
+     On a fresh install, _systemdWasInstalled = false
+     (set at line 53 via DetectSystemdService() which checks file existence)
+     So InstallSystemdServiceAsync() is NEVER called.
+  6. systemctl --user enable fails silently (exit code ignored, caught at line 106)
+  7. GetNextPermissionStep() re-evaluates:
+     - IsAutoStartEnabled() = YES (.desktop file exists) -> passes
+     - IsBackgroundGuardConfigured() = NO (.service file doesn't exist) -> FAILS
+     - Returns PermissionStep.BackgroundRunning -> STEP 2 AGAIN -> INFINITE LOOP
+
+  The .service file is only created by BackgroundGuardService, but the guard
+  only runs AFTER the host starts (line 208 in Program.cs). And even then, it
+  only creates the file if it WAS previously installed and got deleted.
+
+AFFECTED FILES:
+  - client/ViewModels/MainViewModel.cs:863-868 (GrantBackgroundRunningAsync)
+  - client/Services/AutoStartService.cs:58-112 (EnableAutoStartForced)
+  - client/Services/BackgroundGuardService.cs:100-110 (watchdog guard)
+  - client/Services/BackgroundGuardService.cs:169-261 (InstallSystemdServiceAsync)
+
+
+================================================================================
+  BUG #2 — EnableAutoStartForced() Tries to Enable Non-Existent Service
+================================================================================
+
+SEVERITY: MEDIUM
+AFFECTS: All fresh Linux installs
+
+DESCRIPTION:
+  AutoStartService.EnableAutoStartForced() (line 85-99) runs
+  "systemctl --user enable alpha-ai-tracker.service" without first ensuring the
+  unit file exists at ~/.config/systemd/user/alpha-ai-tracker.service.
+
+  The systemctl command fails with:
+    Failed to enable unit: Unit file alpha-ai-tracker.service does not exist.
+
+  This error is caught by the generic try-catch at line 106 and logged as a
+  warning, but the exit code is never checked. The method returns true (from
+  EnableAutoStart()) even though the systemd service was NOT enabled.
+
+AFFECTED FILES:
+  - client/Services/AutoStartService.cs:85-99
+
+
+================================================================================
+  BUG #3 — Stale Mutex Blocks Background Launch After Crash/Reboot
+================================================================================
+
+SEVERITY: HIGH
+AFFECTS: Linux Mint 22.2 (and potentially all platforms)
+
+DESCRIPTION:
+  The global named mutex "AlphaAITracker" (Program.cs:73) is used for
+  single-instance enforcement. When the app starts with --background, it
+  checks if the mutex is already held:
+
+    if (!mutexCreated)
+    {
+        if (isUserLaunch)
+            SingleInstanceService.SignalExistingInstance();
+        return;  // <-- EXITS SILENTLY (line 105)
+    }
+
+  Problem: If the previous instance crashed, was force-killed, or the system
+  was rebooted without clean shutdown, the mutex MAY still appear held (OS-
+  dependent behavior). The new --background launch sees the mutex as taken,
+  determines it's NOT a user launch, and exits immediately without starting
+  any tracking services.
+
+  On Ubuntu/GNOME, session cleanup is more reliable and this rarely happens.
+  On Linux Mint/Cinnamon, force-closing via the task manager or rebooting
+  during heavy load can leave the mutex orphaned.
+
+  The --restart flag (line 81-91) has a WaitOne(8s) timeout, but that's only
+  for the explicit restart flow, not for normal --background auto-start.
+
+AFFECTED FILES:
+  - client/Program.cs:73-106 (mutex handling)
+
+
+================================================================================
+  BUG #4 — Cinnamon Autostart Reliability Gap
+================================================================================
+
+SEVERITY: LOW-MEDIUM
+AFFECTS: Linux Mint 22.2 (Cinnamon desktop)
+
+DESCRIPTION:
+  The .desktop autostart file at ~/.config/autostart/alpha-ai-tracker.desktop
+  uses X-GNOME-Autostart-enabled=true. While Cinnamon IS XDG-compliant and
+  should honor this, there are known reliability differences:
+
+  1. Cinnamon's startup applications manager may not immediately recognize
+     manually-created .desktop files (vs files added through its GUI).
+
+  2. Cinnamon session (cinnamon-session) may start autostart entries BEFORE
+     the user's D-Bus session is fully ready, causing the app to fail to
+     connect to its named pipe or log store.
+
+  3. If Linux Mint 22.2 defaults to Wayland (not X11), the autostart timing
+     may differ from X11 sessions.
+
+  4. The .desktop file format is correct per XDG spec, but Cinnamon may
+     have subtle parsing differences from GNOME's gnome-session.
+
+AFFECTED FILES:
+  - client/Services/AutoStartService.cs:258-281 (EnableLinuxAutoStart)
+
+
+================================================================================
+  HOW EACH FIX SHOULD BE APPLIED
+================================================================================
+
+NOTE: No code changes made yet. This is the plan only.
+
+FIX #1 — Create systemd service file before enabling it
+-------------------------------------------------------
+  WHERE: client/ViewModels/MainViewModel.cs:863-868
+
+  WHAT: GrantBackgroundRunningAsync() should call a new method that:
+    1. Creates the .service file at ~/.config/systemd/user/alpha-ai-tracker.service
+       (same content as BackgroundGuardService.InstallSystemdServiceAsync, line 174-190)
+    2. Runs "systemctl --user daemon-reload"
+    3. Runs "systemctl --user enable alpha-ai-tracker.service"
+    4. Runs "systemctl --user start alpha-ai-tracker.service"
+
+  WHY: Currently, GrantBackgroundRunningAsync() delegates to
+  EnableAutoStartForced() which tries "systemctl --user enable" without the
+  file existing. The service file must be created FIRST.
+
+  ALSO: Update the BackgroundGuardService.ExecuteAsync() initial detection
+  (line 53) so that on a fresh install, if the .desktop autostart file exists
+  but the .service file doesn't, the guard proactively creates it. This makes
+  the guard work as both a watchdog AND a first-time installer.
+
+
+FIX #2 — Fix EnableAutoStartForced() to check systemctl exit code
+-----------------------------------------------------------------
+  WHERE: client/Services/AutoStartService.cs:89-97
+
+  WHAT: After the process exits, check proc.ExitCode. If non-zero, log the
+  error and return false (or at minimum, read StandardError for the message).
+
+  WHY: Currently the exit code is completely ignored, masking the fact that
+  the service file doesn't exist.
+
+
+FIX #3 — Add mutex stale-detection for --background launches
+------------------------------------------------------------
+  WHERE: client/Program.cs:73-106
+
+  WHAT: When the mutex is held and the launch is --background (NOT a user
+  launch), instead of exiting silently, check if the existing process is
+  actually alive:
+
+    1. Use Process.GetProcessesByName("client") to find running instances
+    2. If no other process is found, the mutex is stale (orphaned)
+    3. Release the stale mutex and re-acquire it
+    4. Proceed with normal startup
+
+  Alternatively, use a more robust single-instance mechanism:
+    - Check /proc/<pid>/status for the owning PID
+    - Use a lockfile with PID written inside (can detect stale locks)
+    - Add a mutex lease timeout (auto-release after N seconds of inactivity)
+
+  WHY: On Linux Mint/Cinnamon, force-kills and reboots can leave the mutex
+  orphaned. The --background auto-start then fails silently every boot until
+  the user manually kills the orphaned process or reboots cleanly.
+
+
+FIX #4 — Add systemd service as primary auto-start on Cinnamon
+--------------------------------------------------------------
+  WHERE: client/Services/AutoStartService.cs:258-281
+
+  WHAT: On Linux, after creating the .desktop file, ALSO ensure the systemd
+  user service is installed and enabled. This makes the systemd service the
+  PRIMARY auto-start mechanism (in addition to the .desktop file as a backup).
+
+  The systemd user service is independent of the desktop environment and works
+  identically on GNOME, Cinnamon, KDE, XFCE, etc. It also survives desktop
+  session restarts (if lingering is enabled).
+
+  Add "loginctl enable-linger $USER" if not already enabled (one-time setup).
+  This ensures the systemd user instance persists beyond login sessions.
+
+  WHY: Relying solely on XDG autostart is fragile across different desktop
+  environments. The systemd service provides a consistent, DE-agnostic
+  auto-start mechanism.
+
+
+================================================================================
+  DIAGNOSTIC COMMANDS FOR LINUX MINT 22.2
+================================================================================
+
+Run these on the Linux Mint machine to confirm the bugs:
+
+  # 1. Check if the .desktop autostart file exists
+  cat ~/.config/autostart/alpha-ai-tracker.desktop
+
+  # 2. Check if the systemd service file exists (Bug #1: it probably doesn't)
+  ls -la ~/.config/systemd/user/alpha-ai-tracker.service
+
+  # 3. Check the app log for crash/error messages (Bug #3)
+  cat ~/.local/share/alpha-ai-tracker/dotnetrunlog.txt | tail -50
+
+  # 4. Check for stuck/orphaned instances (Bug #3)
+  pgrep -a client
+  pgrep -a alpha
+  ps aux | grep -i "alpha\|client" | grep -v grep
+
+  # 5. Check session type (Bug #4: Wayland vs X11)
+  echo $XDG_SESSION_TYPE
+
+  # 6. Check all autostart files registered for this user
+  ls -la ~/.config/autostart/
+
+  # 7. Check systemd user instance status
+  systemctl --user status
+
+  # 8. Check if lingering is enabled (needed for systemd user services)
+  loginctl show-user $USER | grep Linger
+
+  # 9. Try to manually start the systemd service (will fail if file doesn't exist)
+  systemctl --user start alpha-ai-tracker.service 2>&1
+
+  # 10. Check Cinnamon's startup applications
+  ls -la /etc/xdg/autostart/ | grep -i alpha
+  dbus-send --session --dest=org.Cinnamon --print-reply \
+    /org/Cinnamon/StartupApps org.Cinnamon.StartupApps.GetApps 2>&1
+
+Expected results that confirm the bugs:
+  - Step 2 returns "No such file or directory" -> confirms Bug #1
+  - Step 4 shows no running processes -> confirms the app never started -> Bug #3
+  - Step 9 returns "Unit file alpha-ai-tracker.service does not exist" -> confirms Bug #2
+  - Step 5 returns "wayland" -> confirms Bug #4 is relevant
+
+
+================================================================================
+  SUMMARY
+================================================================================
+
+Bug #1 (Infinite Wizard Loop) is the PRIMARY reason auto-start doesn't work
+on Linux Mint 22.2. The user gets stuck on Step 2 and may abandon the setup
+process. Even though the .desktop file IS created in Step 1, the user may not
+realize it.
+
+Bug #3 (Stale Mutex) is the SECONDARY reason. Even if the .desktop file exists
+and Cinnamon tries to launch the app at login, the background instance may
+exit silently due to an orphaned mutex from a previous session.
+
+Bug #4 (Cinnamon Reliability) is a CONTRIBUTING factor. Cinnamon's autostart
+is less battle-tested than GNOME's, so even a correctly configured .desktop
+file may not launch reliably.
+
+On Ubuntu, Bug #1 exists but is masked because GNOME's XDG autostart is
+reliable enough that the .desktop file alone (created in Step 1) handles
+auto-start without needing the systemd service.
+
+================================================================================
+  BUG #5 — Shift Management: Soft-Deleted Shift Names Block Re-Creation
+  Date Found: 2026-08-29
+  Environment: Web Dashboard (Shift Management page)
+================================================================================
+
+SEVERITY: MEDIUM
+AFFECTS: Web dashboard shift management CRUD
+
+DESCRIPTION:
+  When creating a shift, deleting it, then recreating a shift with the same
+  name, the server either rejects it or silently renames it — even though
+  the old shift is soft-deleted (deleted_at IS NOT NULL).
+
+  Steps to reproduce:
+    1. Create a shift named "morning" — succeeds
+    2. Delete the "morning" shift — soft-deleted (deleted_at set)
+    3. Create a new shift named "morning" — should succeed (old one is deleted)
+       BUT it either fails with a uniqueness error or the name is changed
+
+ROOT CAUSE:
+  The server-side UNIQUE constraint on the shift name column does NOT
+  exclude soft-deleted rows. The constraint is something like:
+
+    UNIQUE (name)  -- or  UNIQUE (name, deleted_at)
+
+  This means a soft-deleted row with name="morning" still occupies the
+  uniqueness slot, so a new INSERT with name="morning" violates the
+  constraint.
+
+  The correct behavior: only enforce uniqueness among NON-deleted rows.
+  This can be implemented as either:
+    a) A partial unique index:  CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL
+    b) A unique constraint on (name, deleted_at) — but only if deleted_at
+       is always NULL for active rows (fragile, not recommended)
+
+EXPECTED BEHAVIOR:
+  After soft-deleting a shift, the name should be freed so a new shift
+  with the same name can be created without conflict.
+
+AFFECTED FILES:
+  - server/migrations/ (shift table UNIQUE constraint)
+  - server/internal/repository/new_schema_repo.go (shift CRUD)
+  - server/internal/handler/ (shift handler)
+  - web/src/app/(app)/settings/shift-management/page.tsx (UI)
+
+
+================================================================================
+  BUG #6 — installed_applications: version and publisher always empty on Linux
+  Date Found: 2026-08-31
+  Environment: Linux (Ubuntu, Mint, all distros)
+  Works On: Windows (registry populates version/publisher correctly)
+================================================================================
+
+SEVERITY: MEDIUM
+AFFECTS: All Linux installed builds — every application row in the SQLite
+         installed_applications table has empty app_version and publisher
+
+DESCRIPTION:
+  Every installed application on Linux has empty app_version and publisher
+  fields in the installed_applications SQLite table. This data IS available
+  from the OS (dpkg-query, flatpak, snap) but is never written into the
+  installed_applications table on Linux.
+
+  Evidence from the live DB at /home/devteam/.local/share/alpha-ai-tracker/data/alpha_tracker.db:
+
+    sqlite> SELECT COUNT(*) FROM installed_applications WHERE is_installed=1;
+    101
+
+    sqlite> SELECT COUNT(*) FROM installed_applications
+            WHERE is_installed=1
+              AND (app_version = '' OR app_version IS NULL);
+    101
+
+    sqlite> SELECT COUNT(*) FROM installed_applications
+            WHERE is_installed=1
+              AND (publisher = '' OR publisher IS NULL);
+    101
+
+  100% of rows have empty version and publisher. The sync payload
+  (SyncService.cs:276-277) DOES include appVersion and publisher fields,
+  but they are always empty strings, so the server stores empty values too.
+
+ROOT CAUSE:
+  On Linux, InstalledAppDetector.ScanDesktopFiles() (InstalledAppDetector.cs:379-391)
+  creates InstalledApplication entries from .desktop files with hardcoded empty
+  strings:
+
+    _installedApps.Add(new InstalledApplication
+    {
+        AppName = name,
+        BinaryName = binaryName ?? "",
+        DesktopId = Path.GetFileNameWithoutExtension(filePath),
+        Categories = categories ?? "",
+        InstallPath = exec ?? filePath,
+        Publisher = "",          // <-- HARDCODED EMPTY
+        AppVersion = "",         // <-- HARDCODED EMPTY
+        ChangeType = "seen",
+        IsBrowser = isBrowser,
+        DetectedAt = DateTime.UtcNow,
+    });
+
+  This is correct behavior for .desktop files — they do NOT contain version
+  or publisher metadata. However, the data IS available from other OS sources:
+
+  Source 1 — dpkg-query (PackageDetector.ScanDpkg, PackageDetector.cs:260-317):
+    dpkg-query -W -f='${Package}\t${Version}\t${Maintainer}\n'
+    Returns 2697 packages with version + maintainer (publisher).
+    BUT this data goes into installed_packages table, NOT installed_applications.
+
+  Source 2 — flatpak (PackageDetector.ScanFlatpak):
+    flatpak list --columns=name,application,version
+    Returns version for Flatpak apps (Floorp, Warpinator, etc.).
+    BUT this data also goes into installed_packages only.
+
+  Source 3 — snap (PackageDetector.ScanSnap):
+    snap list — returns version + publisher.
+    BUT again, installed_packages only.
+
+  The SoftwareClassifier (SoftwareClassifier.cs:158-173) has MergeAppMetadata()
+  that copies version/publisher between InstalledApplication rows, but it only
+  merges between app-to-app sources (e.g., registry metadata into shortcut rows
+  on Windows). There is NO code path that merges installed_packages data into
+  installed_applications on Linux.
+
+  The two tables are SEPARATE:
+    installed_applications  — populated by InstalledAppDetector (from .desktop files)
+    installed_packages      — populated by PackageDetector (from dpkg/npm/pip/...)
+
+  On Windows, version/publisher come from the registry (InstalledAppDetector
+  reads them directly), so the fields are populated. On Linux, .desktop files
+  are the ONLY source for installed_applications, and they lack this metadata.
+
+  THE GAP: No cross-reference exists to look up a binary_name or package name
+  in the dpkg database and copy its version/publisher into the matching
+  installed_applications row.
+
+
+AFFECTED FILES:
+  - client/Core/InstalledAppDetector.cs:379-391 (ScanDesktopFiles — hardcodes empty)
+  - client/Core/PackageDetector.cs:260-317 (ScanDpkg — has the data but writes to wrong table)
+  - client/Core/SoftwareClassifier.cs:158-173 (MergeAppMetadata — only merges app-to-app)
+  - client/Storage/SqliteLogStore.cs:467-468,1021-1042 (INSERT/UPDATE — stores empty strings)
+
+
+================================================================================
+  RESOLUTION PLAN FOR BUG #6
+================================================================================
+
+NOTE: No code changes made yet. This is the plan only.
+
+FIX #6 — Cross-reference dpkg/flatpak/snap data into installed_applications
+---------------------------------------------------------------------------
+
+  OPTION A (Recommended) — Post-scan enrichment pass in InstalledAppDetector:
+
+    WHERE: client/Core/InstalledAppDetector.cs, new method after
+           ScanDesktopFiles() completes
+
+    WHAT: After all .desktop files are scanned and _installedApps is populated,
+    run a enrichment pass that:
+
+    1. Build a lookup dictionary from dpkg-query:
+       dictionary<string, (string version, string publisher)> dpkgLookup
+       Key = package name (e.g., "google-chrome-stable", "vlc", "vim")
+
+    2. For each InstalledApplication in _installedApps:
+       a. Try exact match on binary_name against dpkg package name
+       b. Try exact match on app_name against dpkg package name
+       c. Try fuzzy match: dpkg package name contains binary_name or vice versa
+       d. If matched AND app.AppVersion is still empty:
+          - Set app.AppVersion = dpkgLookup[match].version
+          - Set app.Publisher = dpkgLookup[match].publisher
+
+    3. Same logic for flatpak apps:
+       - flatpak app IDs are already the DesktopId (e.g., "org.x.Warpinator")
+       - Match on DesktopId against flatpak application ID
+       - Copy flatpak version into AppVersion
+
+    4. Same logic for snap apps:
+       - Match on binary_name or app_name against snap package name
+       - Copy snap version and publisher
+
+    WHY: This is the least invasive fix — it adds a post-scan enrichment step
+    that only fills in EMPTY fields. It does not change the scan logic, the
+    table schema, or the sync payload. Existing populated fields are never
+    overwritten (the COALESCE NULLIF pattern in SqliteLogStore already protects
+    updates).
+
+    The dpkg data is already collected by PackageDetector.ScanDpkg() at the
+    same startup phase. Either:
+      a) InstalledAppDetector calls dpkg-query directly (duplicate but isolated)
+      b) Share the dpkg data from PackageDetector via a static cache or DI
+
+    Option (a) is simpler and avoids cross-component coupling. The dpkg-query
+    call takes <50ms and runs once at startup.
+
+
+  OPTION B — Merge at Store layer (SqliteLogStore):
+
+    WHERE: client/Storage/SqliteLogStore.cs, StoreInstalledApplicationsAsync
+
+    WHAT: When inserting/updating an installed_applications row, if app_version
+    or publisher is empty, query the installed_packages table for a matching
+    package and copy its version/publisher.
+
+    WHY: This ensures ANY future code path that writes an InstalledApplication
+    with empty version/publisher automatically gets enriched. The merge happens
+    at the persistence layer, not the detection layer.
+
+    DRAWBACK: Couples the two tables at the store level; makes the store aware
+    of detection semantics.
+
+
+  RECOMMENDED: Option A — it's cleaner, keeps the enrichment in the detection
+  layer, and the dpkg-query call is cheap (<50ms on this machine with 2697
+  packages).
+
+
+DIAGNOSTIC COMMANDS:
+  # Verify the bug — all rows should show empty version/publisher
+  sqlite3 ~/.local/share/alpha-ai-tracker/data/alpha_tracker.db \
+    "SELECT app_name, '[' || app_version || ']', '[' || publisher || ']'
+     FROM installed_applications WHERE is_installed=1 LIMIT 20;"
+
+  # Verify dpkg data IS available for these apps
+  dpkg-query -W -f='${Package}\t${Version}\t${Maintainer}\n' \
+    google-chrome-stable vim vlc copyq code 2>/dev/null
+
+  # Verify flatpak data IS available
+  flatpak list --columns=application,version 2>/dev/null | grep -i "warpinator\|floorp"
+
+  # Expected: dpkg/flatpak return version+publisher, but the DB shows empty
+
+
+=================================================================================
+  BUG #7 — device_hardware_info: Windows 11 shows as "Windows 10"
+  Date Found: 2026-09-05
+  Environment: Client — device_hardware_info table, os_name column
+  Affects: All Windows 11 machines
+=================================================================================
+
+SEVERITY: LOW-MEDIUM
+
+ AFFECTS: The os_name column in the device_hardware_info SQLite table always
+          reports "Microsoft Windows 10.0.xxxxx" even on Windows 11 machines.
+
+ DESCRIPTION:
+   On every Windows 11 machine, the device_hardware_info table stores
+   os_name = "Microsoft Windows 10.0.26100" (or similar build number)
+   instead of identifying the OS as Windows 11. The os_version column
+   correctly contains the build number (e.g., "10.0.26100"), but the
+   human-readable os_name never says "Windows 11".
+
+   Evidence from the live DB at
+   C:\Users\DEV-05\AppData\Local\AlphaAITracker\data:
+
+     os_name:    Microsoft Windows 10.0.26100
+     os_version: 10.0.26100
+
+   Build 26100 is Windows 11 24H2 — the data is technically correct
+   (it IS version 10.0) but misleading for anyone reading the os_name
+   field on the web dashboard or in reports.
+
+ ROOT CAUSE:
+   client/Services/LogCollectorService.cs:1292:
+
+     var osName = RuntimeInformation.OSDescription;
+
+   RuntimeInformation.OSDescription returns the value from the OS's own
+   version API (RtlGetVersion on Windows). Windows 11 internally reports
+   itself as NT 10.0 because Microsoft kept the major.minor version at
+   10.0 for backward compatibility. The only distinguishing factor is
+   the BUILD NUMBER:
+
+     Windows 10:  build < 22000  (e.g., 19045 = 22H2)
+     Windows 11:  build >= 22000 (e.g., 22621 = 22H2, 26100 = 24H2)
+
+   On Linux and macOS, RuntimeInformation.OSDescription returns the
+   correct OS name (e.g., "Ubuntu 22.04.3 LTS", "macOS 14.1"),
+   so those platforms are unaffected.
+
+ AFFECTED FILES:
+   - client/Services/LogCollectorService.cs:1292 (RuntimeInformation.OSDescription)
+
+
+ =================================================================================
+RESOLUTION PLAN FOR BUG #7
+=================================================================================
+
+
+ NOTE: No code changes made yet. This is the plan only.
+
+ FIX #8 — Detect Windows 11 from build number
+ ----------------------------------------------
+
+   WHERE: client/Services/LogCollectorService.cs:1292
+
+   WHAT: Replace the raw RuntimeInformation.OSDescription with a helper
+   method that detects Windows 11 by checking Environment.OSVersion.Version.Build:
+
+     private static string GetOsName()
+     {
+         if (OperatingSystem.IsWindows())
+         {
+             var build = Environment.OSVersion.Version.Build;
+             if (build >= 22000)
+                 return $"Microsoft Windows 11.0.{build}";
+             else
+                 return RuntimeInformation.OSDescription;
+         }
+         return RuntimeInformation.OSDescription;
+     }
+
+   On Windows, the method checks the build number:
+     - build >= 22000 → "Microsoft Windows 11.0.{build}"
+     - build < 22000  → falls back to RuntimeInformation.OSDescription
+       (which correctly says "Microsoft Windows 10.0.{build}")
+
+   On Linux/macOS, the method returns RuntimeInformation.OSDescription
+   unchanged (those platforms already report correctly).
+
+   The osVersion value (Environment.OSVersion.VersionString) stays
+   unchanged — it is used for fingerprinting and is correct as-is.
+
+   WHY: This is a single-line detection fix that correctly identifies
+   Windows 11 on every build (22000+, including future 25H2, 26H2,
+   etc.) without hardcoded product names. The build number is the only
+   reliable signal — the NT version string is identical for both
+   Windows 10 and 11.
+
+   NOTE: Existing rows in the DB are NOT updated (no migration needed).
+   Only new rows written after the fix will show the correct os_name.
+   If backfill is desired, a one-time UPDATE on the server or client
+   can rewrite rows where os_name LIKE '%10.0.22%' or higher.
+
+ DIAGNOSTIC COMMANDS:
+   # Verify what RuntimeInformation.OSDescription returns on this machine:
+   # (run in a C# script or check the DB)
+
+   sqlite3 "C:\Users\DEV-05\AppData\Local\AlphaAITracker\data\*.db" \
+     "SELECT os_name, os_version FROM device_hardware_info;"
+
+   # Expected: os_name says "Windows 10" but os_version build is >= 22000
+
+   # Check the actual build number:
+   # Environment.OSVersion.Version.Build should be >= 22000 on Windows 11================================================================================
+  BUG #8 — Orphan app-items silently lost: client marks all sent IDs as synced
+  Date Found: 2026-09-08
+  Environment: Server + Client sync pipeline
+  Affects: All platforms
+=================================================================================
+
+SEVERITY: LOW-MEDIUM
+
+ AFFECTS: The app-items sync pipeline — when a race condition causes orphan
+          rows, the client marks them as synced even though the server dropped
+          them, so they are never re-sent.
+
+ DESCRIPTION:
+   The server's BulkInsertAppItems preflight check (new_schema_repo.go:525)
+   correctly drops orphan app_items whose parent app_sessions row doesn't exist
+   yet, preventing FK violations and 500 errors. However, the client's
+   SyncService.DrainTableAsync (SyncService.cs:608-613) does not read the
+   server's response body (which contains the actual synced count). It only
+   checks for a 2xx status code, then marks ALL sent IDs as is_synced=1 —
+   including the orphan rows the server dropped.
+
+   This means orphan rows are effectively lost: they are marked synced on the
+   client and will never be re-sent. The server code comment at
+   new_schema_repo.go:436-438 says "The dropped rows are re-sent on the
+   client's next sync" but the client code does not implement this.
+
+   The AGENTS.md changelog entry for this feature also states "Dropped rows
+   stay is_synced=0 in the client's local SQLite and re-send on the next
+   sync" — this is incorrect per the current code.
+
+ ROOT CAUSE:
+   Server-side (new_schema_repo.go:416-630):
+     BulkInsertAppItems runs filterOrphanAppItems() before each 500-row
+     INSERT. Orphans are removed from the batch. The returned "inserted"
+     count reflects only survivors. The response is:
+       {synced: <survivors>, message: "Synced X of Y entries"}
+
+   Client-side (SyncService.cs:564-635):
+     DrainTableAsync sends the batch via SendAsync(), which returns true on
+     any 2xx response (line 682: response.IsSuccessStatusCode). The client
+     then calls markSentFn(ids) with ALL IDs from the sent slice — it never
+     parses the response body to learn how many were actually inserted.
+
+   Result: if a batch of 100 items has 81 orphans, the server inserts 19 and
+   returns {synced: 19}, but the client marks all 100 as is_synced=1. The 81
+   orphan rows are silently lost.
+
+ PRACTICAL IMPACT: LOW
+   The race condition is narrow — it only affects app_items created in the
+   few seconds between the app-sessions and app-items sync calls. The
+   collection loop continuously creates new app_items with fresh GUIDs for
+   active sessions, so the logical activity data is eventually captured. The
+   specific orphaned rows (with their original GUIDs) are lost, but the data
+   they represent is re-created in subsequent collection cycles.
+
+ AFFECTED FILES:
+   - server/internal/repository/new_schema_repo.go:416-630 (BulkInsertAppItems + filterOrphanAppItems)
+   - server/internal/repository/new_schema_repo.go:436-438 (incorrect comment claiming re-sync)
+   - client/Services/SyncService.cs:608-613 (marks all IDs as synced without checking response)
+   - client/Services/SyncService.cs:682-688 (SendAsync only checks 2xx, ignores body)================================================================================
+RESOLUTION PLAN FOR BUG #8
+=================================================================================
+
+
+ NOTE: No code changes made yet. This is the plan only.
+
+ FIX #9 — Make client respect server's synced count for app-items
+ -----------------------------------------------------------------
+
+   OPTION A (Recommended) — Parse response body in app-items drain:
+
+     WHERE: client/Services/SyncService.cs:608-613
+
+     WHAT: After a successful POST to /api/v1/app-items/sync, read the
+     response body and parse the SyncBatchResponse JSON. Compare
+     response.synced against the number of IDs sent. If they differ, only
+     mark the first N IDs as synced (where N = response.synced), leaving
+     the rest as is_synced=0 for re-send on the next pass.
+
+     Implementation:
+       1. Change SendAsync to return (bool success, string? responseBody)
+          instead of just bool
+       2. After SendAsync returns true for app-items, parse the response:
+            var resp = JsonSerializer.Deserialize<SyncBatchResponse>(body);
+            if (resp != null && resp.Synced < ids.Count)
+            {
+                // Server dropped some — only mark the survivors
+                await markSentFn(ids.Take(resp.Synced).ToList(), ct);
+            }
+            else
+            {
+                await markSentFn(ids, ct);
+            }
+
+     WHY: This directly fixes the bug by making the client aware of how
+     many rows the server actually accepted. Rows the server dropped stay
+     as is_synced=0 and re-send on the next sync pass — exactly what the
+     server comment claims.
+
+     DRAWBACK: Requires parsing the response body for one endpoint. The
+     other 10 sync endpoints can stay as-is (they don't have orphan
+     preflight logic, so all sent rows are always inserted).
+
+
+   OPTION B — Server returns dropped IDs in response:
+
+     WHERE: server/internal/repository/new_schema_repo.go (filterOrphanAppItems)
+            and server/internal/dto/new_schema_dto.go (SyncBatchResponse)
+
+     WHAT: Extend SyncBatchResponse to include DroppedIDs []string. The
+     client can then remove those IDs from the markSent call.
+
+     DRAWBACK: Increases response size and couples the two sides more
+     tightly. Option A is simpler and self-contained on the client.
+
+
+   RECOMMENDED: Option A — it's a client-only fix, doesn't change the
+   server contract, and the response parsing is straightforward. The
+   SyncBatchResponse DTO is already defined; only the client needs to
+   deserialize it.
+
+
+ ================================================================================
+   END OF BUG REPORT
+ ================================================================================

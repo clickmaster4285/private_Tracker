@@ -1,0 +1,97 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:client.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="720" d:DesignHeight="760"
+        x:Class="client.Views.TermsWindow"
+        x:DataType="vm:TermsViewModel"
+        Title="Terms and Conditions"
+        WindowStartupLocation="CenterScreen"
+        CanResize="False"
+        CanMinimize="False"
+        Topmost="True"
+        ShowInTaskbar="True"
+        Width="720" Height="740"
+        Background="#F7F8FA">
+
+    <!-- ═══ Standalone Terms & Conditions modal ═══════════════════════════
+         Deliberately visually unrelated to the tracker shell: its own neutral
+         palette (no AppTheme brushes), its own plain title, no nav rail, no
+         brand marks. Shown as a blocking modal over the main window; the main
+         window keeps its previous position/behavior underneath.
+    ════════════════════════════════════════════════════════════════════ -->
+    <Panel>
+        <!-- Loading state -->
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                    Spacing="14" IsVisible="{Binding IsLoading}">
+            <ProgressBar IsIndeterminate="True" Width="220" Height="4"/>
+            <TextBlock Text="Loading…" Foreground="#6B7280"
+                       HorizontalAlignment="Center"/>
+        </StackPanel>
+
+        <Grid RowDefinitions="Auto,*,Auto" Margin="0"
+              IsVisible="{Binding !IsLoading}">
+
+            <!-- Header -->
+            <StackPanel Grid.Row="0" Margin="36,28,36,8" Spacing="6">
+                <TextBlock Text="Terms and Conditions"
+                           FontSize="22" FontWeight="Bold"
+                           Foreground="#111827"/>
+                <TextBlock Text="Please review and accept each term to continue."
+                           FontSize="12.5" Foreground="#6B7280"/>
+                <ProgressBar Value="{Binding ProgressPercent}" Maximum="100"
+                             Height="4" Margin="0,10,0,0"
+                             Foreground="#2563EB"/>
+                <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
+                    <TextBlock Text="{Binding PositionLabel}"
+                               FontSize="12" Foreground="#6B7280"
+                               IsVisible="{Binding CurrentTerm, Converter={x:Static ObjectConverters.IsNotNull}}"/>
+                    <Border Background="#FEF3C7" CornerRadius="4" Padding="8,2"
+                            IsVisible="{Binding ShowOfflineNotice}">
+                        <TextBlock Text="Offline — showing saved terms"
+                                   FontSize="11" Foreground="#92400E"/>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Term card -->
+            <Border Grid.Row="1" Margin="36,10,36,10"
+                    Background="White"
+                    BorderBrush="#E5E7EB"
+                    BorderThickness="1" CornerRadius="8"
+                    Padding="26,20"
+                    IsVisible="{Binding CurrentTerm, Converter={x:Static ObjectConverters.IsNotNull}}">
+                <ScrollViewer>
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="{Binding CurrentTerm.Heading}"
+                                   FontSize="17" FontWeight="SemiBold"
+                                   Foreground="#111827" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding CurrentBodyText}"
+                                   FontSize="13" LineHeight="20"
+                                   TextWrapping="Wrap"
+                                   Foreground="#1F2937"/>
+                    </StackPanel>
+                    </ScrollViewer>
+            </Border>
+
+            <!-- Footer: error + accept -->
+            <StackPanel Grid.Row="2" Margin="36,8,36,24" Spacing="10">
+                <TextBlock Text="{Binding StatusMessage}"
+                           Foreground="#DC2626"
+                           FontSize="12" TextWrapping="Wrap"
+                           IsVisible="{Binding HasError}"/>
+                <Button HorizontalAlignment="Left"
+                        Background="#2563EB" Foreground="White"
+                        Padding="24,9" CornerRadius="6"
+                        Command="{Binding AgreeCommand}"
+                        IsEnabled="{Binding !IsLoading}"
+                        IsVisible="{Binding CurrentTerm, Converter={x:Static ObjectConverters.IsNotNull}}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="I agree" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+    </Panel>
+</Window>

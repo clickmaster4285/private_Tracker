@@ -1,0 +1,53 @@
+# Package/App Identifiers - Single Source of Truth
+# This file centralizes all app identifiers used across build scripts, installers, and platform-specific configs.
+
+# Linux package name (used in .deb package, systemd service, binary name)
+PACKAGE_NAME="alpha-ai-tracker"
+
+# Human-readable display name (used in installers, desktop entries, app bundles)
+DISPLAY_NAME="Alpha AI Tracker"
+
+# macOS bundle identifier (reverse domain notation)
+BUNDLE_ID="com.alphaai1.tracker"
+
+# Executable name (binary name without extension)
+EXECUTABLE_NAME="client"
+
+# Publisher/Author name
+PUBLISHER="Alpha AI"
+
+# App mutex/class identifier (Windows, single-instance detection).
+# Also the ProgramData folder name and the stem for the Windows DLP service /
+# named-pipe identifiers below (change this once when re-branding).
+APP_MUTEX="AlphaAITracker"
+
+# Windows SYSTEM DLP service — SCM name + published exe base name (no .exe).
+# Default convention: {APP_MUTEX}.Service — keep in sync when re-branding.
+WINDOWS_SERVICE_NAME="AlphaAITracker.Service"
+
+# Services.msc / sc display name for the DLP service.
+WINDOWS_SERVICE_DISPLAY_NAME="Alpha AI Tracker DLP"
+
+# Named pipe for tracker ↔ DLP service IPC (\\.\pipe\<name>).
+WINDOWS_DLP_PIPE_NAME="AlphaAITracker.Dlp"
+
+# One-shot schtasks name used by the installer to stop/delete the locked service.
+WINDOWS_SERVICE_MAINT_TASK="AlphaAITrackerSvcMaint"
+
+# Windows installer base filename (without version/extension)
+WINDOWS_INSTALLER_NAME="AlphaAITracker"
+
+# Linux .deb package filename base (without version/arch)
+DEB_PACKAGE_NAME="alpha-ai-tracker"
+
+# macOS app bundle name (without .app extension)
+MACOS_BUNDLE_NAME="Alpha AI Tracker"
+
+# Application URL (used in installers)
+APP_URL="https://alpha-ai-tracker.example.com"
+
+# Desktop file categories (Linux .desktop file)
+DESKTOP_CATEGORIES="Office;Productivity;"
+
+# Startup WM Class (Linux window manager class)
+WM_CLASS="AlphaAITracker"
