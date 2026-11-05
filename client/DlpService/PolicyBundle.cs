@@ -10,10 +10,25 @@ internal sealed class PolicyBundle
     public IReadOnlyList<PolicyRule> Rules { get; init; } = Array.Empty<PolicyRule>();
     public IReadOnlyList<string> ShadowDenyDomains { get; init; } = Array.Empty<string>();
 
-    /// <summary>P1 default-deny web: only platform + allow hosts (+ bootstrap) reachable on 80/443.</summary>
-    public bool Lockdown { get; init; }
+    /// <summary>
+    /// Published lockdown flag. <c>null</c> / <c>true</c> = default-deny ON after login;
+    /// <c>false</c> = admin published an explicit open (opt-out). Missing field = ON.
+    /// </summary>
+    public bool? Lockdown { get; init; }
     public IReadOnlyList<string> PlatformAllowHosts { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> AllowHosts { get; init; } = Array.Empty<string>();
+    /// <summary>Published app allow entries (publisher / product / sha256). Enforce is P3.</summary>
+    public IReadOnlyList<AllowAppEntry> AllowApps { get; init; } = Array.Empty<AllowAppEntry>();
+
+    /// <summary>True unless the published bundle explicitly sets <c>lockdown: false</c>.</summary>
+    public bool LockdownEnabled => Lockdown != false;
+}
+
+internal sealed class AllowAppEntry
+{
+    public string Publisher { get; init; } = "";
+    public string Product { get; init; } = "";
+    public string Sha256 { get; init; } = "";
 }
 
 internal sealed class PolicyRule
@@ -83,14 +98,23 @@ internal static class PolicyBundleParser
             shadowDomains = ReadStringArrayElement(sdd).ToArray();
         }
 
-        // Missing / non-true lockdown = false (deny-list path only).
-        var lockdown = root.TryGetProperty("lockdown", out var ld) && ld.ValueKind == JsonValueKind.True;
+        // Missing / absent lockdown = ON (fail-closed after login). Explicit false = admin opt-out.
+        bool? lockdown = null;
+        if (root.TryGetProperty("lockdown", out var ld))
+        {
+            if (ld.ValueKind == JsonValueKind.True) lockdown = true;
+            else if (ld.ValueKind == JsonValueKind.False) lockdown = false;
+        }
         var platformHosts = root.TryGetProperty("platformAllow", out var pa)
             ? ReadStringArray(pa, "hosts")
             : Array.Empty<string>();
-        var allowHosts = root.TryGetProperty("allow", out var al2)
-            ? ReadStringArray(al2, "hosts")
-            : Array.Empty<string>();
+        IReadOnlyList<string> allowHosts = Array.Empty<string>();
+        IReadOnlyList<AllowAppEntry> allowApps = Array.Empty<AllowAppEntry>();
+        if (root.TryGetProperty("allow", out var al2) && al2.ValueKind == JsonValueKind.Object)
+        {
+            allowHosts = ReadStringArray(al2, "hosts");
+            allowApps = ReadAllowApps(al2);
+        }
 
         return new PolicyBundle
         {
@@ -100,7 +124,28 @@ internal static class PolicyBundleParser
             Lockdown = lockdown,
             PlatformAllowHosts = platformHosts,
             AllowHosts = allowHosts,
+            AllowApps = allowApps,
         };
+    }
+
+    private static IReadOnlyList<AllowAppEntry> ReadAllowApps(JsonElement allow)
+    {
+        if (!allow.TryGetProperty("apps", out var apps) || apps.ValueKind != JsonValueKind.Array)
+            return Array.Empty<AllowAppEntry>();
+        var list = new List<AllowAppEntry>();
+        foreach (var el in apps.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            var publisher = el.TryGetProperty("publisher", out var p) ? p.GetString() ?? "" : "";
+            var product = el.TryGetProperty("product", out var pr) ? pr.GetString() ?? "" : "";
+            var sha = el.TryGetProperty("sha256", out var s) ? s.GetString() ?? "" : "";
+            publisher = publisher.Trim();
+            product = product.Trim();
+            sha = sha.Trim().ToLowerInvariant().Replace("sha256:", "", StringComparison.OrdinalIgnoreCase);
+            if (publisher.Length == 0 && sha.Length != 64) continue;
+            list.Add(new AllowAppEntry { Publisher = publisher, Product = product, Sha256 = sha });
+        }
+        return list;
     }
 
     /// <summary>True when any enabled USB trigger asks for block / alert_block.</summary>

@@ -1,9 +1,17 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-05 (P1 lockdown)
+> **Last audited:** 2026-11-05 (Allowlists module)
 > **Changelog:**
-> - 2026-11-05: **P1 lockdown UI.** Lockdown draft card on `/web-blocker` (same
->   `web-blocker` permission; Publish still enforces). Employees **Pause lockdown…**
+> - 2026-11-05: **Fail-closed copy.** Web Allow Lists: Publish opens allow hosts only;
+>   PCs block all sites after login without a prior Publish. Switch Off + Publish =
+>   admin opt-out.
+> - 2026-11-05: **Allowlists module.** Sidebar **Allowlists** → `/allowlists/web`
+>   (RBAC `allowlists/web`: default-deny + host chips) and `/allowlists/apps`
+>   (`allowlists/apps`: publisher/SHA draft). Lockdown card removed from
+>   `/web-blocker` (deny-list rules only; notice links to Web Allow Lists).
+>   `dlpApi.lockdown` carries `allowApps` / `maxAllowApps`.
+> - 2026-11-05: **P1 lockdown UI** (superseded surface). Originally a card on
+>   `/web-blocker`; now under Allowlists. Employees **Pause lockdown…** still
 >   calls `POST .../lockdown-pause`.
 > - 2026-11-05: **Tracking mode removed.** `/configuration/device-configuration`,
 >   `SetTrackingModeDialog`, `TrackingModeBadge`, Employees "Set tracking mode…", and
@@ -546,7 +554,9 @@ in the `updateMutation`).
 | `/executive-dashboard` | Exec dashboard | Hardcoded demo data (scaffolding) | ❌ |
 | `/dlp-alerts` | DLP Alerts | Server (`GET/PATCH /dlp/alerts`, `GET /dlp/alerts/:id/history`; infinite scroll + URL filters; detail dialog Save-only triage) | ✅ |
 | `/dlp-rules` | DLP Rules | `/dlp/rules` CRUD + get/history + publish; edit/detail dialogs; Active Switch auto-publish | ✅ |
-| `/web-blocker` | Web Blocker | `/web-blocker/rules` CRUD + expand/history; Switch status + auto-publish; schedule + `TimezoneCombobox` | ✅ |
+| `/web-blocker` | Web Blocker | `/web-blocker/rules` CRUD + expand/history; Switch status + auto-publish; schedule + `TimezoneCombobox` (deny-list only; default-deny lives under Allowlists) | ✅ |
+| `/allowlists/web` | Web Allow Lists | `GET|PUT /dlp/lockdown` (lockdown + allowHosts) + Publish; platformAllow read-only | ✅ |
+| `/allowlists/apps` | App Allow List | Same lockdown draft API (`allowApps`); Publish snapshots into `allow.apps` (enforce = P3) | ✅ |
 | `/shadow-it` | Shadow IT | Server (`GET/PATCH /shadow-it/apps`; Approve/Block/Flag) | ✅ |
 | `/emails` | Emails & Alerts | Hardcoded demo data (scaffolding) | ❌ |
 | `/projects` | Projects | Hardcoded demo data (scaffolding) | ❌ |

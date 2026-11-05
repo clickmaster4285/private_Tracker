@@ -8,17 +8,20 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./
 
 ---
 
-## H. Windows network lockdown (P1)
+## H. Windows network lockdown (P1) + Allowlists
 
-**Prereqs:** migration **059**; Windows PC with next installer (service half); DeviceAuth credentials; web admin with `web-blocker`.
+**Prereqs:** migrations **059** + **060**; Windows PC with next installer (service half); DeviceAuth credentials; web admin with `allowlists/web` (and `web-blocker` for deny rules).
 
-1. Draft off → Publish → lab PC that was open stays open (no `AlphaAI-DLP-LOCK-*` rules).
-2. Web Blocker → Lockdown **on**, empty allow list → **Publish**. After ≤ policy poll: browser cannot open a public site; tracker sync, `GET /dlp/policy`, and presence still work (bootstrap host allowed).
-3. Add one allow host → Save → Publish → only that host loads (plus platformAllow / API).
-4. Add an explicit Web Blocker **block** rule for that same host → Publish → host stays blocked (deny-list still applies).
-5. Employees → **Pause lockdown…** (30–240 min) → general web works until deadline; then relocks without waiting for a new publish.
-6. Protected uninstall / teardown → no leftover `AlphaAI-DLP-LOCK-*` (`netsh advfirewall firewall show rule name=all` filtered).
-7. Flap: publish add/remove 20 allow hosts → no orphan LOCK rules (same bar as §F.2).
+1. Fresh install + login, **no Publish**: browser cannot open a public site; tracker sync / policy / presence still work (bootstrap). Service log: `Lockdown ENFORCED`.
+2. Default-deny **Off** + Publish → lab PC opens general web (`AlphaAI-DLP-LOCK-*` cleared).
+3. Default-deny **On** again + Publish (or reinstall) → blocked again.
+4. Add one allow host → Save → Publish → only that host loads (plus platformAllow / API).
+5. Add an explicit Web Blocker **block** rule for that same host → Publish → host stays blocked (deny-list still applies).
+6. Employees → **Pause lockdown…** (30–240 min) → general web works until deadline; then relocks without waiting for a new publish.
+7. Protected uninstall / teardown → no leftover `AlphaAI-DLP-LOCK-*` (`netsh advfirewall firewall show rule name=all` filtered).
+8. Flap: publish add/remove 20 allow hosts → no orphan LOCK rules (same bar as §F.2).
+9. Role without `allowlists/web` does not see the sidebar entry; `/allowlists/web` → `/unauthorized`.
+10. App Allow List: add a publisher/SHA draft → Publish → pulled bundle has `allow.apps` (enforce still P3).
 
 **P2 Chrome/Edge address bar (same publish):** under lockdown, Chrome and Edge get
 `HKLM\...\URLBlocklist` = `*` plus deny patterns, and `URLAllowlist` for

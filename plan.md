@@ -1,8 +1,8 @@
 # Always-on Windows tracker + default-deny lockdown
 
-> **Status:** Terms (057), tracking-mode P0 (058), network lockdown P1 (059), and Chrome/Edge URLAllowlist P2 are implemented in source. P3 app control remains plan-only.
+> **Status:** Terms (057), tracking-mode P0 (058), network lockdown P1 (059), Chrome/Edge URLAllowlist P2, Allowlists admin (060), and fail-closed default-deny (061 + agent) are implemented in source. P3 app **enforce** remains plan-only.
 > **Written:** 2026-11-05
-> **Updated:** 2026-11-05 — P2 Chrome/Edge URLAllowlist (`*` block + allow hosts minus explicit denies). Next: P3 application allowlist (audit then enforce).
+> **Updated:** 2026-11-05 — After login, web is blocked with **no Publish required**. Publish only expands `/allowlists/web` hosts. Next: P3 application enforce.
 > **Owns:** delete the tracking-mode feature from server, client, and web, a Windows default-deny allowlist (network, web, applications), and the Terms & Conditions feature.
 > **Does not own:** Linux or macOS enforcement, or moving collectors, login, browser reading, or live capture into `AlphaAITracker.Service`.
 
@@ -15,8 +15,8 @@ Execute with `@prompt.md`. Read `AGENTS.md` before each phase. Ship one phase at
 1. **Tracking mode is deleted, not frozen.** There is no Fixed mode, no Roaming mode, no org default, no per-machine override, and no Start/Stop. Collectors run whenever the employee is logged in. The employee has no control that pauses them.
 2. **This plan is Windows-only.** Lockdown (firewall, browser policy, application control) ships in `AlphaAITracker.Service` on Windows. Do not add a Linux nftables phase, a macOS phase, or Linux/macOS labs. Shared client code that only exists for tracking mode is deleted, so a Linux build of the same source loses Start/Stop too. Linux and macOS keep today's collectors and today's DLP. They do not gain lockdown.
 3. **Two Windows processes stay.** `AlphaAITracker.Service` (LocalSystem, Session 0) keeps enforcement, policy, updates, ACL, and the watchdog. `client.exe` stays in the interactive user session for login, foreground apps, browser URLs, idle, and screen capture. `UserSessionProcessLauncher` exists because a process started inside the service never sees the desktop. Folding those features into the service would blank them and would put employee activity in a LocalSystem process.
-4. **New installs fail closed.** After login, general web and non-platform programs are blocked until a published allowlist says otherwise. The tracker, the DLP service, and the platform destinations below stay open so the client can still reach the server.
-5. **Existing fleets do not flip on upgrade.** Lockdown is off until an admin publishes a bundle with `lockdown: true`. A machine that already has a last-good deny-list bundle keeps that behavior until that publish.
+4. **New installs fail closed.** After login, general web is blocked with **no Publish required**. Only bootstrap + platform destinations stay open. Admin adds hosts on `/allowlists/web` and Publishes to open those sites. App enforce remains P3.
+5. **Upgrade also flips to fail-closed.** Agents treat missing/`true` lockdown as ON; only published `lockdown: false` opts out. Migration **061** marks historical snapshots lockdown ON so a re-pull does not re-open the fleet.
 6. **One published bundle for the fleet.** Allowlists are compiled at Publish into the existing immutable `dlp_policy_versions` snapshot (`DLP Policy Version Rule`). Clients keep `GET /dlp/policy?sinceVersion=`. Do not mint a bundle per PC.
 7. **Identity is publisher or hash, never a display name.** No new hardcoded software-name lists (`AGENTS.md`).
 8. **Uninstall clears enforcement.** Protected uninstall and teardown must remove firewall, DNS, browser policy, and application-control artifacts. A removed product must not leave the PC locked.
@@ -182,7 +182,7 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 **Server / web**
 
 - Extend Publish (`DlpService.Publish`, `AssembleBundleJSON`) with `lockdown`, `platformAllow`, `allow`.
-- Web: Security & DLP page (new submodule `security-dlp/lockdown` **or** a section on `/web-blocker` — one surface, registered in `rbacCatalog` and `AppSidebar` together). Controls: Lockdown on/off, host allowlist (searchable chips, infinite scroll if the list is long), link to the app inventory for P3. Save writes drafts. **Publish** is what agents enforce.
+- Web: **Allowlists** module (`allowlists/web`, `allowlists/apps` in `rbacCatalog` + `AppSidebar`). Web Allow Lists owns lockdown on/off + host chips; App Allow List owns publisher/SHA draft. `/web-blocker` stays deny-list rules only. Save writes drafts. **Publish** is what agents enforce.
 - Show the compiled `platformAllow` as read-only.
 - Maintenance unlock action on the employee device menu: sets `lockdown_paused_until`, audited.
 
@@ -227,6 +227,8 @@ Apply policy only where the installed browser exposes an enterprise policy locat
 
 **Goal.** Programs outside the OS, this product, and `allow.apps` cannot start. Ship **audit first**.
 
+**Already shipped (admin + wire):** migration **060**, RBAC `allowlists` / `allowlists/web` / `allowlists/apps`, pages `/allowlists/web` + `/allowlists/apps`, `GET|PUT /dlp/lockdown` carries `allowApps`, Publish snapshots into `allow.apps`, service persists `policy_allow_apps` (no OS enforce yet). Post-login: `PolicyPullWorker` clears CDN pins + flushes DNS before the first policy pull.
+
 - Match publisher certificate subject or SHA-256. Unsigned internal tools use hash only.
 - Admin picks from the existing software inventory (server-projected rows, infinite scroll, URL filters). Publish copies publisher/hash into the bundle. The client does not re-query the catalog to decide.
 - Enforcement is Windows WDAC supplemental policy or AppLocker, owned by the service. Prefer a supplemental policy that allows Windows inbox signed code + this product + the bundle, and denies the rest. Audit mode logs would-block rows through the aggregated alert path for at least one lab week before enforce.
@@ -234,6 +236,8 @@ Apply policy only where the installed browser exposes an enterprise policy locat
 
 **Done when**
 
+- [x] Source: draft app allow list API + Publish → `allow.apps` in bundle; service stores rows.
+- [x] Source: Allowlists web pages + RBAC catalog/sidebar parity.
 - [ ] Audit mode: a non-allowed exe writes one aggregated alert and still runs.
 - [ ] Enforce mode: that exe does not start; tracker, Explorer, and sign-in still work.
 - [ ] A renamed copy of an allowed exe does not run unless the hash or publisher still matches.

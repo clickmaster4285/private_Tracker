@@ -115,6 +115,13 @@ public sealed class PolicyStore : IAsyncDisposable
                     PRIMARY KEY (kind, host)
                 );
 
+                CREATE TABLE IF NOT EXISTS policy_allow_apps (
+                    seq INTEGER PRIMARY KEY,
+                    publisher TEXT NOT NULL DEFAULT '',
+                    product TEXT NOT NULL DEFAULT '',
+                    sha256 TEXT NOT NULL DEFAULT ''
+                );
+
                 CREATE TABLE IF NOT EXISTS policy_kv (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL DEFAULT ''
@@ -152,8 +159,51 @@ public sealed class PolicyStore : IAsyncDisposable
         }
 
         await MigrateLegacyAsync();
+        await MigrateFailClosedDefaultDenyAsync();
         await PruneStaleAsync();
         _logger.LogInformation("PolicyStore ready at {Path}", _cfg.DbPath);
+    }
+
+    /// <summary>
+    /// One-shot: treat prior lockdown=0 snapshots as ON so upgraded agents fail-closed
+    /// without waiting for a new Publish. Explicit <c>lockdown: false</c> after this
+    /// marker still opts out.
+    /// </summary>
+    private async Task MigrateFailClosedDefaultDenyAsync()
+    {
+        const string marker = "fail_closed_default_deny_v1";
+        try
+        {
+            await using (var check = _conn!.CreateCommand())
+            {
+                check.CommandText = "SELECT value FROM policy_kv WHERE key = $k";
+                check.Parameters.AddWithValue("$k", marker);
+                var existing = await check.ExecuteScalarAsync();
+                if (existing is string)
+                    return;
+            }
+
+            await using (var up = _conn.CreateCommand())
+            {
+                up.CommandText = "UPDATE policy_lockdown SET lockdown = 1 WHERE id = 1";
+                await up.ExecuteNonQueryAsync();
+            }
+
+            await using (var mark = _conn.CreateCommand())
+            {
+                mark.CommandText =
+                    "INSERT OR REPLACE INTO policy_kv (key, value) VALUES ($k, '1')";
+                mark.Parameters.AddWithValue("$k", marker);
+                await mark.ExecuteNonQueryAsync();
+            }
+
+            _logger.LogInformation(
+                "Fail-closed migrate: local lockdown set ON (Publish allow hosts to open destinations)");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Fail-closed lockdown migrate skipped");
+        }
     }
 
     private async Task MigrateLegacyAsync()
@@ -474,6 +524,7 @@ public sealed class PolicyStore : IAsyncDisposable
                 DELETE FROM policy_schedule_days;
                 DELETE FROM policy_extensions;
                 DELETE FROM policy_allow_hosts;
+                DELETE FROM policy_allow_apps;
                 UPDATE policy_lockdown SET lockdown = 0 WHERE id = 1;
                 """;
             await clear.ExecuteNonQueryAsync();
@@ -485,14 +536,19 @@ public sealed class PolicyStore : IAsyncDisposable
         using var doc = JsonDocument.Parse(bundleJson);
         var root = doc.RootElement;
 
-        if (root.TryGetProperty("lockdown", out var ldEl) && ldEl.ValueKind == JsonValueKind.True)
+        // Missing lockdown → ON (fail-closed). Explicit false → OFF.
+        var lockdownOn = true;
+        if (root.TryGetProperty("lockdown", out var ldEl))
+            lockdownOn = ldEl.ValueKind != JsonValueKind.False;
+        await using (var ld = _conn.CreateCommand())
         {
-            await using var ld = _conn.CreateCommand();
-            ld.CommandText = "UPDATE policy_lockdown SET lockdown = 1 WHERE id = 1";
+            ld.CommandText = "UPDATE policy_lockdown SET lockdown = $v WHERE id = 1";
+            ld.Parameters.AddWithValue("$v", lockdownOn ? 1 : 0);
             await ld.ExecuteNonQueryAsync();
         }
         await InsertAllowHostsAsync("platform", root, "platformAllow");
         await InsertAllowHostsAsync("allow", root, "allow");
+        await InsertAllowAppsAsync(root);
 
         if (root.TryGetProperty("rules", out var rules) && rules.ValueKind == JsonValueKind.Array)
         {
@@ -574,6 +630,33 @@ public sealed class PolicyStore : IAsyncDisposable
             cmd.CommandText = "INSERT OR IGNORE INTO policy_allow_hosts (kind, host) VALUES ($k,$h)";
             cmd.Parameters.AddWithValue("$k", kind);
             cmd.Parameters.AddWithValue("$h", h.Trim());
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    private async Task InsertAllowAppsAsync(JsonElement root)
+    {
+        if (!root.TryGetProperty("allow", out var allow) || allow.ValueKind != JsonValueKind.Object ||
+            !allow.TryGetProperty("apps", out var apps) || apps.ValueKind != JsonValueKind.Array)
+            return;
+        var seq = 0;
+        foreach (var el in apps.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            var publisher = el.TryGetProperty("publisher", out var p) ? p.GetString() ?? "" : "";
+            var product = el.TryGetProperty("product", out var pr) ? pr.GetString() ?? "" : "";
+            var sha = el.TryGetProperty("sha256", out var s) ? s.GetString() ?? "" : "";
+            publisher = publisher.Trim();
+            product = product.Trim();
+            sha = sha.Trim().ToLowerInvariant().Replace("sha256:", "", StringComparison.OrdinalIgnoreCase);
+            if (publisher.Length == 0 && sha.Length != 64) continue;
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO policy_allow_apps (seq, publisher, product, sha256) VALUES ($i,$p,$r,$h)";
+            cmd.Parameters.AddWithValue("$i", seq++);
+            cmd.Parameters.AddWithValue("$p", publisher);
+            cmd.Parameters.AddWithValue("$r", product);
+            cmd.Parameters.AddWithValue("$h", sha);
             await cmd.ExecuteNonQueryAsync();
         }
     }
@@ -728,16 +811,35 @@ public sealed class PolicyStore : IAsyncDisposable
             "SELECT host FROM policy_allow_hosts WHERE kind='platform'", null, ct);
         var allowHosts = await LoadStringsAsync(
             "SELECT host FROM policy_allow_hosts WHERE kind='allow'", null, ct);
+        var allowApps = new List<Dictionary<string, object?>>();
+        await using (var appCmd = _conn!.CreateCommand())
+        {
+            appCmd.CommandText =
+                "SELECT publisher, product, sha256 FROM policy_allow_apps ORDER BY seq";
+            await using var appReader = await appCmd.ExecuteReaderAsync(ct);
+            while (await appReader.ReadAsync(ct))
+            {
+                var row = new Dictionary<string, object?>();
+                var pub = appReader.GetString(0);
+                var prod = appReader.GetString(1);
+                var sha = appReader.GetString(2);
+                if (!string.IsNullOrEmpty(pub)) row["publisher"] = pub;
+                if (!string.IsNullOrEmpty(prod)) row["product"] = prod;
+                if (!string.IsNullOrEmpty(sha)) row["sha256"] = sha;
+                if (row.Count > 0) allowApps.Add(row);
+            }
+        }
 
-        return JsonSerializer.Serialize(new Dictionary<string, object?>
+        // version 0: omit lockdown so parser treats it as default ON (no Publish yet).
+        // version > 0: emit explicit true/false from the last applied snapshot.
+        var dict = new Dictionary<string, object?>
         {
             ["policyVersion"] = version,
-            ["lockdown"] = lockdown == 1,
             ["platformAllow"] = new Dictionary<string, object?> { ["hosts"] = platformHosts },
             ["allow"] = new Dictionary<string, object?>
             {
                 ["hosts"] = allowHosts,
-                ["apps"] = Array.Empty<string>(),
+                ["apps"] = allowApps,
             },
             ["rules"] = rules,
             ["shadowDeny"] = new Dictionary<string, object?>
@@ -746,7 +848,10 @@ public sealed class PolicyStore : IAsyncDisposable
                 ["publishers"] = Array.Empty<string>(),
                 ["appNames"] = Array.Empty<string>(),
             },
-        });
+        };
+        if (version > 0)
+            dict["lockdown"] = lockdown == 1;
+        return JsonSerializer.Serialize(dict);
     }
 
     private async Task<List<string>> LoadStringsAsync(string sql, string? ruleId, CancellationToken ct)

@@ -11,7 +11,7 @@ import {
   Clock, Settings, ChevronLeft, ChevronDown, ChevronRight, X,
   ClipboardList, UserCheck, MapPin, Trophy, FileBarChart, AlertTriangle,
   Eye, CalendarDays, Navigation, Route,
-  Monitor,
+  Monitor, ListChecks, Globe2,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { usePermissions } from "@/lib/permissions";
@@ -357,6 +357,22 @@ const navSections: NavSection[] = [
             label: "Shadow IT",
             path: "/shadow-it",
             module: "shadow-it",
+          },
+        ],
+      },
+      {
+        label: "Allowlists",
+        icon: ListChecks,
+        children: [
+          {
+            label: "Web Allow Lists",
+            path: "/allowlists/web",
+            module: "allowlists/web",
+          },
+          {
+            label: "App Allow List",
+            path: "/allowlists/apps",
+            module: "allowlists/apps",
           },
         ],
       },

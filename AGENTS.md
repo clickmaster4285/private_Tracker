@@ -3,6 +3,25 @@
 > **Last audited:** 2026-11-05
 > **Changelog:**
 >
+> - 2026-11-05: **Fail-closed web by default (no Publish to block).** After DeviceAuth,
+>   DlpService applies network + Chrome/Edge lockdown unless published `lockdown: false`
+>   or pause. Publish is only required to expand `/allowlists/web` hosts. Migration
+>   **061** flips historical snapshots to lockdown ON; local `fail_closed_default_deny_v1`
+>   migrate sets `policy_lockdown=1`. Bundle JSON always emits `lockdown` true|false.
+>   Verified: `go build`/`go vet`, `dotnet build` DlpService, `npx tsc --noEmit`.
+>   Installer-Parity: rebuild Windows installer. Lab: `TESTING.md` §H.
+>
+> - 2026-11-05: **Allowlists module (server + web + DlpService).** New RBAC module
+>   `allowlists` with `allowlists/web` + `allowlists/apps`. Migration **060** adds
+>   draft/snapshot `dlp_lockdown_allow_apps` / `dlp_policy_allow_apps` and sets the
+>   lockdown draft default **ON**. Pages `/allowlists/web` (default-deny + host chips)
+>   and `/allowlists/apps` (publisher/SHA draft); lockdown UI removed from `/web-blocker`.
+>   `GET|PUT /dlp/lockdown` returns `allowApps` / `maxAllowApps`; Publish emits
+>   `allow.apps`. Service: post-login `ClearPinnedIps` + `FlushDns`; persists
+>   `policy_allow_apps` (WDAC/AppLocker enforce remains P3). Verified: `go build`/
+>   `go vet`, `dotnet build` DlpService, `npx tsc --noEmit`. Installer-Parity: next
+>   Windows installer. Lab: `TESTING.md` §H.
+>
 > - 2026-11-05: **P2 Chrome/Edge URLAllowlist (DlpService).** Under published
 >   `lockdown: true`, `DomainBlockEnforcer` sets Chrome/Edge `URLBlocklist=*` and
 >   `URLAllowlist` for platformAllow + allow.hosts + API bootstrap, minus explicit
@@ -15,12 +34,13 @@
 >   `employee_machines.lockdown_paused_until`. Publish snapshots `lockdown` /
 >   `platformAllow` / `allow.hosts` into the existing policy version (absent =
 >   today's deny-list). JWT `GET|PUT /dlp/lockdown`, `POST .../lockdown-pause`;
->   DeviceAuth `GET /dlp/policy` returns `lockdownPausedUntil`. Web: Lockdown card
->   on `/web-blocker` + Employees "Pause lockdown…". Service: `LockdownNetworkEnforcer`
->   (AdvFirewall complement deny on outbound 80/443; bootstrap + allow IPs carved out).
->   Missing `lockdown` keeps deny-list path. Teardown / `ALPHA_DLP_ENABLED=false` clears
->   `AlphaAI-DLP-LOCK-*`. Verified: `go build`, `dotnet build` DlpService (0 warnings),
->   `npx tsc --noEmit`. Installer-Parity: next Windows installer. Lab: `TESTING.md` §H.
+>   DeviceAuth `GET /dlp/policy` returns `lockdownPausedUntil`. Web admin UI later
+>   moved to `/allowlists/web` (see Allowlists entry). Employees "Pause lockdown…".
+>   Service: `LockdownNetworkEnforcer` (AdvFirewall complement deny on outbound
+>   80/443; bootstrap + allow IPs carved out). Missing `lockdown` keeps deny-list
+>   path. Teardown / `ALPHA_DLP_ENABLED=false` clears `AlphaAI-DLP-LOCK-*`. Verified:
+>   `go build`, `dotnet build` DlpService (0 warnings), `npx tsc --noEmit`.
+>   Installer-Parity: next Windows installer. Lab: `TESTING.md` §H.
 >
 > - 2026-11-05: **Tracking mode deleted (server + client + web).** Fixed/Roaming Start/Stop
 >   is gone. Migration **058** drops `device_tracking_*` / `device_control_meta` /

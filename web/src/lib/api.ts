@@ -1792,19 +1792,30 @@ export interface IssueRemovalCodeResponse {
   machineId: string;
 }
 
-/** Draft web-lockdown policy (GET/PUT /dlp/lockdown). Enforced only after Publish. */
+/** Draft allowlist / lockdown policy (GET/PUT /dlp/lockdown). Enforced only after Publish. */
+export interface DlpLockdownAllowApp {
+  publisher?: string;
+  product?: string;
+  sha256?: string;
+}
+
 export interface DlpLockdownConfig {
   lockdown: boolean;
   allowHosts: string[];
+  allowApps: DlpLockdownAllowApp[];
   platformAllow: string[];
   maxAllowHosts: number;
+  maxAllowApps: number;
 }
 
 export const dlpApi = {
   lockdown: {
     get: () => request<DlpLockdownConfig>('/dlp/lockdown'),
-    update: (data: { lockdown?: boolean; allowHosts?: string[] }) =>
-      request<DlpLockdownConfig>('/dlp/lockdown', { method: 'PUT', body: data }),
+    update: (data: {
+      lockdown?: boolean;
+      allowHosts?: string[];
+      allowApps?: DlpLockdownAllowApp[];
+    }) => request<DlpLockdownConfig>('/dlp/lockdown', { method: 'PUT', body: data }),
   },
 
   issueRemovalCode: (data: {

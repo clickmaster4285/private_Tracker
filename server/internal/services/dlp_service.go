@@ -376,23 +376,27 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	if err != nil {
 		return nil, err
 	}
-	lockdown, allowHosts, err := s.repo.GetLockdownDraft(ctx)
+	lockdown, allowHosts, allowApps, err := s.repo.GetLockdownDraft(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if lockdown && len(allowHosts) > repository.MaxLockdownAllowHosts {
 		return nil, fmt.Errorf("allow hosts cap exceeded: %d > %d", len(allowHosts), repository.MaxLockdownAllowHosts)
 	}
+	if lockdown && len(allowApps) > repository.MaxLockdownAllowApps {
+		return nil, fmt.Errorf("allow apps cap exceeded: %d > %d", len(allowApps), repository.MaxLockdownAllowApps)
+	}
 	platformHosts := s.platformHosts
 	if !lockdown {
 		platformHosts = nil
 		allowHosts = nil
+		allowApps = nil
 	}
 	ver, err := s.repo.InsertPolicyVersion(ctx, "pending", publishedBy)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts); err != nil {
+	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts, allowApps); err != nil {
 		return nil, err
 	}
 	final, err := s.repo.AssembleBundleJSON(ctx, ver.Version)
@@ -415,12 +419,18 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 
 // GetLockdownDraft returns the editable lockdown settings + compiled platform hosts.
 func (s *DlpService) GetLockdownDraft(ctx context.Context) (*dto.LockdownDraftResponse, error) {
-	lockdown, hosts, err := s.repo.GetLockdownDraft(ctx)
+	lockdown, hosts, apps, err := s.repo.GetLockdownDraft(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if hosts == nil {
 		hosts = []string{}
+	}
+	outApps := make([]dto.LockdownAllowApp, 0, len(apps))
+	for _, a := range apps {
+		outApps = append(outApps, dto.LockdownAllowApp{
+			Publisher: a.Publisher, Product: a.Product, Sha256: a.Sha256,
+		})
 	}
 	platform := s.platformHosts
 	if platform == nil {
@@ -429,14 +439,16 @@ func (s *DlpService) GetLockdownDraft(ctx context.Context) (*dto.LockdownDraftRe
 	return &dto.LockdownDraftResponse{
 		Lockdown:      lockdown,
 		AllowHosts:    hosts,
+		AllowApps:     outApps,
 		PlatformAllow: platform,
 		MaxAllowHosts: repository.MaxLockdownAllowHosts,
+		MaxAllowApps:  repository.MaxLockdownAllowApps,
 	}, nil
 }
 
 // UpdateLockdownDraft saves draft lockdown settings (Publish is required to enforce).
 func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLockdownDraftRequest) (*dto.LockdownDraftResponse, error) {
-	lockdown, hosts, err := s.repo.GetLockdownDraft(ctx)
+	lockdown, hosts, apps, err := s.repo.GetLockdownDraft(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -452,13 +464,46 @@ func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLock
 		}
 		hosts = normalized
 	}
+	if req.AllowApps != nil {
+		normalized := make([]repository.LockdownAllowAppRow, 0, len(*req.AllowApps))
+		for _, a := range *req.AllowApps {
+			row, ok := normalizeAllowApp(a)
+			if !ok {
+				return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
+			}
+			normalized = append(normalized, row)
+		}
+		apps = normalized
+	}
 	if len(hosts) > repository.MaxLockdownAllowHosts {
 		return nil, fmt.Errorf("allow hosts cap exceeded: %d > %d", len(hosts), repository.MaxLockdownAllowHosts)
 	}
-	if err := s.repo.ReplaceLockdownDraft(ctx, lockdown, hosts); err != nil {
+	if len(apps) > repository.MaxLockdownAllowApps {
+		return nil, fmt.Errorf("allow apps cap exceeded: %d > %d", len(apps), repository.MaxLockdownAllowApps)
+	}
+	if err := s.repo.ReplaceLockdownDraft(ctx, lockdown, hosts, apps); err != nil {
 		return nil, err
 	}
 	return s.GetLockdownDraft(ctx)
+}
+
+func normalizeAllowApp(a dto.LockdownAllowApp) (repository.LockdownAllowAppRow, bool) {
+	pub := strings.TrimSpace(a.Publisher)
+	prod := strings.TrimSpace(a.Product)
+	sha := strings.ToLower(strings.TrimSpace(a.Sha256))
+	sha = strings.TrimPrefix(sha, "sha256:")
+	if pub == "" && len(sha) != 64 {
+		return repository.LockdownAllowAppRow{}, false
+	}
+	if sha != "" && len(sha) != 64 {
+		return repository.LockdownAllowAppRow{}, false
+	}
+	for _, c := range sha {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return repository.LockdownAllowAppRow{}, false
+		}
+	}
+	return repository.LockdownAllowAppRow{Publisher: pub, Product: prod, Sha256: sha}, true
 }
 
 const maxLockdownPauseMinutes = 240

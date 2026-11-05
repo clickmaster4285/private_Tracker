@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, History, Loader2, Lock, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
+import Link from 'next/link';
+import { Globe, History, Loader2, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -188,150 +189,15 @@ function notAlreadySelected(candidates: string[], selected: string[]): string[] 
   return uniqueDomains(candidates).filter((d) => !have.has(d));
 }
 
-/**
- * P1 web lockdown (default-deny except allow list). Lives on /web-blocker and is gated by
- * the existing `web-blocker` RBAC permission on purpose — no new `security-dlp/lockdown`
- * submodule, so no catalog/sidebar change. Saves only the DRAFT; agents enforce after Publish.
- */
-function LockdownSection() {
-  const qc = useQueryClient();
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ['dlp-lockdown'],
-    queryFn: () => dlpApi.lockdown.get(),
-  });
-  const [hosts, setHosts] = useState<string[]>([]);
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    if (data && !dirty) setHosts(data.allowHosts ?? []);
-  }, [data, dirty]);
-
-  const max = data?.maxAllowHosts ?? 0;
-
-  const switchMutation = useMutation({
-    mutationFn: (lockdown: boolean) => dlpApi.lockdown.update({ lockdown }),
-    onSuccess: (res) => {
-      qc.setQueryData(['dlp-lockdown'], res);
-      toast.success(res.lockdown ? 'Lockdown enabled (draft)' : 'Lockdown disabled (draft)', {
-        description: 'Click Publish to enforce this on employee PCs.',
-      });
-    },
-    onError: (err: Error) => toast.error('Failed to update lockdown', { description: err.message }),
-  });
-
-  const hostsMutation = useMutation({
-    mutationFn: () => dlpApi.lockdown.update({ allowHosts: uniqueDomains(hosts) }),
-    onSuccess: (res) => {
-      qc.setQueryData(['dlp-lockdown'], res);
-      setHosts(res.allowHosts ?? []);
-      setDirty(false);
-      toast.success('Allow list saved (draft)', {
-        description: 'Click Publish to enforce this on employee PCs.',
-      });
-    },
-    onError: (err: Error) => toast.error('Failed to save allow list', { description: err.message }),
-  });
-
+/** Deny-list rules only — default-deny allow lists live under Allowlists. */
+function AllowlistsMovedNotice() {
   return (
-    <div className="bg-card rounded-xl border border-border p-5 shadow-card space-y-3">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0">
-          <h4 className="font-display font-bold text-foreground flex items-center gap-2">
-            <Lock className="w-4 h-4 text-primary" /> Web lockdown
-          </h4>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            When on, employee PCs can only reach allow-listed hosts plus the platform hosts below.
-            Changes are saved as a draft — <span className="font-medium">Publish is required to enforce</span>.
-          </p>
-        </div>
-        <label className="inline-flex items-center gap-2 cursor-pointer">
-          <Switch
-            checked={data?.lockdown ?? false}
-            disabled={isLoading || isError || switchMutation.isPending}
-            onCheckedChange={(checked) => switchMutation.mutate(checked)}
-            aria-label="Toggle web lockdown"
-          />
-          <span
-            className={`text-xs font-medium ${data?.lockdown ? 'text-success' : 'text-muted-foreground'}`}
-          >
-            {data?.lockdown ? 'On' : 'Off'}
-          </span>
-        </label>
-      </div>
-
-      {isLoading && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
-      {isError && <p className="text-xs text-destructive">Failed to load lockdown settings</p>}
-
-      {data && (
-        <>
-          <div>
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-muted-foreground">Allow hosts</label>
-              <span className="text-[10px] text-muted-foreground">
-                {hosts.length}/{max}
-              </span>
-            </div>
-            <DomainChipInput
-              domains={hosts}
-              max={max}
-              onChange={(next) => {
-                setHosts(uniqueDomains(next));
-                setDirty(true);
-              }}
-              placeholder="example.com — Enter to add"
-            />
-            {hosts.length >= max && max > 0 && (
-              <p className="text-[10px] text-warning mt-1">Maximum of {max} allow hosts reached.</p>
-            )}
-            <div className="mt-2 flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!dirty || hostsMutation.isPending}
-                onClick={() => hostsMutation.mutate()}
-              >
-                {hostsMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
-                Save allow list
-              </Button>
-              {dirty && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setHosts(data.allowHosts ?? []);
-                    setDirty(false);
-                  }}
-                >
-                  Discard
-                </Button>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium text-muted-foreground">
-              Platform allow (always permitted, read-only)
-            </label>
-            <div className="flex flex-wrap gap-1 mt-1">
-              {(data.platformAllow ?? []).length === 0 && (
-                <span className="text-[10px] text-muted-foreground">None</span>
-              )}
-              {(data.platformAllow ?? []).map((d) => (
-                <code
-                  key={d}
-                  className="bg-muted px-1.5 py-0.5 rounded text-[10px] text-muted-foreground"
-                >
-                  {d}
-                </code>
-              ))}
-            </div>
-          </div>
-
-          <p className="text-[10px] text-muted-foreground">
-            Application allow-listing is coming in a later phase.
-          </p>
-        </>
-      )}
+    <div className="bg-muted/40 rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground">
+      Default-deny web (block everything except an allow list) is managed under{" "}
+      <Link href="/allowlists/web" className="text-primary font-medium hover:underline">
+        Allowlists → Web Allow Lists
+      </Link>
+      . This page is for explicit block/alert rules inside that set.
     </div>
   );
 }
@@ -542,7 +408,7 @@ export default function WebBlockerPage() {
       {publishMsg && <p className="text-xs text-success">{publishMsg}</p>}
       {publishMutation.isError && <p className="text-xs text-destructive">Publish failed</p>}
 
-      <LockdownSection />
+      <AllowlistsMovedNotice />
 
       {isLoading && (
         <div className="flex justify-center py-12">

@@ -44,6 +44,8 @@ const pageTitles: Record<string, string> = {
   "/dlp-alerts": "DLP Alerts",
   "/dlp-rules": "DLP Rules",
   "/web-blocker": "Web Blocker",
+  "/allowlists/web": "Web Allow Lists",
+  "/allowlists/apps": "App Allow List",
   "/shadow-it": "Shadow IT",
   "/settings/billing": "Billing & Subscription",
   "/settings/compliance": "GDPR & Compliance",

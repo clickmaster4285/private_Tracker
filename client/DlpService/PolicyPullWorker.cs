@@ -58,8 +58,23 @@ public sealed class PolicyPullWorker : BackgroundService
 
             if (_loggedWaiting)
             {
-                _logger.LogInformation("PolicyPullWorker credentials ready — starting policy pull");
+                _logger.LogInformation(
+                    "PolicyPullWorker credentials ready — flush DNS/CDN pins then pull allowlists");
                 _loggedWaiting = false;
+                // Post-login fail-closed prep: drop cached DNS and CDN pin rules so a stale
+                // allow path cannot linger while the first lockdown policy is applied.
+                try
+                {
+                    await Task.Run(() =>
+                    {
+                        DomainBlockEnforcer.ClearPinnedIps();
+                        DomainBlockEnforcer.FlushDns();
+                    }, stoppingToken);
+                }
+                catch (Exception flushEx)
+                {
+                    _logger.LogWarning(flushEx, "Post-login DNS/pin flush failed (continuing pull)");
+                }
             }
 
             try

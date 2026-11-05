@@ -105,16 +105,26 @@ type PublishDlpPolicyResponse struct {
 
 // ── Admin: Lockdown draft ───────────────────────────────────────────────────
 
+// LockdownAllowApp is publisher and/or SHA-256 (never display-name-only).
+type LockdownAllowApp struct {
+	Publisher string `json:"publisher,omitempty"`
+	Product   string `json:"product,omitempty"`
+	Sha256    string `json:"sha256,omitempty"`
+}
+
 type LockdownDraftResponse struct {
-	Lockdown      bool     `json:"lockdown"`
-	AllowHosts    []string `json:"allowHosts"`
-	PlatformAllow []string `json:"platformAllow"` // compiled from server env (read-only)
-	MaxAllowHosts int      `json:"maxAllowHosts"`
+	Lockdown      bool               `json:"lockdown"`
+	AllowHosts    []string           `json:"allowHosts"`
+	AllowApps     []LockdownAllowApp `json:"allowApps"`
+	PlatformAllow []string           `json:"platformAllow"` // compiled from server env (read-only)
+	MaxAllowHosts int                `json:"maxAllowHosts"`
+	MaxAllowApps  int                `json:"maxAllowApps"`
 }
 
 type UpdateLockdownDraftRequest struct {
-	Lockdown   *bool     `json:"lockdown,omitempty"`
-	AllowHosts *[]string `json:"allowHosts,omitempty"`
+	Lockdown   *bool               `json:"lockdown,omitempty"`
+	AllowHosts *[]string           `json:"allowHosts,omitempty"`
+	AllowApps  *[]LockdownAllowApp `json:"allowApps,omitempty"`
 }
 
 type PauseLockdownRequest struct {

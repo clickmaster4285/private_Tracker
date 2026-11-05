@@ -93,7 +93,14 @@ var rbacCatalog = []moduleSeed{
 		},
 	},
 	{
-		Key: "configuration", Name: "Configuration", SortOrder: 8,
+		Key: "allowlists", Name: "Allowlists", SortOrder: 8,
+		Submodules: []submodulesSeed{
+			{Key: "allowlists/web", Name: "Web Allow Lists", Route: "/allowlists/web"},
+			{Key: "allowlists/apps", Name: "App Allow List", Route: "/allowlists/apps"},
+		},
+	},
+	{
+		Key: "configuration", Name: "Configuration", SortOrder: 9,
 		Submodules: []submodulesSeed{
 			{Key: "configuration/apps", Name: "Applications Classification", Route: "/configuration/apps"},
 			{Key: "configuration/websites", Name: "Websites Classification", Route: "/configuration/websites"},
@@ -102,7 +109,7 @@ var rbacCatalog = []moduleSeed{
 		},
 	},
 	{
-		Key: "communication", Name: "Communication", SortOrder: 9,
+		Key: "communication", Name: "Communication", SortOrder: 10,
 		Submodules: []submodulesSeed{
 			{Key: "emails", Name: "Emails & Alerts", Route: "/emails"},
 			{Key: "projects", Name: "Projects", Route: "/projects"},
@@ -110,7 +117,7 @@ var rbacCatalog = []moduleSeed{
 		},
 	},
 	{
-		Key: "settings-module", Name: "Settings", SortOrder: 10,
+		Key: "settings-module", Name: "Settings", SortOrder: 11,
 		Submodules: []submodulesSeed{
 			{Key: "settings", Name: "General Settings", Route: "/settings"},
 			{Key: "settings/tracking", Name: "Tracking Settings", Route: "/settings/tracking"},

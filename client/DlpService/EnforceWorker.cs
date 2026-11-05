@@ -115,7 +115,7 @@ public sealed class EnforceWorker : BackgroundService
                 _logger.LogInformation("Policy requests WEB domain BLOCK ({Count} hosts)", wantDomains.Count);
             else if (version == 0)
                 _logger.LogInformation(
-                    "No published DLP policy yet (version 0). Create a rule, Publish on web, and ensure DeviceAuth token is valid.");
+                    "No allow-list publish yet (version 0). After login, web is default-deny (bootstrap only) until Allowlists → Publish.");
         }
 
         _drives.SetUsbBlocked(wantUsbBlock);
@@ -127,8 +127,8 @@ public sealed class EnforceWorker : BackgroundService
     }
 
     /// <summary>
-    /// P1 lockdown. Applied only when credentials exist AND bundle.lockdown AND not paused;
-    /// otherwise every AlphaAI-DLP-LOCK-* rule is cleared (idempotent, cheap when already clean).
+    /// Default-deny web after DeviceAuth. ON unless paused or the published bundle sets
+    /// <c>lockdown: false</c>. Publish is only required to expand <c>allow.hosts</c>, not to block.
     /// </summary>
     private async Task ApplyLockdownAsync(PolicyBundle bundle, CancellationToken ct)
     {
@@ -137,7 +137,7 @@ public sealed class EnforceWorker : BackgroundService
                        !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var want = bundle.Lockdown && hasCreds && !paused;
+        var want = hasCreds && !paused && bundle.LockdownEnabled;
 
         if (!want)
         {
@@ -291,7 +291,7 @@ public sealed class EnforceWorker : BackgroundService
                        !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var lockdownOn = bundle.Lockdown && hasCreds && !paused;
+        var lockdownOn = hasCreds && !paused && bundle.LockdownEnabled;
         var lockdownAllow = lockdownOn
             ? BuildLockdownBrowserAllowHosts(bundle, wantDomains, _cfg.ServerUrl)
             : null;

@@ -538,6 +538,7 @@ func (r *DlpRepo) PublishSnapshot(
 	lockdown bool,
 	allowHosts []string,
 	platformHosts []string,
+	allowApps []LockdownAllowAppRow,
 ) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -609,6 +610,14 @@ func (r *DlpRepo) PublishSnapshot(
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO dlp_policy_platform_hosts (policy_version, host)
 			VALUES ($1, $2)`, version, host); err != nil {
+			return err
+		}
+	}
+	for i, app := range allowApps {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO dlp_policy_allow_apps (policy_version, seq, publisher, product, sha256)
+			VALUES ($1, $2, $3, $4, $5)`,
+			version, i+1, app.Publisher, app.Product, app.Sha256); err != nil {
 			return err
 		}
 	}
@@ -746,18 +755,22 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	if err != nil {
 		return nil, err
 	}
+	allowApps, err := r.listPolicyAllowApps(ctx, version)
+	if err != nil {
+		return nil, err
+	}
 
 	bundle := struct {
 		PolicyVersion int64  `json:"policyVersion"`
 		PublishedAt   string `json:"publishedAt"`
-		Lockdown      bool   `json:"lockdown,omitempty"`
+		Lockdown      bool `json:"lockdown"`
 		PlatformAllow struct {
 			Hosts []string `json:"hosts"`
-		} `json:"platformAllow,omitempty"`
+		} `json:"platformAllow"`
 		Allow struct {
 			Hosts []string         `json:"hosts"`
 			Apps  []map[string]any `json:"apps"`
-		} `json:"allow,omitempty"`
+		} `json:"allow"`
 		Rules      []wireRule `json:"rules"`
 		ShadowDeny struct {
 			Domains    []string `json:"domains"`
@@ -772,32 +785,12 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	}
 	bundle.PlatformAllow.Hosts = platformHosts
 	bundle.Allow.Hosts = allowHosts
-	bundle.Allow.Apps = []map[string]any{}
+	bundle.Allow.Apps = allowApps
 	bundle.ShadowDeny.Domains = shadowDomains
 	bundle.ShadowDeny.Publishers = []string{}
 	bundle.ShadowDeny.AppNames = []string{}
-	// Old clients ignore unknown fields. Omit lockdown envelope when false so
-	// a "lockdown off" publish looks like today's deny-list bundle shape.
-	if !lockdown && len(platformHosts) == 0 && len(allowHosts) == 0 {
-		legacy := struct {
-			PolicyVersion int64      `json:"policyVersion"`
-			PublishedAt   string     `json:"publishedAt"`
-			Rules         []wireRule `json:"rules"`
-			ShadowDeny    struct {
-				Domains    []string `json:"domains"`
-				Publishers []string `json:"publishers"`
-				AppNames   []string `json:"appNames"`
-			} `json:"shadowDeny"`
-		}{
-			PolicyVersion: version,
-			PublishedAt:   header.PublishedAt.UTC().Format(time.RFC3339),
-			Rules:         wireRules,
-		}
-		legacy.ShadowDeny.Domains = shadowDomains
-		legacy.ShadowDeny.Publishers = []string{}
-		legacy.ShadowDeny.AppNames = []string{}
-		return json.Marshal(legacy)
-	}
+	// Always emit lockdown true|false. Agents default-deny after login when the
+	// field is missing or true; explicit false is the admin opt-out.
 	return json.Marshal(bundle)
 }
 
@@ -818,39 +811,103 @@ func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int
 	return out, rows.Err()
 }
 
+func (r *DlpRepo) listPolicyAllowApps(ctx context.Context, version int64) ([]map[string]any, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT publisher, product, sha256
+		FROM dlp_policy_allow_apps
+		WHERE policy_version=$1
+		ORDER BY seq`, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var publisher, product, sha string
+		if err := rows.Scan(&publisher, &product, &sha); err != nil {
+			return nil, err
+		}
+		m := map[string]any{}
+		if publisher != "" {
+			m["publisher"] = publisher
+		}
+		if product != "" {
+			m["product"] = product
+		}
+		if sha != "" {
+			m["sha256"] = sha
+		}
+		if len(m) > 0 {
+			out = append(out, m)
+		}
+	}
+	return out, rows.Err()
+}
+
 // ── Lockdown draft (admin) ──────────────────────────────────────────────────
 
 const MaxLockdownAllowHosts = 500
+const MaxLockdownAllowApps = 2000
 
-func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []string, err error) {
+// LockdownAllowAppRow is a draft/snapshot app allow entry (publisher and/or sha256).
+type LockdownAllowAppRow struct {
+	Publisher string
+	Product   string
+	Sha256    string
+}
+
+func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []string, apps []LockdownAllowAppRow, err error) {
 	err = r.pool.QueryRow(ctx, `SELECT lockdown FROM dlp_lockdown_settings WHERE id = 1`).Scan(&lockdown)
 	if err == pgx.ErrNoRows {
-		return false, []string{}, nil
+		return false, []string{}, []LockdownAllowAppRow{}, nil
 	}
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	rows, err := r.pool.Query(ctx, `SELECT host FROM dlp_lockdown_allow_hosts ORDER BY host`)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	defer rows.Close()
 	hosts = make([]string, 0)
 	for rows.Next() {
 		var host string
 		if err := rows.Scan(&host); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		hosts = append(hosts, host)
 	}
-	return lockdown, hosts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return false, nil, nil, err
+	}
+	appRows, err := r.pool.Query(ctx, `
+		SELECT publisher, product, sha256
+		FROM dlp_lockdown_allow_apps
+		ORDER BY id`)
+	if err != nil {
+		return false, nil, nil, err
+	}
+	defer appRows.Close()
+	apps = make([]LockdownAllowAppRow, 0)
+	for appRows.Next() {
+		var a LockdownAllowAppRow
+		if err := appRows.Scan(&a.Publisher, &a.Product, &a.Sha256); err != nil {
+			return false, nil, nil, err
+		}
+		apps = append(apps, a)
+	}
+	return lockdown, hosts, apps, appRows.Err()
 }
 
-// ReplaceLockdownDraft upserts the singleton settings row and replaces allow hosts.
-func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts []string) error {
+// ReplaceLockdownDraft upserts the singleton settings row and replaces allow hosts/apps.
+// Pass hosts/apps as the full desired lists (caller merges partial updates).
+func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts []string, apps []LockdownAllowAppRow) error {
 	hosts = cleanStrings(hosts, true)
 	if len(hosts) > MaxLockdownAllowHosts {
 		return fmt.Errorf("allow hosts cap exceeded: %d > %d", len(hosts), MaxLockdownAllowHosts)
+	}
+	if len(apps) > MaxLockdownAllowApps {
+		return fmt.Errorf("allow apps cap exceeded: %d > %d", len(apps), MaxLockdownAllowApps)
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -868,6 +925,16 @@ func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts
 	}
 	for _, host := range hosts {
 		if _, err := tx.Exec(ctx, `INSERT INTO dlp_lockdown_allow_hosts (host) VALUES ($1)`, host); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM dlp_lockdown_allow_apps`); err != nil {
+		return err
+	}
+	for _, app := range apps {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256)
+			VALUES ($1, $2, $3)`, app.Publisher, app.Product, app.Sha256); err != nil {
 			return err
 		}
 	}
