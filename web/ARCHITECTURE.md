@@ -2,9 +2,12 @@
 
 > **Last audited:** 2026-11-05 (Allowlists module)
 > **Changelog:**
+> - 2026-11-05: **Allowlists auto-publish.** Host/app create/update/status/delete and
+>   default-deny switch auto-call Publish; no separate Publish button.
+>
 > - 2026-11-05: **Allowlists Active/Inactive.** Row Switch + status filter on
 >   `/allowlists/web` and `/allowlists/apps` (`PATCH …/hosts|apps/:id` `{enabled}`).
->   Draft until Publish; only active rows enter the snapshot.
+>   Only active rows enter the snapshot.
 >
 > - 2026-11-05: **Allowlists list UI.** `/allowlists/web` and `/allowlists/apps` are
 >   infinite-scroll tables (search, created-by filter, creator + timestamps, add/edit
@@ -562,8 +565,8 @@ in the `updateMutation`).
 | `/dlp-alerts` | DLP Alerts | Server (`GET/PATCH /dlp/alerts`, `GET /dlp/alerts/:id/history`; infinite scroll + URL filters; detail dialog Save-only triage) | ✅ |
 | `/dlp-rules` | DLP Rules | `/dlp/rules` CRUD + get/history + publish; edit/detail dialogs; Active Switch auto-publish | ✅ |
 | `/web-blocker` | Web Blocker | `/web-blocker/rules` CRUD + expand/history; Switch status + auto-publish; schedule + `TimezoneCombobox` (deny-list only; default-deny lives under Allowlists) | ✅ |
-| `/allowlists/web` | Web Allow Lists | `GET|PUT /dlp/lockdown` + hosts CRUD (`enabled` Active/Inactive) + Publish; platformAllow read-only | ✅ |
-| `/allowlists/apps` | App Allow List | Apps CRUD (`enabled`); Publish snapshots into `allow.apps` (enforce = P3) | ✅ |
+| `/allowlists/web` | Web Allow Lists | Hosts CRUD + `enabled`; auto-publish after each change; platformAllow read-only | ✅ |
+| `/allowlists/apps` | App Allow List | Apps CRUD + `enabled`; auto-publish into `allow.apps` (enforce = P3) | ✅ |
 | `/shadow-it` | Shadow IT | Server (`GET/PATCH /shadow-it/apps`; Approve/Block/Flag) | ✅ |
 | `/emails` | Emails & Alerts | Hardcoded demo data (scaffolding) | ❌ |
 | `/projects` | Projects | Hardcoded demo data (scaffolding) | ❌ |

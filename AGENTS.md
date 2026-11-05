@@ -3,6 +3,10 @@
 > **Last audited:** 2026-11-05
 > **Changelog:**
 >
+> - 2026-11-05: **Allowlists auto-publish.** Create/update/status/delete (and web
+>   default-deny switch) call `POST /dlp/rules/publish` immediately; Publish buttons
+>   removed from `/allowlists/web` and `/apps`. Verified: `npx tsc --noEmit`.
+>
 > - 2026-11-05: **Allowlists Active/Inactive.** Migration **063** adds `enabled` on draft
 >   hosts/apps. Row Switch + status filter on `/allowlists/web` and `/apps`. Publish only
 >   snapshots `enabled=true` rows. Verified: `go build`/`go vet`, `npx tsc --noEmit`.

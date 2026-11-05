@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { AppWindow, Loader2, Pencil, Plus, Search, Trash2, Upload } from 'lucide-react';
+import { AppWindow, Loader2, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -107,48 +107,55 @@ function AppAllowListInner() {
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      const wasEdit = !!editing;
       const body = { publisher, product, sha256, note };
-      if (editing) return dlpApi.lockdown.apps.update(editing.id, body);
-      return dlpApi.lockdown.apps.create(body);
+      if (editing) await dlpApi.lockdown.apps.update(editing.id, body);
+      else await dlpApi.lockdown.apps.create(body);
+      const pub = await dlpApi.rules.publish();
+      return { wasEdit, pub };
     },
-    onSuccess: () => {
+    onSuccess: ({ wasEdit, pub }) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
       setDialogOpen(false);
-      toast.success(editing ? 'App entry updated (draft)' : 'App entry added (draft)', {
-        description: 'Publish to include in the next policy bundle.',
-      });
+      toast.success(
+        wasEdit
+          ? `App entry updated · policy v${pub.policyVersion}`
+          : `App entry added · policy v${pub.policyVersion}`,
+      );
     },
     onError: (err: Error) => toast.error('Save failed', { description: err.message }),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => dlpApi.lockdown.apps.remove(id),
-    onSuccess: () => {
+    mutationFn: async (id: number) => {
+      await dlpApi.lockdown.apps.remove(id);
+      return dlpApi.rules.publish();
+    },
+    onSuccess: (pub) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
-      toast.success('App entry removed (draft)');
+      toast.success(`App entry removed · policy v${pub.policyVersion}`);
     },
     onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
   });
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
-      dlpApi.lockdown.apps.update(id, { enabled }),
-    onSuccess: (row) => {
+    mutationFn: async ({ id, enabled }: { id: number; enabled: boolean }) => {
+      const row = await dlpApi.lockdown.apps.update(id, { enabled });
+      const pub = await dlpApi.rules.publish();
+      return { row, pub };
+    },
+    onSuccess: ({ row, pub }) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
-      toast.success(row.enabled ? 'App active (draft)' : 'App inactive (draft)', {
-        description: 'Publish so the policy bundle updates.',
-      });
+      toast.success(
+        row.enabled
+          ? `App active · policy v${pub.policyVersion}`
+          : `App inactive · policy v${pub.policyVersion}`,
+      );
     },
     onError: (err: Error) => toast.error('Failed to update status', { description: err.message }),
-  });
-
-  const publishMutation = useMutation({
-    mutationFn: () => dlpApi.rules.publish(),
-    onSuccess: (res) => toast.success(`Published policy v${res.policyVersion}`),
-    onError: (err: Error) => toast.error('Publish failed', { description: err.message }),
   });
 
   return (
@@ -161,7 +168,7 @@ function AppAllowListInner() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
             Allow programs by code-signing publisher and/or file SHA-256 — never by display name
-            alone. Entries publish into the policy bundle; Windows enforce mode ships later.
+            alone. Each change publishes into the policy bundle; Windows enforce mode ships later.
           </p>
           {settings.data && !settings.data.lockdown && (
             <p className="text-xs text-warning mt-1">
@@ -169,23 +176,9 @@ function AppAllowListInner() {
             </p>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={() => publishMutation.mutate()}
-            disabled={publishMutation.isPending}
-          >
-            {publishMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-1" />
-            ) : (
-              <Upload className="w-4 h-4 mr-1" />
-            )}
-            Publish
-          </Button>
-          <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
-            <Plus className="w-4 h-4 mr-1" /> Add app
-          </Button>
-        </div>
+        <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
+          <Plus className="w-4 h-4 mr-1" /> Add app
+        </Button>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

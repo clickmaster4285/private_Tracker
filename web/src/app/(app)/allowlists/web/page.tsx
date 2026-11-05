@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Globe2, Loader2, Lock, Pencil, Plus, Search, Trash2, Upload } from 'lucide-react';
+import { Globe2, Loader2, Lock, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -100,66 +100,75 @@ function WebAllowListsInner() {
   };
 
   const switchMutation = useMutation({
-    mutationFn: (lockdown: boolean) => dlpApi.lockdown.update({ lockdown }),
-    onSuccess: (res) => {
+    mutationFn: async (lockdown: boolean) => {
+      const res = await dlpApi.lockdown.update({ lockdown });
+      const pub = await dlpApi.rules.publish();
+      return { res, pub };
+    },
+    onSuccess: ({ res, pub }) => {
       qc.setQueryData(['dlp-lockdown'], res);
-      toast.success(res.lockdown ? 'Default-deny on (draft)' : 'Open browsing (draft)', {
-        description: 'Click Publish to push this to employee PCs.',
-      });
+      toast.success(
+        res.lockdown ? `Default-deny on · policy v${pub.policyVersion}` : `Open browsing · policy v${pub.policyVersion}`,
+        { description: 'Employee PCs will refresh on the next policy poll.' },
+      );
     },
     onError: (err: Error) => toast.error('Failed to update', { description: err.message }),
   });
 
   const saveMutation = useMutation({
     mutationFn: async () => {
+      const wasEdit = !!editing;
       if (editing) {
-        return dlpApi.lockdown.hosts.update(editing.id, { host, note });
+        await dlpApi.lockdown.hosts.update(editing.id, { host, note });
+      } else {
+        await dlpApi.lockdown.hosts.create({ host, note });
       }
-      return dlpApi.lockdown.hosts.create({ host, note });
+      const pub = await dlpApi.rules.publish();
+      return { wasEdit, pub };
     },
-    onSuccess: () => {
+    onSuccess: ({ wasEdit, pub }) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
       setDialogOpen(false);
-      toast.success(editing ? 'Host updated (draft)' : 'Host added (draft)', {
-        description: 'Publish so employee PCs can reach it.',
-      });
+      toast.success(
+        wasEdit ? `Host updated · policy v${pub.policyVersion}` : `Host added · policy v${pub.policyVersion}`,
+        { description: 'Employee PCs will refresh on the next policy poll.' },
+      );
     },
     onError: (err: Error) => toast.error('Save failed', { description: err.message }),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => dlpApi.lockdown.hosts.remove(id),
-    onSuccess: () => {
+    mutationFn: async (id: number) => {
+      await dlpApi.lockdown.hosts.remove(id);
+      return dlpApi.rules.publish();
+    },
+    onSuccess: (pub) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
-      toast.success('Host removed (draft)');
+      toast.success(`Host removed · policy v${pub.policyVersion}`);
     },
     onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
   });
 
-  // Active/Inactive is draft-only until Publish (same as Web Blocker).
+  // Same as Web Blocker: draft update then auto-publish so agents pick it up.
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
-      dlpApi.lockdown.hosts.update(id, { enabled }),
-    onSuccess: (row) => {
+    mutationFn: async ({ id, enabled }: { id: number; enabled: boolean }) => {
+      const row = await dlpApi.lockdown.hosts.update(id, { enabled });
+      const pub = await dlpApi.rules.publish();
+      return { row, pub };
+    },
+    onSuccess: ({ row, pub }) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
-      toast.success(row.enabled ? 'Host active (draft)' : 'Host inactive (draft)', {
-        description: 'Publish so employee PCs pick this up.',
-      });
+      toast.success(
+        row.enabled
+          ? `Host active · policy v${pub.policyVersion}`
+          : `Host inactive · policy v${pub.policyVersion}`,
+        { description: 'Employee PCs will refresh on the next policy poll.' },
+      );
     },
     onError: (err: Error) => toast.error('Failed to update status', { description: err.message }),
-  });
-
-  const publishMutation = useMutation({
-    mutationFn: () => dlpApi.rules.publish(),
-    onSuccess: (res) => {
-      toast.success(`Published policy v${res.policyVersion}`, {
-        description: 'Employee PCs will pull the allow list on the next policy poll.',
-      });
-    },
-    onError: (err: Error) => toast.error('Publish failed', { description: err.message }),
   });
 
   return (
@@ -171,27 +180,13 @@ function WebAllowListsInner() {
             Web Allow Lists
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            After login, Windows PCs block every site by default. Add hosts here, then Publish
-            so only these destinations open (plus platform hosts).
+            After login, Windows PCs block every site by default. Add or toggle hosts here —
+            each change publishes automatically (plus platform hosts).
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={() => publishMutation.mutate()}
-            disabled={publishMutation.isPending}
-          >
-            {publishMutation.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin mr-1" />
-            ) : (
-              <Upload className="w-4 h-4 mr-1" />
-            )}
-            Publish
-          </Button>
-          <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
-            <Plus className="w-4 h-4 mr-1" /> Add host
-          </Button>
-        </div>
+        <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
+          <Plus className="w-4 h-4 mr-1" /> Add host
+        </Button>
       </div>
 
       <div className="bg-card rounded-xl border border-border p-4 shadow-card flex items-start justify-between gap-3 flex-wrap">
@@ -200,7 +195,7 @@ function WebAllowListsInner() {
             <Lock className="w-4 h-4 text-primary" /> Default-deny web
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Leave On. Turn Off + Publish only to open general browsing.
+            Leave On. Turn Off only to open general browsing (publishes immediately).
           </p>
           {(settings.data?.platformAllow?.length ?? 0) > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">
