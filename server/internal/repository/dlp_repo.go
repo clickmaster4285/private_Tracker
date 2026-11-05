@@ -864,7 +864,11 @@ func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []
 	if err != nil {
 		return false, nil, nil, err
 	}
-	rows, err := r.pool.Query(ctx, `SELECT host FROM dlp_lockdown_allow_hosts ORDER BY host`)
+	// Publish only includes Active rows.
+	rows, err := r.pool.Query(ctx, `
+		SELECT host FROM dlp_lockdown_allow_hosts
+		WHERE enabled = TRUE
+		ORDER BY host`)
 	if err != nil {
 		return false, nil, nil, err
 	}
@@ -883,6 +887,7 @@ func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []
 	appRows, err := r.pool.Query(ctx, `
 		SELECT publisher, product, sha256
 		FROM dlp_lockdown_allow_apps
+		WHERE enabled = TRUE
 		ORDER BY id`)
 	if err != nil {
 		return false, nil, nil, err
@@ -948,6 +953,7 @@ type AllowHostListRow struct {
 	ID            int64
 	Host          string
 	Note          string
+	Enabled       bool
 	CreatedBy     *string
 	CreatedByName string
 	UpdatedBy     *string
@@ -963,12 +969,35 @@ type AllowAppListRow struct {
 	Product       string
 	Sha256        string
 	Note          string
+	Enabled       bool
 	CreatedBy     *string
 	CreatedByName string
 	UpdatedBy     *string
 	UpdatedByName string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+}
+
+func allowEnabledClause(enabled string) string {
+	switch strings.ToLower(strings.TrimSpace(enabled)) {
+	case "true", "1", "active":
+		return "AND h.enabled = TRUE"
+	case "false", "0", "inactive":
+		return "AND h.enabled = FALSE"
+	default:
+		return ""
+	}
+}
+
+func allowAppEnabledClause(enabled string) string {
+	switch strings.ToLower(strings.TrimSpace(enabled)) {
+	case "true", "1", "active":
+		return "AND a.enabled = TRUE"
+	case "false", "0", "inactive":
+		return "AND a.enabled = FALSE"
+	default:
+		return ""
+	}
 }
 
 func clampAllowListPage(page, perPage int) (int, int, int) {
@@ -984,20 +1013,23 @@ func clampAllowListPage(page, perPage int) (int, int, int) {
 	return page, perPage, (page - 1) * perPage
 }
 
-func (r *DlpRepo) CountAllowHosts(ctx context.Context, q, createdBy string) (int, error) {
+func (r *DlpRepo) CountAllowHosts(ctx context.Context, q, createdBy, enabled string) (int, error) {
+	enClause := allowEnabledClause(enabled)
 	var total int
 	err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM dlp_lockdown_allow_hosts h
 		WHERE ($1 = '' OR h.host ILIKE '%' || $1 || '%' OR h.note ILIKE '%' || $1 || '%')
-		  AND ($2 = '' OR h.created_by::text = $2)`,
+		  AND ($2 = '' OR h.created_by::text = $2)
+		  `+enClause,
 		strings.TrimSpace(q), strings.TrimSpace(createdBy)).Scan(&total)
 	return total, err
 }
 
-func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy string, page, perPage int) ([]AllowHostListRow, error) {
+func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy, enabled string, page, perPage int) ([]AllowHostListRow, error) {
 	page, perPage, offset := clampAllowListPage(page, perPage)
+	enClause := allowEnabledClause(enabled)
 	rows, err := r.pool.Query(ctx, `
-		SELECT h.id, h.host, h.note,
+		SELECT h.id, h.host, h.note, h.enabled,
 		       h.created_by::text, COALESCE(cu.name, ''),
 		       h.updated_by::text, COALESCE(uu.name, ''),
 		       h.created_at, h.updated_at
@@ -1006,6 +1038,7 @@ func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy string, page,
 		LEFT JOIN users uu ON uu.id = h.updated_by AND uu.deleted_at IS NULL
 		WHERE ($1 = '' OR h.host ILIKE '%' || $1 || '%' OR h.note ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR h.created_by::text = $2)
+		  `+enClause+`
 		ORDER BY h.created_at DESC, h.host
 		LIMIT $3 OFFSET $4`,
 		strings.TrimSpace(q), strings.TrimSpace(createdBy), perPage, offset)
@@ -1018,7 +1051,7 @@ func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy string, page,
 		var row AllowHostListRow
 		var createdByNS, updatedByNS *string
 		if err := rows.Scan(
-			&row.ID, &row.Host, &row.Note,
+			&row.ID, &row.Host, &row.Note, &row.Enabled,
 			&createdByNS, &row.CreatedByName,
 			&updatedByNS, &row.UpdatedByName,
 			&row.CreatedAt, &row.UpdatedAt,
@@ -1032,15 +1065,15 @@ func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy string, page,
 	return out, rows.Err()
 }
 
-func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, userID *string) (*AllowHostListRow, error) {
+func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, enabled bool, userID *string) (*AllowHostListRow, error) {
 	var row AllowHostListRow
 	var createdByNS, updatedByNS *string
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO dlp_lockdown_allow_hosts (host, note, created_by, updated_by)
-		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($3, '')::uuid)
-		RETURNING id, host, note, created_by::text, updated_by::text, created_at, updated_at`,
-		host, note, nullStr(userID),
-	).Scan(&row.ID, &row.Host, &row.Note, &createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
+		INSERT INTO dlp_lockdown_allow_hosts (host, note, enabled, created_by, updated_by)
+		VALUES ($1, $2, $3, NULLIF($4, '')::uuid, NULLIF($4, '')::uuid)
+		RETURNING id, host, note, enabled, created_by::text, updated_by::text, created_at, updated_at`,
+		host, note, enabled, nullStr(userID),
+	).Scan(&row.ID, &row.Host, &row.Note, &row.Enabled, &createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1053,7 +1086,7 @@ func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, 
 	var row AllowAppListRow
 	var createdByNS, updatedByNS *string
 	err := r.pool.QueryRow(ctx, `
-		SELECT a.id, a.publisher, a.product, a.sha256, a.note,
+		SELECT a.id, a.publisher, a.product, a.sha256, a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
 		       a.updated_by::text, COALESCE(uu.name, ''),
 		       a.created_at, a.updated_at
@@ -1061,7 +1094,7 @@ func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, 
 		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
 		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
 		WHERE a.id = $1`, id).Scan(
-		&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+		&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
 		&createdByNS, &row.CreatedByName,
 		&updatedByNS, &row.UpdatedByName,
 		&row.CreatedAt, &row.UpdatedAt,
@@ -1074,19 +1107,20 @@ func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, 
 	return &row, nil
 }
 
-func (r *DlpRepo) UpdateAllowHost(ctx context.Context, id int64, host, note *string, userID *string) (*AllowHostListRow, error) {
+func (r *DlpRepo) UpdateAllowHost(ctx context.Context, id int64, host, note *string, enabled *bool, userID *string) (*AllowHostListRow, error) {
 	var row AllowHostListRow
 	var createdByNS, updatedByNS *string
 	err := r.pool.QueryRow(ctx, `
 		UPDATE dlp_lockdown_allow_hosts h
 		SET host = COALESCE($2, h.host),
 		    note = COALESCE($3, h.note),
-		    updated_by = NULLIF($4, '')::uuid,
+		    enabled = COALESCE($4, h.enabled),
+		    updated_by = NULLIF($5, '')::uuid,
 		    updated_at = NOW()
 		WHERE h.id = $1
-		RETURNING h.id, h.host, h.note, h.created_by::text, h.updated_by::text, h.created_at, h.updated_at`,
-		id, host, note, nullStr(userID),
-	).Scan(&row.ID, &row.Host, &row.Note, &createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
+		RETURNING h.id, h.host, h.note, h.enabled, h.created_by::text, h.updated_by::text, h.created_at, h.updated_at`,
+		id, host, note, enabled, nullStr(userID),
+	).Scan(&row.ID, &row.Host, &row.Note, &row.Enabled, &createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1112,21 +1146,24 @@ func (r *DlpRepo) DeleteAllowHost(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (r *DlpRepo) CountAllowApps(ctx context.Context, q, createdBy string) (int, error) {
+func (r *DlpRepo) CountAllowApps(ctx context.Context, q, createdBy, enabled string) (int, error) {
+	enClause := allowAppEnabledClause(enabled)
 	var total int
 	err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM dlp_lockdown_allow_apps a
 		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
 		       OR a.sha256 ILIKE '%' || $1 || '%' OR a.note ILIKE '%' || $1 || '%')
-		  AND ($2 = '' OR a.created_by::text = $2)`,
+		  AND ($2 = '' OR a.created_by::text = $2)
+		  `+enClause,
 		strings.TrimSpace(q), strings.TrimSpace(createdBy)).Scan(&total)
 	return total, err
 }
 
-func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy string, page, perPage int) ([]AllowAppListRow, error) {
+func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy, enabled string, page, perPage int) ([]AllowAppListRow, error) {
 	page, perPage, offset := clampAllowListPage(page, perPage)
+	enClause := allowAppEnabledClause(enabled)
 	rows, err := r.pool.Query(ctx, `
-		SELECT a.id, a.publisher, a.product, a.sha256, a.note,
+		SELECT a.id, a.publisher, a.product, a.sha256, a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
 		       a.updated_by::text, COALESCE(uu.name, ''),
 		       a.created_at, a.updated_at
@@ -1136,6 +1173,7 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy string, page, 
 		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
 		       OR a.sha256 ILIKE '%' || $1 || '%' OR a.note ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR a.created_by::text = $2)
+		  `+enClause+`
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT $3 OFFSET $4`,
 		strings.TrimSpace(q), strings.TrimSpace(createdBy), perPage, offset)
@@ -1148,7 +1186,7 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy string, page, 
 		var row AllowAppListRow
 		var createdByNS, updatedByNS *string
 		if err := rows.Scan(
-			&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+			&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
 			&createdByNS, &row.CreatedByName,
 			&updatedByNS, &row.UpdatedByName,
 			&row.CreatedAt, &row.UpdatedAt,
@@ -1162,15 +1200,15 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy string, page, 
 	return out, rows.Err()
 }
 
-func (r *DlpRepo) InsertAllowApp(ctx context.Context, publisher, product, sha, note string, userID *string) (*AllowAppListRow, error) {
+func (r *DlpRepo) InsertAllowApp(ctx context.Context, publisher, product, sha, note string, enabled bool, userID *string) (*AllowAppListRow, error) {
 	var row AllowAppListRow
 	var createdByNS, updatedByNS *string
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256, note, created_by, updated_by)
-		VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid, NULLIF($5, '')::uuid)
-		RETURNING id, publisher, product, sha256, note, created_by::text, updated_by::text, created_at, updated_at`,
-		publisher, product, sha, note, nullStr(userID),
-	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+		INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256, note, enabled, created_by, updated_by)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($6, '')::uuid)
+		RETURNING id, publisher, product, sha256, note, enabled, created_by::text, updated_by::text, created_at, updated_at`,
+		publisher, product, sha, note, enabled, nullStr(userID),
+	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
 		&createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -1180,7 +1218,7 @@ func (r *DlpRepo) InsertAllowApp(ctx context.Context, publisher, product, sha, n
 	return &row, nil
 }
 
-func (r *DlpRepo) UpdateAllowApp(ctx context.Context, id int64, publisher, product, sha, note *string, userID *string) (*AllowAppListRow, error) {
+func (r *DlpRepo) UpdateAllowApp(ctx context.Context, id int64, publisher, product, sha, note *string, enabled *bool, userID *string) (*AllowAppListRow, error) {
 	var row AllowAppListRow
 	var createdByNS, updatedByNS *string
 	err := r.pool.QueryRow(ctx, `
@@ -1189,13 +1227,14 @@ func (r *DlpRepo) UpdateAllowApp(ctx context.Context, id int64, publisher, produ
 		    product = COALESCE($3, a.product),
 		    sha256 = COALESCE($4, a.sha256),
 		    note = COALESCE($5, a.note),
-		    updated_by = NULLIF($6, '')::uuid,
+		    enabled = COALESCE($6, a.enabled),
+		    updated_by = NULLIF($7, '')::uuid,
 		    updated_at = NOW()
 		WHERE a.id = $1
-		RETURNING a.id, a.publisher, a.product, a.sha256, a.note,
+		RETURNING a.id, a.publisher, a.product, a.sha256, a.note, a.enabled,
 		          a.created_by::text, a.updated_by::text, a.created_at, a.updated_at`,
-		id, publisher, product, sha, note, nullStr(userID),
-	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note,
+		id, publisher, product, sha, note, enabled, nullStr(userID),
+	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
 		&createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err

@@ -460,7 +460,7 @@ func totalPages(total, perPage int) int {
 
 func mapAllowHost(row repository.AllowHostListRow) dto.AllowHostRow {
 	return dto.AllowHostRow{
-		ID: row.ID, Host: row.Host, Note: row.Note,
+		ID: row.ID, Host: row.Host, Note: row.Note, Enabled: row.Enabled,
 		CreatedBy: row.CreatedBy, CreatedByName: row.CreatedByName,
 		UpdatedBy: row.UpdatedBy, UpdatedByName: row.UpdatedByName,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
@@ -469,7 +469,7 @@ func mapAllowHost(row repository.AllowHostListRow) dto.AllowHostRow {
 
 func mapAllowApp(row repository.AllowAppListRow) dto.AllowAppRow {
 	return dto.AllowAppRow{
-		ID: row.ID, Publisher: row.Publisher, Product: row.Product, Sha256: row.Sha256, Note: row.Note,
+		ID: row.ID, Publisher: row.Publisher, Product: row.Product, Sha256: row.Sha256, Note: row.Note, Enabled: row.Enabled,
 		CreatedBy: row.CreatedBy, CreatedByName: row.CreatedByName,
 		UpdatedBy: row.UpdatedBy, UpdatedByName: row.UpdatedByName,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
@@ -478,11 +478,11 @@ func mapAllowApp(row repository.AllowAppListRow) dto.AllowAppRow {
 
 func (s *DlpService) ListAllowHosts(ctx context.Context, q dto.AllowListQuery) (*dto.AllowHostListResponse, error) {
 	page, perPage, _ := pagePer(q.Page, q.PerPage)
-	total, err := s.repo.CountAllowHosts(ctx, q.Q, q.CreatedBy)
+	total, err := s.repo.CountAllowHosts(ctx, q.Q, q.CreatedBy, q.Enabled)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.repo.ListAllowHosts(ctx, q.Q, q.CreatedBy, page, perPage)
+	rows, err := s.repo.ListAllowHosts(ctx, q.Q, q.CreatedBy, q.Enabled, page, perPage)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +500,7 @@ func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHos
 	if host == "" {
 		return nil, fmt.Errorf("host is required")
 	}
-	count, err := s.repo.CountAllowHosts(ctx, "", "")
+	count, err := s.repo.CountAllowHosts(ctx, "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +511,11 @@ func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHos
 	if strings.TrimSpace(userID) != "" {
 		uid = &userID
 	}
-	row, err := s.repo.InsertAllowHost(ctx, host, strings.TrimSpace(req.Note), uid)
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	row, err := s.repo.InsertAllowHost(ctx, host, strings.TrimSpace(req.Note), enabled, uid)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") ||
 			strings.Contains(err.Error(), "duplicate key") {
@@ -520,7 +524,7 @@ func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHos
 		return nil, err
 	}
 	// Refresh names
-	list, err := s.repo.ListAllowHosts(ctx, host, "", 1, 1)
+	list, err := s.repo.ListAllowHosts(ctx, host, "", "", 1, 1)
 	if err == nil && len(list) > 0 {
 		return ptrAllowHost(mapAllowHost(list[0])), nil
 	}
@@ -547,7 +551,7 @@ func (s *DlpService) UpdateAllowHost(ctx context.Context, id int64, req dto.Upda
 	if strings.TrimSpace(userID) != "" {
 		uid = &userID
 	}
-	row, err := s.repo.UpdateAllowHost(ctx, id, hostPtr, notePtr, uid)
+	row, err := s.repo.UpdateAllowHost(ctx, id, hostPtr, notePtr, req.Enabled, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -560,11 +564,11 @@ func (s *DlpService) DeleteAllowHost(ctx context.Context, id int64) error {
 
 func (s *DlpService) ListAllowApps(ctx context.Context, q dto.AllowListQuery) (*dto.AllowAppListResponse, error) {
 	page, perPage, _ := pagePer(q.Page, q.PerPage)
-	total, err := s.repo.CountAllowApps(ctx, q.Q, q.CreatedBy)
+	total, err := s.repo.CountAllowApps(ctx, q.Q, q.CreatedBy, q.Enabled)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.repo.ListAllowApps(ctx, q.Q, q.CreatedBy, page, perPage)
+	rows, err := s.repo.ListAllowApps(ctx, q.Q, q.CreatedBy, q.Enabled, page, perPage)
 	if err != nil {
 		return nil, err
 	}
@@ -584,7 +588,7 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if !ok {
 		return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
 	}
-	count, err := s.repo.CountAllowApps(ctx, "", "")
+	count, err := s.repo.CountAllowApps(ctx, "", "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -595,7 +599,11 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if strings.TrimSpace(userID) != "" {
 		uid = &userID
 	}
-	row, err := s.repo.InsertAllowApp(ctx, rowIn.Publisher, rowIn.Product, rowIn.Sha256, strings.TrimSpace(req.Note), uid)
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	row, err := s.repo.InsertAllowApp(ctx, rowIn.Publisher, rowIn.Product, rowIn.Sha256, strings.TrimSpace(req.Note), enabled, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -635,7 +643,7 @@ func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.Updat
 	if strings.TrimSpace(userID) != "" {
 		uid = &userID
 	}
-	row, err := s.repo.UpdateAllowApp(ctx, id, &pub, &prod, &sha, notePtr, uid)
+	row, err := s.repo.UpdateAllowApp(ctx, id, &pub, &prod, &sha, notePtr, req.Enabled, uid)
 	if err != nil {
 		return nil, err
 	}

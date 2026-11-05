@@ -97,6 +97,7 @@ func (h *DlpHandler) allowListQuery(c echo.Context) dto.AllowListQuery {
 	return dto.AllowListQuery{
 		Q:         c.QueryParam("q"),
 		CreatedBy: c.QueryParam("createdBy"),
+		Enabled:   c.QueryParam("enabled"),
 		Page:      page,
 		PerPage:   perPage,
 	}

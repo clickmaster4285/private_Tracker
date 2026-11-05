@@ -1820,6 +1820,7 @@ export interface AllowHostRow {
   id: number;
   host: string;
   note?: string;
+  enabled: boolean;
   createdBy?: string;
   createdByName?: string;
   updatedBy?: string;
@@ -1842,6 +1843,7 @@ export interface AllowAppRow {
   product?: string;
   sha256?: string;
   note?: string;
+  enabled: boolean;
   createdBy?: string;
   createdByName?: string;
   updatedBy?: string;
@@ -1867,36 +1869,63 @@ export const dlpApi = {
       allowApps?: DlpLockdownAllowApp[];
     }) => request<DlpLockdownConfig>('/dlp/lockdown', { method: 'PUT', body: data }),
     hosts: {
-      list: (params?: { q?: string; createdBy?: string; page?: number; perPage?: number }) => {
+      list: (params?: {
+        q?: string;
+        createdBy?: string;
+        enabled?: string;
+        page?: number;
+        perPage?: number;
+      }) => {
         const sp = new URLSearchParams();
         if (params?.q) sp.set('q', params.q);
         if (params?.createdBy) sp.set('createdBy', params.createdBy);
+        if (params?.enabled) sp.set('enabled', params.enabled);
         if (params?.page) sp.set('page', String(params.page));
         if (params?.perPage) sp.set('perPage', String(params.perPage));
         const qs = sp.toString();
         return request<AllowHostListResponse>('/dlp/lockdown/hosts' + (qs ? `?${qs}` : ''));
       },
-      create: (data: { host: string; note?: string }) =>
+      create: (data: { host: string; note?: string; enabled?: boolean }) =>
         request<AllowHostRow>('/dlp/lockdown/hosts', { method: 'POST', body: data }),
-      update: (id: number, data: { host?: string; note?: string }) =>
+      update: (id: number, data: { host?: string; note?: string; enabled?: boolean }) =>
         request<AllowHostRow>(`/dlp/lockdown/hosts/${id}`, { method: 'PATCH', body: data }),
       remove: (id: number) =>
         request<void>(`/dlp/lockdown/hosts/${id}`, { method: 'DELETE' }),
     },
     apps: {
-      list: (params?: { q?: string; createdBy?: string; page?: number; perPage?: number }) => {
+      list: (params?: {
+        q?: string;
+        createdBy?: string;
+        enabled?: string;
+        page?: number;
+        perPage?: number;
+      }) => {
         const sp = new URLSearchParams();
         if (params?.q) sp.set('q', params.q);
         if (params?.createdBy) sp.set('createdBy', params.createdBy);
+        if (params?.enabled) sp.set('enabled', params.enabled);
         if (params?.page) sp.set('page', String(params.page));
         if (params?.perPage) sp.set('perPage', String(params.perPage));
         const qs = sp.toString();
         return request<AllowAppListResponse>('/dlp/lockdown/apps' + (qs ? `?${qs}` : ''));
       },
-      create: (data: { publisher?: string; product?: string; sha256?: string; note?: string }) =>
-        request<AllowAppRow>('/dlp/lockdown/apps', { method: 'POST', body: data }),
-      update: (id: number, data: { publisher?: string; product?: string; sha256?: string; note?: string }) =>
-        request<AllowAppRow>(`/dlp/lockdown/apps/${id}`, { method: 'PATCH', body: data }),
+      create: (data: {
+        publisher?: string;
+        product?: string;
+        sha256?: string;
+        note?: string;
+        enabled?: boolean;
+      }) => request<AllowAppRow>('/dlp/lockdown/apps', { method: 'POST', body: data }),
+      update: (
+        id: number,
+        data: {
+          publisher?: string;
+          product?: string;
+          sha256?: string;
+          note?: string;
+          enabled?: boolean;
+        },
+      ) => request<AllowAppRow>(`/dlp/lockdown/apps/${id}`, { method: 'PATCH', body: data }),
       remove: (id: number) =>
         request<void>(`/dlp/lockdown/apps/${id}`, { method: 'DELETE' }),
     },

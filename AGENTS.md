@@ -3,6 +3,11 @@
 > **Last audited:** 2026-11-05
 > **Changelog:**
 >
+> - 2026-11-05: **Allowlists Active/Inactive.** Migration **063** adds `enabled` on draft
+>   hosts/apps. Row Switch + status filter on `/allowlists/web` and `/apps`. Publish only
+>   snapshots `enabled=true` rows. Verified: `go build`/`go vet`, `npx tsc --noEmit`.
+>   Restart API for **063**.
+>
 > - 2026-11-05: **Allowlists list UI + audit.** Migration **062** adds id/note/created_by/
 >   updated_by on draft hosts + apps. Paginated CRUD `GET|POST|PATCH|DELETE
 >   /dlp/lockdown/hosts|apps` with search + createdBy filter. Pages `/allowlists/web` and

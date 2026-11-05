@@ -25,8 +25,8 @@ const PER_PAGE = 30;
 function WebAllowListsInner() {
   const qc = useQueryClient();
   const [filters, setFilters] = useUrlQueryState(
-    { q: {}, createdBy: {} },
-    { q: '', createdBy: '' },
+    { q: {}, createdBy: {}, enabled: {} },
+    { q: '', createdBy: '', enabled: '' },
     { debounceMs: 300 },
   );
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -45,6 +45,7 @@ function WebAllowListsInner() {
       dlpApi.lockdown.hosts.list({
         q: filters.q || undefined,
         createdBy: filters.createdBy || undefined,
+        enabled: filters.enabled || undefined,
         page: pageParam,
         perPage: PER_PAGE,
       }),
@@ -135,6 +136,20 @@ function WebAllowListsInner() {
       toast.success('Host removed (draft)');
     },
     onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
+  });
+
+  // Active/Inactive is draft-only until Publish (same as Web Blocker).
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      dlpApi.lockdown.hosts.update(id, { enabled }),
+    onSuccess: (row) => {
+      qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
+      qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
+      toast.success(row.enabled ? 'Host active (draft)' : 'Host inactive (draft)', {
+        description: 'Publish so employee PCs pick this up.',
+      });
+    },
+    onError: (err: Error) => toast.error('Failed to update status', { description: err.message }),
   });
 
   const publishMutation = useMutation({
@@ -241,6 +256,19 @@ function WebAllowListsInner() {
             ))}
           </SelectContent>
         </Select>
+        <Select
+          value={filters.enabled || '__all__'}
+          onValueChange={(v) => setFilters({ enabled: v === '__all__' ? '' : v })}
+        >
+          <SelectTrigger className="w-[140px] h-9">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All status</SelectItem>
+            <SelectItem value="true">Active</SelectItem>
+            <SelectItem value="false">Inactive</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="text-xs text-muted-foreground ml-auto">
           {total} / {settings.data?.maxAllowHosts ?? '—'} hosts
         </span>
@@ -260,7 +288,7 @@ function WebAllowListsInner() {
           <table className="w-full min-w-[720px]">
             <thead>
               <tr className="border-b border-border">
-                {['Host', 'Note', 'Created by', 'Created', 'Updated', ''].map((h) => (
+                {['Host', 'Note', 'Created by', 'Created', ''].map((h) => (
                   <th
                     key={h || 'actions'}
                     className="text-left px-4 py-3 text-sm font-semibold text-muted-foreground"
@@ -273,7 +301,7 @@ function WebAllowListsInner() {
             <tbody>
               {hosts.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No allowed hosts yet. Add a site, then Publish.
                   </td>
                 </tr>
@@ -296,11 +324,24 @@ function WebAllowListsInner() {
                   <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
                     {formatDateTime(row.createdAt)}
                   </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                    {row.updatedByName ? `${row.updatedByName} · ` : ''}
-                    {formatDateTime(row.updatedAt)}
-                  </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <label className="inline-flex items-center gap-2 cursor-pointer mr-2 align-middle">
+                      <Switch
+                        checked={row.enabled}
+                        disabled={toggleMutation.isPending}
+                        onCheckedChange={(checked) =>
+                          toggleMutation.mutate({ id: row.id, enabled: checked })
+                        }
+                        aria-label={row.enabled ? 'Deactivate host' : 'Activate host'}
+                      />
+                      <span
+                        className={`text-xs font-medium ${
+                          row.enabled ? 'text-success' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {row.enabled ? 'Active' : 'Inactive'}
+                      </span>
+                    </label>
                     <Button
                       size="icon"
                       variant="ghost"

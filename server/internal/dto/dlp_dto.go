@@ -134,6 +134,7 @@ type AllowHostRow struct {
 	ID            int64     `json:"id"`
 	Host          string    `json:"host"`
 	Note          string    `json:"note,omitempty"`
+	Enabled       bool      `json:"enabled"`
 	CreatedBy     *string   `json:"createdBy,omitempty"`
 	CreatedByName string    `json:"createdByName,omitempty"`
 	UpdatedBy     *string   `json:"updatedBy,omitempty"`
@@ -151,13 +152,15 @@ type AllowHostListResponse struct {
 }
 
 type CreateAllowHostRequest struct {
-	Host string `json:"host"`
-	Note string `json:"note,omitempty"`
+	Host    string `json:"host"`
+	Note    string `json:"note,omitempty"`
+	Enabled *bool  `json:"enabled,omitempty"`
 }
 
 type UpdateAllowHostRequest struct {
-	Host *string `json:"host,omitempty"`
-	Note *string `json:"note,omitempty"`
+	Host    *string `json:"host,omitempty"`
+	Note    *string `json:"note,omitempty"`
+	Enabled *bool   `json:"enabled,omitempty"`
 }
 
 // AllowAppRow is one draft app allow-list entry (GET /dlp/lockdown/apps).
@@ -167,6 +170,7 @@ type AllowAppRow struct {
 	Product       string    `json:"product,omitempty"`
 	Sha256        string    `json:"sha256,omitempty"`
 	Note          string    `json:"note,omitempty"`
+	Enabled       bool      `json:"enabled"`
 	CreatedBy     *string   `json:"createdBy,omitempty"`
 	CreatedByName string    `json:"createdByName,omitempty"`
 	UpdatedBy     *string   `json:"updatedBy,omitempty"`
@@ -188,6 +192,7 @@ type CreateAllowAppRequest struct {
 	Product   string `json:"product,omitempty"`
 	Sha256    string `json:"sha256,omitempty"`
 	Note      string `json:"note,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
 }
 
 type UpdateAllowAppRequest struct {
@@ -195,11 +200,14 @@ type UpdateAllowAppRequest struct {
 	Product   *string `json:"product,omitempty"`
 	Sha256    *string `json:"sha256,omitempty"`
 	Note      *string `json:"note,omitempty"`
+	Enabled   *bool   `json:"enabled,omitempty"`
 }
 
 type AllowListQuery struct {
 	Q         string
 	CreatedBy string
+	// Enabled: "" = all, "true" | "false"
+	Enabled   string
 	Page      int
 	PerPage   int
 }

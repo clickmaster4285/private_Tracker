@@ -1,7 +1,9 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-05 (P1 lockdown)
+> **Last audited:** 2026-11-05 (Allowlists enabled)
 > **Changelog:**
+> - 2026-11-05: **Allowlists Active/Inactive.** Migration **063** `enabled` on draft
+>   hosts/apps; list `?enabled=true|false`; Publish snapshots only `enabled=TRUE`.
 > - 2026-11-05: **P1 lockdown contract.** Migration **059** draft + snapshot tables;
 >   `GET|PUT /dlp/lockdown`; Publish embeds `lockdown` / `platformAllow` / `allow`;
 >   `GET /dlp/policy` returns `lockdownPausedUntil`; `POST .../lockdown-pause` (max 4h).

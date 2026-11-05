@@ -13,6 +13,7 @@ import {
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { dlpApi, type AllowAppRow } from '@/lib/api';
@@ -24,8 +25,8 @@ const PER_PAGE = 30;
 function AppAllowListInner() {
   const qc = useQueryClient();
   const [filters, setFilters] = useUrlQueryState(
-    { q: {}, createdBy: {} },
-    { q: '', createdBy: '' },
+    { q: {}, createdBy: {}, enabled: {} },
+    { q: '', createdBy: '', enabled: '' },
     { debounceMs: 300 },
   );
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -46,6 +47,7 @@ function AppAllowListInner() {
       dlpApi.lockdown.apps.list({
         q: filters.q || undefined,
         createdBy: filters.createdBy || undefined,
+        enabled: filters.enabled || undefined,
         page: pageParam,
         perPage: PER_PAGE,
       }),
@@ -130,6 +132,19 @@ function AppAllowListInner() {
     onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
   });
 
+  const toggleMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      dlpApi.lockdown.apps.update(id, { enabled }),
+    onSuccess: (row) => {
+      qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
+      qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
+      toast.success(row.enabled ? 'App active (draft)' : 'App inactive (draft)', {
+        description: 'Publish so the policy bundle updates.',
+      });
+    },
+    onError: (err: Error) => toast.error('Failed to update status', { description: err.message }),
+  });
+
   const publishMutation = useMutation({
     mutationFn: () => dlpApi.rules.publish(),
     onSuccess: (res) => toast.success(`Published policy v${res.policyVersion}`),
@@ -199,6 +214,19 @@ function AppAllowListInner() {
             ))}
           </SelectContent>
         </Select>
+        <Select
+          value={filters.enabled || '__all__'}
+          onValueChange={(v) => setFilters({ enabled: v === '__all__' ? '' : v })}
+        >
+          <SelectTrigger className="w-[140px] h-9">
+            <SelectValue placeholder="Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All status</SelectItem>
+            <SelectItem value="true">Active</SelectItem>
+            <SelectItem value="false">Inactive</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="text-xs text-muted-foreground ml-auto">
           {total} / {settings.data?.maxAllowApps ?? '—'} entries
         </span>
@@ -218,7 +246,7 @@ function AppAllowListInner() {
           <table className="w-full min-w-[800px]">
             <thead>
               <tr className="border-b border-border">
-                {['Publisher', 'Product', 'SHA-256', 'Created by', 'Created', ''].map((h) => (
+                {['Publisher', 'Product', 'SHA-256', 'Created by', ''].map((h) => (
                   <th
                     key={h || 'actions'}
                     className="text-left px-4 py-3 text-sm font-semibold text-muted-foreground"
@@ -231,7 +259,7 @@ function AppAllowListInner() {
             <tbody>
               {apps.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No allowed apps yet.
                   </td>
                 </tr>
@@ -257,10 +285,24 @@ function AppAllowListInner() {
                   <td className="px-4 py-3 text-sm">
                     {row.createdByName || <span className="text-muted-foreground">—</span>}
                   </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
-                    {formatDateTime(row.createdAt)}
-                  </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <label className="inline-flex items-center gap-2 cursor-pointer mr-2 align-middle">
+                      <Switch
+                        checked={row.enabled}
+                        disabled={toggleMutation.isPending}
+                        onCheckedChange={(checked) =>
+                          toggleMutation.mutate({ id: row.id, enabled: checked })
+                        }
+                        aria-label={row.enabled ? 'Deactivate app' : 'Activate app'}
+                      />
+                      <span
+                        className={`text-xs font-medium ${
+                          row.enabled ? 'text-success' : 'text-muted-foreground'
+                        }`}
+                      >
+                        {row.enabled ? 'Active' : 'Inactive'}
+                      </span>
+                    </label>
                     <Button
                       size="icon"
                       variant="ghost"
