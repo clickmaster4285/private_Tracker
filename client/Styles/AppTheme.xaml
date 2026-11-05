@@ -146,8 +146,6 @@
     <StreamGeometry x:Key="SearchGeometry">M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-4.2-4.2</StreamGeometry>
     <StreamGeometry x:Key="RefreshGeometry">M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4</StreamGeometry>
     <StreamGeometry x:Key="DownloadGeometry">M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3</StreamGeometry>
-    <StreamGeometry x:Key="TimerGeometry">M12 6v6l4 2M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z</StreamGeometry>
-
     <!-- Fonts -->
     <FontFamily x:Key="DisplayFont">avares://Avalonia.Fonts.Inter/Assets#Inter</FontFamily>
     <FontFamily x:Key="BodyFont">avares://Avalonia.Fonts.Inter/Assets#Inter</FontFamily>

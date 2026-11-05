@@ -3,11 +3,24 @@
 > **Last audited:** 2026-11-05
 > **Changelog:**
 >
+> - 2026-11-05: **Tracking mode deleted (server + client + web).** Fixed/Roaming Start/Stop
+>   is gone. Migration **058** drops `device_tracking_*` / `device_control_meta` /
+>   `device_policy_audit` and the control columns on `employee_machines`. Routes
+>   `/devices/control`, `/devices/tracking-events`, `PATCH .../tracking-mode`, and
+>   `/device-configuration/*` are unregistered. Sync no longer piggybacks `controlEpoch`.
+>   Client loses the Start/Stop modal, mode gate, control follower/poller, and service
+>   `TrackingControlWorker`; watchdog always relaunches `--background`. Web loses Device
+>   Configuration, Set tracking mode, and mode badges. RBAC seeder deletes
+>   `configuration/device-configuration`. Collectors always run while logged in.
+>   Verified: `go build` / `go vet`, `dotnet build` client + DlpService (0 warnings),
+>   `npx tsc --noEmit`. Ships in the next installer (Installer-Parity). Next in `plan.md`:
+>   P1 Windows network default-deny.
+>
 > - 2026-11-05: **Terms & Conditions removed (server + client + web).** Settings page,
 >   client `--terms` window, `terms_consent` / `terms_content`, and the live-stream
 >   consent gate are gone. Migration **057** drops both tables. Boot seeder deletes the
 >   `settings/terms-and-conditions` RBAC submodule. Live watch and push no longer return
->   `consent_required`. Tracking-mode deletion in `plan.md` moves to migration **058**.
+>   `consent_required`. Tracking-mode deletion uses migration **058**.
 >   Verified: `go build` / `go vet`, `dotnet build` client (0 warnings), `npx tsc --noEmit`.
 >
 > - 2026-11-04: **Web Activity expanded Page/URL wrap instead of horizontal scroll (web).**

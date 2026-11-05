@@ -31,11 +31,6 @@ public sealed class DlpConfig
     public int UpdateAutoCheckHours { get; init; } = 24;
     public bool UpdateAutoInstall { get; init; } = true;
 
-    /// <summary>
-    /// Hourly Fixed/Roaming control poll (GET /devices/control). Independent of <see cref="Enabled"/>.
-    /// </summary>
-    public int ControlPollSec { get; init; } = 3600;
-
     public string DbPath => Path.Combine(DataDir, "dlp.db");
     public string PolicyDir => Path.Combine(DataDir, "policy");
     /// <summary>Sibling of dlp/: <c>%ProgramData%\&lt;mutex&gt;\updates</c>.</summary>
@@ -69,7 +64,6 @@ public sealed class DlpConfig
             UpdateEnabled = GetBool("ALPHA_UPDATE_ENABLED", true),
             UpdateAutoCheckHours = Math.Max(1, GetInt("ALPHA_UPDATE_AUTO_CHECK_HOURS", 24)),
             UpdateAutoInstall = GetBool("ALPHA_UPDATE_AUTO_INSTALL", true),
-            ControlPollSec = Math.Clamp(GetInt("ALPHA_CONTROL_POLL_SEC", 3600), 60, 24 * 3600),
         };
         cfg.RefreshCredentials();
         return cfg;

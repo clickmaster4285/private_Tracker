@@ -1,4 +1,4 @@
-﻿package handlers
+package handlers
 
 import (
 	"log"
@@ -16,17 +16,10 @@ import (
 type NewSchemaHandler struct {
 	service     *services.NewSchemaService
 	authService *services.AuthService
-	tracking    *services.TrackingControlService // optional; nil = no controlEpoch piggyback
 }
 
 func NewNewSchemaHandler(service *services.NewSchemaService, authService *services.AuthService) *NewSchemaHandler {
 	return &NewSchemaHandler{service: service, authService: authService}
-}
-
-// WithTrackingControl attaches the Fixed/Roaming control service for sync controlEpoch piggyback.
-func (h *NewSchemaHandler) WithTrackingControl(tc *services.TrackingControlService) *NewSchemaHandler {
-	h.tracking = tc
-	return h
 }
 
 // Helper to extract server-authenticated employee ID from Echo context
@@ -56,18 +49,13 @@ func deviceRemoved(c echo.Context) bool {
 }
 
 // applyDeviceAction decorates a sync response with wipe_local when the device was removed
-// (after the batch was persisted — R6) and piggybacks controlEpoch when TrackingControlService
-// is wired (cheap Fixed/Roaming change detector).
+// (after the batch was persisted — R6).
 func (h *NewSchemaHandler) applyDeviceAction(c echo.Context, resp *dto.SyncBatchResponse) *dto.SyncBatchResponse {
 	if resp == nil {
 		return resp
 	}
 	if deviceRemoved(c) {
 		resp.Action = "wipe_local"
-	}
-	if h.tracking != nil {
-		epoch := h.tracking.CachedGlobalEpoch(c.Request().Context())
-		resp.ControlEpoch = &epoch
 	}
 	return resp
 }

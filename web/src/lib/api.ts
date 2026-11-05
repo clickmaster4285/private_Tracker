@@ -364,13 +364,6 @@ export const employeesApi = {
   removeDevice: (id: string) =>
     request<RemoveEmployeeDeviceResponse>('/employees/' + id + '/devices/remove', { method: 'POST' }),
 
-  /** HR: set Fixed/Roaming override on one machine (null = inherit org/dept/employee default). */
-  setMachineTrackingMode: (employeeUuid: string, machineId: string, mode: TrackingModeValue | null) =>
-    request<SetMachineTrackingModeResponse>(
-      `/employees/${employeeUuid}/machines/${encodeURIComponent(machineId)}/tracking-mode`,
-      { method: 'PATCH', body: { mode } },
-    ),
-
   create: (data: CreateEmployeePayload) =>
     request<Employee>('/employees', { method: 'POST', body: data }),
 
@@ -510,28 +503,6 @@ export interface EmployeeDevice {
   lastTrackAt: string;
   /** Set when an admin removed this device and the client still owes a local wipe. */
   wipeRequestedAt?: string | null;
-  /** Machine override: fixed | roaming; null/undefined = inherit org/dept/employee policy. */
-  trackingModeOverride?: 'fixed' | 'roaming' | null;
-  /** Server-projected effective mode (fail-safe fixed). */
-  effectiveMode?: 'fixed' | 'roaming';
-  /** Where effectiveMode came from: machine | employee | department | org | default. */
-  effectiveModeSource?: string;
-  /** Desired tracking state: running | stopped. */
-  desiredState?: 'running' | 'stopped';
-  /** Operational phase: starting | collecting | draining | idle | error. */
-  phase?: string;
-  trackingStateSince?: string | null;
-  lastControlSeenAt?: string | null;
-}
-
-export type TrackingModeValue = 'fixed' | 'roaming';
-
-export interface SetMachineTrackingModeResponse {
-  machineId: string;
-  trackingModeOverride?: TrackingModeValue | null;
-  effectiveMode: TrackingModeValue;
-  effectiveModeSource: string;
-  controlEpoch: number;
 }
 
 /** Result of POST /employees/:id/devices/remove ("Remove current device"). */
@@ -1912,94 +1883,6 @@ export const shadowItApi = {
     authStatus?: string; risk?: string; action?: 'approve' | 'block' | 'flag';
   }) =>
     request<ShadowItApp>(`/shadow-it/apps/${id}`, { method: 'PATCH', body: data }),
-};
-
-// ── Device Configuration (Fixed / Roaming admin) ────────────────────────────
-
-export interface RoamingMachineDetail {
-  machineId: string;
-  hostname: string;
-  status: 'active' | 'old' | string;
-  effectiveMode: 'fixed' | 'roaming';
-  effectiveModeSource: string;
-  desiredState: 'running' | 'stopped' | string;
-  phase: string;
-  trackingStateSince?: string | null;
-  lastTrackAt?: string | null;
-  lastControlSeenAt?: string | null;
-}
-
-/** One employee row: current roaming PC + prior machines for the expand history. */
-export interface RoamingEmployee {
-  employeeUuid: string;
-  employeeId: string;
-  employeeName: string;
-  department: string;
-  current: RoamingMachineDetail;
-  history: RoamingMachineDetail[];
-}
-
-export interface RoamingMachineListResponse {
-  employees: RoamingEmployee[];
-  total: number;
-  page: number;
-  perPage: number;
-  totalPages: number;
-}
-
-export interface TrackingEventLog {
-  id: string;
-  employeeUuid: string;
-  employeeId: string;
-  employeeName: string;
-  machineId: string;
-  hostname: string;
-  eventType: 'start' | 'stop' | string;
-  occurredAt: string;
-  receivedAt: string;
-  reason?: string | null;
-  flushResult?: string | null;
-  clientVersion?: string | null;
-  workLocation?: string | null;
-}
-
-export interface TrackingEventLogListResponse {
-  events: TrackingEventLog[];
-  total: number;
-  page: number;
-  perPage: number;
-  totalPages: number;
-}
-
-export interface TrackerModeTypeInfo {
-  mode: 'fixed' | 'roaming' | string;
-  label: string;
-  summary: string;
-  canStop: boolean;
-  details: string;
-  orgDefault: boolean;
-}
-
-export interface TrackerModeTypesResponse {
-  modes: TrackerModeTypeInfo[];
-  orgDefaultMode: string;
-  orgStopWindow: string;
-  keepDlpWhenStopped: boolean;
-}
-
-export const deviceConfigurationApi = {
-  roamingMachines: (params?: { page?: number; perPage?: number; search?: string }) =>
-    request<RoamingMachineListResponse>('/device-configuration/roaming-machines', {
-      params: params as Record<string, string | number | undefined>,
-    }),
-  trackingEvents: (params?: {
-    page?: number; perPage?: number; search?: string;
-    employeeId?: string; machineId?: string; eventType?: string;
-  }) =>
-    request<TrackingEventLogListResponse>('/device-configuration/tracking-events', {
-      params: params as Record<string, string | number | undefined>,
-    }),
-  modeTypes: () => request<TrackerModeTypesResponse>('/device-configuration/mode-types'),
 };
 
 export { ApiError };

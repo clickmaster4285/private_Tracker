@@ -51,24 +51,24 @@ type GenerateSecretResponse struct {
 // Shift is the resolved name (joined from shifts); ShiftID is the FK.
 // A NULL shift renders as an empty `shift` string and a null `shiftId`.
 type EmployeeResponse struct {
-	ID              string      `json:"id"`
-	EmployeeID      string      `json:"employeeId"`
-	Name            string      `json:"name"`
-	Email           string      `json:"email"`
-	Department      string      `json:"department"`
-	DepartmentID    int         `json:"departmentId"`
-	ShiftID         *int        `json:"shiftId"`
-	Shift           string      `json:"shift"`
-	TrackingEnabled bool        `json:"trackingEnabled"`
-	TrackingStatus  string      `json:"trackingStatus"`
-	IsOnline        bool        `json:"isOnline"`
-	ClientVersion   string      `json:"clientVersion"`
-	Avatar          string      `json:"avatar"`
-	AvatarColor     string      `json:"avatarColor"`
-	HasUserLogin    bool        `json:"hasUserLogin"`
-	CreatedAt       time.Time   `json:"createdAt"`
-	UpdatedAt       time.Time   `json:"updatedAt"`
-	DeletedAt       *time.Time  `json:"deletedAt"`
+	ID              string     `json:"id"`
+	EmployeeID      string     `json:"employeeId"`
+	Name            string     `json:"name"`
+	Email           string     `json:"email"`
+	Department      string     `json:"department"`
+	DepartmentID    int        `json:"departmentId"`
+	ShiftID         *int       `json:"shiftId"`
+	Shift           string     `json:"shift"`
+	TrackingEnabled bool       `json:"trackingEnabled"`
+	TrackingStatus  string     `json:"trackingStatus"`
+	IsOnline        bool       `json:"isOnline"`
+	ClientVersion   string     `json:"clientVersion"`
+	Avatar          string     `json:"avatar"`
+	AvatarColor     string     `json:"avatarColor"`
+	HasUserLogin    bool       `json:"hasUserLogin"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
+	DeletedAt       *time.Time `json:"deletedAt"`
 }
 
 // EmployeeListResponse is a paginated list response.
@@ -157,11 +157,11 @@ type DeviceHardwareDetail struct {
 
 // StorageDeviceDetail is a storage_devices child row (drive/model/capacity).
 type StorageDeviceDetail struct {
-	ID          string    `json:"id"`
-	DeviceType  string    `json:"deviceType"`
-	Model       string    `json:"model"`
-	CapacityMb  int64     `json:"capacityMb"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID         string    `json:"id"`
+	DeviceType string    `json:"deviceType"`
+	Model      string    `json:"model"`
+	CapacityMb int64     `json:"capacityMb"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 // InstalledApplicationDetail is the joined catalog+junction view of one app on this employee's machine.
@@ -237,45 +237,21 @@ type EmployeeActivityStats struct {
 // is deduplicated to one entry per physical machine even though the auth-token registry
 // (employee_devices) may hold several revoked rows for it.
 type EmployeeDeviceDto struct {
-	ID             string     `json:"id"`
-	EmployeeID     string     `json:"employeeId"`
-	MachineID      string     `json:"machineId"`
-	Platform       string     `json:"platform"`
-	ClientVersion  string     `json:"clientVersion"`
-	DeviceName     string     `json:"deviceName"`
-	Hostname       string     `json:"hostname"`
-	LastSeenAt     time.Time  `json:"lastSeenAt"`
-	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
-	IsActiveDevice bool       `json:"isActiveDevice"`
-	RemoveAt       *time.Time `json:"removeAt,omitempty"`
-	Status         string     `json:"status"`
-	FirstTrackAt   time.Time  `json:"firstTrackAt"`
-	LastTrackAt    time.Time  `json:"lastTrackAt"`
+	ID              string     `json:"id"`
+	EmployeeID      string     `json:"employeeId"`
+	MachineID       string     `json:"machineId"`
+	Platform        string     `json:"platform"`
+	ClientVersion   string     `json:"clientVersion"`
+	DeviceName      string     `json:"deviceName"`
+	Hostname        string     `json:"hostname"`
+	LastSeenAt      time.Time  `json:"lastSeenAt"`
+	RevokedAt       *time.Time `json:"revokedAt,omitempty"`
+	IsActiveDevice  bool       `json:"isActiveDevice"`
+	RemoveAt        *time.Time `json:"removeAt,omitempty"`
+	Status          string     `json:"status"`
+	FirstTrackAt    time.Time  `json:"firstTrackAt"`
+	LastTrackAt     time.Time  `json:"lastTrackAt"`
 	WipeRequestedAt *time.Time `json:"wipeRequestedAt,omitempty"`
-	// Fixed/Roaming (migration 056) — server-projected effective mode.
-	TrackingModeOverride *string    `json:"trackingModeOverride,omitempty"` // nil = inherit
-	EffectiveMode        string     `json:"effectiveMode"`                  // fixed|roaming
-	EffectiveModeSource  string     `json:"effectiveModeSource"`            // machine|employee|department|org|default
-	DesiredState         string     `json:"desiredState"`                   // running|stopped
-	Phase                string     `json:"phase"`                          // starting|collecting|draining|idle|error
-	TrackingStateSince   *time.Time `json:"trackingStateSince,omitempty"`
-	LastControlSeenAt    *time.Time `json:"lastControlSeenAt,omitempty"`
-}
-
-// SetMachineTrackingModeRequest is PATCH /employees/:id/machines/:machineId/tracking-mode.
-// Mode null/omitted-as-inherit: JSON null clears the machine override (inherit org/dept/employee).
-type SetMachineTrackingModeRequest struct {
-	// Mode is "fixed", "roaming", or null to inherit. Use a pointer so JSON null is distinct.
-	Mode *string `json:"mode"`
-}
-
-// SetMachineTrackingModeResponse returns the updated effective projection for that machine.
-type SetMachineTrackingModeResponse struct {
-	MachineID           string  `json:"machineId"`
-	TrackingModeOverride *string `json:"trackingModeOverride,omitempty"`
-	EffectiveMode       string  `json:"effectiveMode"`
-	EffectiveModeSource string  `json:"effectiveModeSource"`
-	ControlEpoch        int64   `json:"controlEpoch"`
 }
 
 // RemoveEmployeeDeviceResponse reports what "Remove current device" changed.

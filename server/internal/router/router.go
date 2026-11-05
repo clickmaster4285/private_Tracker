@@ -34,7 +34,6 @@ func Setup(
 	logGraphicalHandler *handlers.LogGraphicalHandler,
 	dlpHandler *handlers.DlpHandler,
 	releaseHandler *handlers.ReleaseHandler,
-	trackingControlHandler *handlers.TrackingControlHandler,
 ) {
 	// ─────────────────────────────
 	// Global Middleware
@@ -125,12 +124,6 @@ func Setup(
 		syncGroup.POST("/devices/removal-verify", dlpHandler.VerifyRemovalCode)
 	}
 
-	// Device tracking control (Fixed/Roaming) — DeviceAuth
-	if trackingControlHandler != nil {
-		syncGroup.GET("/devices/control", trackingControlHandler.GetControl)
-		syncGroup.POST("/devices/tracking-events", trackingControlHandler.SyncTrackingEvents)
-	}
-
 	// Live stream — client push socket (DeviceAuth). Web watch/employees live under JWTAuth.
 	if streamHandler != nil {
 		syncGroup.GET("/live-stream/push", streamHandler.Push)
@@ -175,9 +168,6 @@ func Setup(
 	employees.GET("/:id/detail", newSchemaHandler.GetEmployeeDetail)
 	employees.GET("/:id/devices", authHandler.ListEmployeeDevices)
 	employees.POST("/:id/devices/remove", newSchemaHandler.RemoveEmployeeDevice)
-	if trackingControlHandler != nil {
-		employees.PATCH("/:id/machines/:machineId/tracking-mode", trackingControlHandler.SetMachineTrackingMode)
-	}
 	employees.POST("/import", employeeHandler.ImportEmployees)
 	employees.GET("/export", employeeHandler.ExportEmployees)
 	employees.GET("/:id", employeeHandler.GetEmployee)
@@ -269,14 +259,6 @@ func Setup(
 		protected.GET("/shadow-it/apps", dlpHandler.ListShadowIt)
 		protected.PATCH("/shadow-it/apps/:id", dlpHandler.UpdateShadowIt)
 		protected.POST("/devices/removal-code", dlpHandler.IssueRemovalCode)
-	}
-
-	// Device Configuration (Fixed/Roaming admin surfaces)
-	if trackingControlHandler != nil {
-		dc := protected.Group("/device-configuration")
-		dc.GET("/roaming-machines", trackingControlHandler.ListRoamingMachines)
-		dc.GET("/tracking-events", trackingControlHandler.ListTrackingEventLogs)
-		dc.GET("/mode-types", trackingControlHandler.GetTrackerModeTypes)
 	}
 
 	// RBAC: module catalog + roles with per-submodule permissions

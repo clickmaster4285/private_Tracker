@@ -137,10 +137,9 @@ $defaults = [ordered]@{
     "ALPHA_UPDATE_ENABLED"         = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_ENABLED" "true")
     "ALPHA_UPDATE_AUTO_INSTALL"    = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_AUTO_INSTALL" "true")
     "ALPHA_UPDATE_AUTO_CHECK_HOURS"= (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_AUTO_CHECK_HOURS" "24")
-    "ALPHA_CONTROL_POLL_SEC"       = (Read-EnvKey $clientEnvPath "ALPHA_CONTROL_POLL_SEC" "3600")
 }
 if ($ServerUrl) { $defaults["ALPHA_SERVER_URL"] = $ServerUrl }
-Write-Host "service.env from .env: POLICY_POLL=$($defaults['ALPHA_DLP_POLICY_POLL_SEC']) CONTROL_POLL=$($defaults['ALPHA_CONTROL_POLL_SEC'])"
+Write-Host "service.env from .env: POLICY_POLL=$($defaults['ALPHA_DLP_POLICY_POLL_SEC'])"
 
 $lines = New-Object System.Collections.Generic.List[string]
 $seen = @{}

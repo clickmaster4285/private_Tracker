@@ -97,15 +97,6 @@ public static class SingleInstanceService
     /// </summary>
     public static Action<string>? OnProtectedUninstallRequested;
 
-    /// <summary>Offline Roaming Start (from Start/Stop modal) — no DLP service required.</summary>
-    public const string CommandTrackingStart = "TRACKING_START";
-
-    /// <summary>Offline Roaming Stop (from Start/Stop modal) — pause collectors locally.</summary>
-    public const string CommandTrackingStop = "TRACKING_STOP";
-
-    public static Action? OnTrackingStartRequested;
-    public static Action? OnTrackingStopRequested;
-
     /// <summary>
     /// Start the named-pipe server on the primary (mutex-owning) instance.
     /// Loops forever, accepting one connection at a time, until
@@ -145,16 +136,6 @@ public static class SingleInstanceService
                 else if (string.Equals(line, CommandRemoveAccount, StringComparison.Ordinal))
                 {
                     try { OnRemoveAccountRequested?.Invoke(); }
-                    catch { /* never let a UI callback error kill the listener */ }
-                }
-                else if (string.Equals(line, CommandTrackingStart, StringComparison.Ordinal))
-                {
-                    try { OnTrackingStartRequested?.Invoke(); }
-                    catch { /* never let a UI callback error kill the listener */ }
-                }
-                else if (string.Equals(line, CommandTrackingStop, StringComparison.Ordinal))
-                {
-                    try { OnTrackingStopRequested?.Invoke(); }
                     catch { /* never let a UI callback error kill the listener */ }
                 }
                 else if (string.Equals(line, CommandProtectedUninstallGo, StringComparison.Ordinal))

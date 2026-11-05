@@ -126,20 +126,6 @@
                                 </StackPanel>
                             </Button>
 
-                            <!-- Roaming-only: open Start/Stop tracking-controls modal -->
-                            <Button Classes="nav"
-                                    IsVisible="{Binding ShowTrackingControlsNav}"
-                                    Command="{Binding OpenTrackingControlsCommand}"
-                                    ToolTip.Tip="Open Start / Stop tracking controls">
-                                <StackPanel Orientation="Horizontal" Spacing="11">
-                                    <Path Data="{StaticResource TimerGeometry}"
-                                          StrokeThickness="1.6" StrokeLineCap="Round"
-                                          Stretch="Uniform" Width="17" Height="17"
-                                          VerticalAlignment="Center"/>
-                                    <TextBlock Text="Tracker control" VerticalAlignment="Center"/>
-                                </StackPanel>
-                            </Button>
-
                         </StackPanel>
 
                         <!-- Signed-in employee -->

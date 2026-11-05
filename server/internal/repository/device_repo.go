@@ -131,8 +131,6 @@ func (r *DeviceRepo) GetByTokenHashIncludingRevoked(ctx context.Context, tokenHa
 
 const employeeMachineColumns = `id, employee_id, machine_id, status, first_track_at,
 	last_track_at, wipe_requested_at,
-	tracking_mode_override, tracking_desired_state, tracking_phase, tracking_state_since,
-	last_control_seen_at, control_version,
 	created_at, updated_at`
 
 func scanEmployeeMachine(row pgx.Row) (*models.EmployeeMachine, error) {
@@ -140,18 +138,10 @@ func scanEmployeeMachine(row pgx.Row) (*models.EmployeeMachine, error) {
 	err := row.Scan(
 		&m.ID, &m.EmployeeID, &m.MachineID, &m.Status, &m.FirstTrackAt,
 		&m.LastTrackAt, &m.WipeRequestedAt,
-		&m.TrackingModeOverride, &m.TrackingDesiredState, &m.TrackingPhase, &m.TrackingStateSince,
-		&m.LastControlSeenAt, &m.ControlVersion,
 		&m.CreatedAt, &m.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
-	}
-	if m.TrackingDesiredState == "" {
-		m.TrackingDesiredState = models.TrackingDesiredRunning
-	}
-	if m.TrackingPhase == "" {
-		m.TrackingPhase = models.TrackingPhaseCollecting
 	}
 	return &m, nil
 }

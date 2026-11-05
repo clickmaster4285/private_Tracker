@@ -14,7 +14,6 @@ const pageTitles: Record<string, string> = {
   "/configuration/websites": "Websites",
   "/configuration/categories": "Categories & Types",
   "/configuration/productivity-rules": "Productivity Rules",
-  "/configuration/device-configuration": "Device Configuration",
   "/screenshots": "Screenshots",
   "/logs/insights": "User Insights",
   "/logs/graphical": "Graphical Logs",

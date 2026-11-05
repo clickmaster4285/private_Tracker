@@ -27,8 +27,6 @@ public sealed class NamedPipeHost : BackgroundService
     private readonly WebBlockState _webBlock;
     private readonly SilentUpdateState _updateState;
     private readonly SilentUpdateWorker _updateWorker;
-    private readonly TrackingControlStore _trackingControl;
-    private readonly TrackingControlWorker _trackingWorker;
     private readonly IHttpClientFactory _httpFactory;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<NamedPipeHost> _logger;
@@ -39,8 +37,6 @@ public sealed class NamedPipeHost : BackgroundService
         WebBlockState webBlock,
         SilentUpdateState updateState,
         SilentUpdateWorker updateWorker,
-        TrackingControlStore trackingControl,
-        TrackingControlWorker trackingWorker,
         IHttpClientFactory httpFactory,
         IHostApplicationLifetime lifetime,
         ILogger<NamedPipeHost> logger)
@@ -50,8 +46,6 @@ public sealed class NamedPipeHost : BackgroundService
         _webBlock = webBlock;
         _updateState = updateState;
         _updateWorker = updateWorker;
-        _trackingControl = trackingControl;
-        _trackingWorker = trackingWorker;
         _httpFactory = httpFactory;
         _lifetime = lifetime;
         _logger = logger;
@@ -282,11 +276,6 @@ public sealed class NamedPipeHost : BackgroundService
             {
                 "GetUpdateStatus" => JsonSerializer.Serialize(_updateState.Snapshot()),
                 "RequestUpdateCheck" => RequestUpdateCheckJson(),
-                "GetTrackingState" => GetTrackingStateJson(),
-                "RequestStop" => MutatingTrackingOp(pipeServer, () => RequestStopJson(doc.RootElement)),
-                "RequestStart" => MutatingTrackingOp(pipeServer, () => RequestStartJson(doc.RootElement)),
-                "ReportPhase" => MutatingTrackingOp(pipeServer, () => ReportPhaseJson(doc.RootElement)),
-                "RefreshControl" => RefreshControlJson(),
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
@@ -307,131 +296,6 @@ public sealed class NamedPipeHost : BackgroundService
             return JsonSerializer.Serialize(new { ok = false, error = "update_disabled" });
         _updateWorker.RequestImmediateCheck();
         return JsonSerializer.Serialize(new { ok = true, queued = true });
-    }
-
-    private string RefreshControlJson()
-    {
-        _trackingWorker.RequestImmediateCheck();
-        return JsonSerializer.Serialize(new { ok = true, queued = true });
-    }
-
-    private string GetTrackingStateJson()
-    {
-        var s = _trackingControl.Snapshot();
-        var now = DateTimeOffset.UtcNow;
-        return JsonSerializer.Serialize(new
-        {
-            ok = true,
-            trackingMode = s.Mode,
-            desiredState = s.DesiredState,
-            phase = s.Phase,
-            controlEpoch = s.ControlEpoch,
-            generation = s.Generation,
-            sessionStartedAt = s.SessionStartedAt,
-            sessionAccumulatedActiveSec = s.SessionAccumulatedActiveSec,
-            dayKey = s.DayKey,
-            dayFirstStartedAt = s.DayFirstStartedAt,
-            elapsedActiveSec = TrackingControlStore.ComputeElapsedActiveSec(s, now),
-            openControlsPending = s.OpenControlsPending,
-            keepDlpWhenStopped = s.KeepDlpWhenStopped,
-            stopWindow = s.StopWindow,
-            requireStopReason = s.RequireStopReason,
-            effectiveModeSource = s.EffectiveModeSource,
-            lastControlCheckAt = s.LastControlCheckAt,
-            lastControlAppliedAt = s.LastControlAppliedAt,
-        });
-    }
-
-    private string MutatingTrackingOp(NamedPipeServerStream? server, Func<string> action)
-    {
-        if (OperatingSystem.IsWindows() && server is not null)
-        {
-            var reject = PipeCallerGuard.RejectIfNotInteractiveUser(server);
-            if (reject is not null)
-                return JsonSerializer.Serialize(new { ok = false, error = reject });
-        }
-        return action();
-    }
-
-    private string RequestStopJson(JsonElement root)
-    {
-        string? reason = root.TryGetProperty("reason", out var r) ? r.GetString() : null;
-        long? gen = root.TryGetProperty("generation", out var g) && g.TryGetInt64(out var gv) ? gv : null;
-        var (ok, error, s) = _trackingControl.TryRequestStop(reason, gen);
-        if (!ok)
-        {
-            _logger.LogWarning("RequestStop rejected ({Error}) generation={Gen}", error, s.Generation);
-            return JsonSerializer.Serialize(new
-            {
-                ok = false,
-                error,
-                trackingMode = s.Mode,
-                desiredState = s.DesiredState,
-                phase = s.Phase,
-                generation = s.Generation,
-            });
-        }
-
-        _logger.LogInformation(
-            "RequestStop accepted desired={Desired} phase={Phase} gen={Gen}",
-            s.DesiredState, s.Phase, s.Generation);
-        return JsonSerializer.Serialize(new
-        {
-            ok = true,
-            trackingMode = s.Mode,
-            desiredState = s.DesiredState,
-            phase = s.Phase,
-            generation = s.Generation,
-            sessionStartedAt = s.SessionStartedAt,
-        });
-    }
-
-    private string RequestStartJson(JsonElement root)
-    {
-        string? work = root.TryGetProperty("workLocation", out var w) ? w.GetString() : null;
-        long? gen = root.TryGetProperty("generation", out var g) && g.TryGetInt64(out var gv) ? gv : null;
-        var (ok, error, s) = _trackingControl.TryRequestStart(work, gen);
-        if (!ok)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                ok = false,
-                error,
-                trackingMode = s.Mode,
-                desiredState = s.DesiredState,
-                phase = s.Phase,
-                generation = s.Generation,
-            });
-        }
-
-        _logger.LogInformation(
-            "RequestStart accepted desired={Desired} phase={Phase} gen={Gen}",
-            s.DesiredState, s.Phase, s.Generation);
-        return JsonSerializer.Serialize(new
-        {
-            ok = true,
-            trackingMode = s.Mode,
-            desiredState = s.DesiredState,
-            phase = s.Phase,
-            generation = s.Generation,
-            sessionStartedAt = s.SessionStartedAt,
-        });
-    }
-
-    private string ReportPhaseJson(JsonElement root)
-    {
-        var phase = root.TryGetProperty("phase", out var p) ? p.GetString() : null;
-        long? gen = root.TryGetProperty("generation", out var g) && g.TryGetInt64(out var gv) ? gv : null;
-        var (ok, error, s) = _trackingControl.TryReportPhase(phase ?? "", gen);
-        return JsonSerializer.Serialize(new
-        {
-            ok,
-            error,
-            trackingMode = s.Mode,
-            desiredState = s.DesiredState,
-            phase = s.Phase,
-            generation = s.Generation,
-        });
     }
 
     private async Task<string> RequireDlp(Func<Task<string>> action)
@@ -466,7 +330,6 @@ public sealed class NamedPipeHost : BackgroundService
             catch { /* store may be uninitialized when DLP off */ }
         }
 
-        var tracking = _trackingControl.Snapshot();
         return JsonSerializer.Serialize(new
         {
             ok = true,
@@ -476,10 +339,6 @@ public sealed class NamedPipeHost : BackgroundService
             usbBlock = _cfg.UsbBlock,
             webBlock = _cfg.WebBlock,
             update = _updateState.Snapshot(),
-            trackingMode = tracking.Mode,
-            trackingDesiredState = tracking.DesiredState,
-            trackingPhase = tracking.Phase,
-            controlEpoch = tracking.ControlEpoch,
         });
     }
 

@@ -12,7 +12,6 @@ import {
   ClipboardList, UserCheck, MapPin, Trophy, FileBarChart, AlertTriangle,
   Eye, CalendarDays, Navigation, Route,
   Monitor,
-  Laptop,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { usePermissions } from "@/lib/permissions";
@@ -260,13 +259,6 @@ const navSections: NavSection[] = [
         icon: Target,
         path: "/configuration/productivity-rules",
         module: "configuration/productivity-rules",
-      },
-
-      {
-        label: "Device Configuration",
-        icon: Laptop,
-        path: "/configuration/device-configuration",
-        module: "configuration/device-configuration",
       },
     ],
   },

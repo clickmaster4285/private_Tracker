@@ -264,26 +264,6 @@ public class LogCollectorService : BackgroundService
     }
 
     /// <summary>
-    /// Roaming Stop (P2): park collectors but <b>keep</b> employee identity / device token
-    /// so DrainOnly can still sync and Start can resume without re-login.
-    /// Distinct from <see cref="StopTracking"/> (account removal).
-    /// </summary>
-    public void PauseTracking()
-    {
-        if (ClientProcessMode.ParkTrackingWork && !ClientProcessMode.DrainOnly)
-        {
-            _logger.LogInformation("PauseTracking no-op (already parked)");
-            return;
-        }
-
-        lock (_trackingLock)
-        {
-            _trackingEnabled = false;
-        }
-        _logger.LogInformation("Tracking paused (Roaming Stop — identity retained)");
-    }
-
-    /// <summary>
     /// After reinstall/upgrade the employee stays logged in (SQLite credentials), so
     /// employee-login never re-runs and <c>employee_devices.client_version</c> used to
     /// stay stale. Writing app_status.client_version with is_synced=0 queues a sync, and
@@ -352,26 +332,8 @@ public class LogCollectorService : BackgroundService
         // or closing it can no longer start or stop the tracking services.
         if (!string.IsNullOrEmpty(_currentEmployeeId) && !string.IsNullOrEmpty(_currentToken))
         {
-            // Offline Roaming: do not auto-collect when local desired=stopped.
-            var roamingStopped = false;
-            try
-            {
-                var local = LocalRoamingControl.ReadOrDefault();
-                roamingStopped = string.Equals(local.DesiredState, "stopped", StringComparison.OrdinalIgnoreCase)
-                    && File.Exists(LocalRoamingControl.FilePath);
-            }
-            catch { /* ignore */ }
-
-            if (roamingStopped)
-            {
-                _logger.LogInformation(
-                    "Session restored — Roaming local desired=stopped; waiting for Start");
-            }
-            else
-            {
-                StartTracking();
-                _logger.LogInformation("Session restored from SQLite — tracking started in background mode");
-            }
+            StartTracking();
+            _logger.LogInformation("Session restored from SQLite — tracking started in background mode");
         }
 
         // ─── Reconcile stale sessions from previous crashes ───

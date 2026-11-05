@@ -32,7 +32,6 @@ public sealed class LiveStreamClient : BackgroundService
     private readonly object _sessionGate = new();
     private ClientWebSocket? _activeWs;
     private CancellationTokenSource? _sessionKill;
-    private int _paused;
 
     public LiveStreamClient(
         ILogStore store,
@@ -46,30 +45,6 @@ public sealed class LiveStreamClient : BackgroundService
         _capture = capture;
         _probe = probe;
         _logger = logger;
-    }
-
-    /// <summary>Roaming Stop: abort signaling + WebRTC media and do not reconnect until Resume.</summary>
-    public void ForceDisconnect()
-    {
-        Interlocked.Exchange(ref _paused, 1);
-        CancellationTokenSource? kill;
-        ClientWebSocket? ws;
-        lock (_sessionGate)
-        {
-            kill = _sessionKill;
-            ws = _activeWs;
-        }
-        try { kill?.Cancel(); } catch { /* ignore */ }
-        try { ws?.Abort(); } catch { /* ignore */ }
-        try { _capture.SetStreamActive(false); } catch { /* ignore */ }
-        _logger.LogInformation("LiveStreamClient force-disconnected (Roaming Stop)");
-    }
-
-    /// <summary>Roaming Start: allow live-stream reconnect.</summary>
-    public void ResumeConnections()
-    {
-        Interlocked.Exchange(ref _paused, 0);
-        _logger.LogInformation("LiveStreamClient resume allowed (Roaming Start)");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -93,13 +68,6 @@ public sealed class LiveStreamClient : BackgroundService
         var backoffSec = 2;
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (Volatile.Read(ref _paused) != 0)
-            {
-                try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); }
-                catch (OperationCanceledException) { break; }
-                continue;
-            }
-
             EmployeeInfo? employee = null;
             try { employee = await _store.GetEmployeeInfoAsync(stoppingToken); }
             catch (Exception ex) { _logger.LogDebug(ex, "LiveStreamClient: employee lookup failed"); }
@@ -123,10 +91,6 @@ public sealed class LiveStreamClient : BackgroundService
             {
                 break;
             }
-            catch (OperationCanceledException) when (Volatile.Read(ref _paused) != 0)
-            {
-                backoffSec = 2;
-            }
             catch (Exception ex)
             {
                 _logger.LogWarning(
@@ -139,9 +103,6 @@ public sealed class LiveStreamClient : BackgroundService
                 lock (_sessionGate) { _sessionKill = null; }
                 _capture.SetStreamActive(false);
             }
-
-            if (Volatile.Read(ref _paused) != 0)
-                continue;
 
             try { await Task.Delay(TimeSpan.FromSeconds(backoffSec), stoppingToken); }
             catch (OperationCanceledException) { break; }

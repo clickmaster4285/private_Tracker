@@ -35,9 +35,6 @@ type SyncBatchResponse struct {
 	// older client ignores it and a new client talking to an older server never
 	// sees it (and therefore never wipes spuriously).
 	Action string `json:"action,omitempty"`
-	// ControlEpoch is the cheap Fixed/Roaming policy change detector (migration 056).
-	// omitempty: older clients ignore it; absent means "no control plane on this server".
-	ControlEpoch *int64 `json:"controlEpoch,omitempty"`
 }
 
 // SelfRemoveAccountRequest is the body of POST /api/v1/devices/self-remove.
@@ -78,8 +75,8 @@ type DeviceHardwareInfoEntry struct {
 }
 
 type SyncDeviceHardwareRequest struct {
-	EmployeeID string                    `json:"employeeId"`
-	Token      string                    `json:"token"`
+	EmployeeID string `json:"employeeId"`
+	Token      string `json:"token"`
 	// MachineID is filled by the handler from the DeviceAuth context (never trusted
 	// from the body) so every row can be scoped to the reporting device.
 	MachineID string                    `json:"-"`
@@ -223,11 +220,11 @@ type SessionEventEntry struct {
 }
 
 type SyncSessionEventsRequest struct {
-	EmployeeID string              `json:"employeeId"`
-	Token      string              `json:"token"`
+	EmployeeID string `json:"employeeId"`
+	Token      string `json:"token"`
 	// MachineID is filled by the handler from DeviceAuth (never trusted from the body).
 	MachineID string              `json:"-"`
-	Entries    []SessionEventEntry `json:"entries"`
+	Entries   []SessionEventEntry `json:"entries"`
 }
 
 type SessionEventResponse struct {
@@ -356,11 +353,11 @@ type AppItemEntry struct {
 }
 
 type SyncAppItemsRequest struct {
-	EmployeeID string         `json:"employeeId"`
-	Token      string         `json:"token"`
+	EmployeeID string `json:"employeeId"`
+	Token      string `json:"token"`
 	// MachineID is filled by the handler from DeviceAuth (never trusted from the body).
 	MachineID string         `json:"-"`
-	Entries    []AppItemEntry `json:"entries"`
+	Entries   []AppItemEntry `json:"entries"`
 }
 
 type AppItemResponse struct {
@@ -516,11 +513,11 @@ type LocationSampleEntry struct {
 }
 
 type SyncLocationSamplesRequest struct {
-	EmployeeID string                `json:"employeeId"`
-	Token      string                `json:"token"`
+	EmployeeID string `json:"employeeId"`
+	Token      string `json:"token"`
 	// MachineID is filled by the handler from DeviceAuth (never trusted from the body).
 	MachineID string                `json:"-"`
-	Entries    []LocationSampleEntry `json:"entries"`
+	Entries   []LocationSampleEntry `json:"entries"`
 }
 
 type LocationSampleResponse struct {

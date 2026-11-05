@@ -1,12 +1,9 @@
 'use client';
 
-import { Suspense, useState } from 'react';
-import { Cpu, MemoryStick, Monitor, HardDrive, Wifi, Globe, Fingerprint, Network, Clock, Activity, Loader2, SlidersHorizontal } from 'lucide-react';
+import { Suspense } from 'react';
+import { Cpu, MemoryStick, Monitor, HardDrive, Wifi, Globe, Fingerprint, Network, Clock, Activity, Loader2 } from 'lucide-react';
 import EmployeePage, { type EmployeePageContext } from '@/components/employees/EmployeePage';
 import EmptyState from '@/components/employees/EmptyState';
-import { DeviceTrackingChips } from '@/components/employees/TrackingModeBadge';
-import SetTrackingModeDialog from '@/components/employees/SetTrackingModeDialog';
-import { Button } from '@/components/ui/button';
 import { formatMb, formatDateTime } from '@/lib/format';
 
 export default function DeviceSpecsHardware() {
@@ -24,9 +21,8 @@ export default function DeviceSpecsHardware() {
   );
 }
 
-function HardwareOverviewBody({ employee, detail, devices, deviceId }: EmployeePageContext) {
+function HardwareOverviewBody({ detail, devices, deviceId }: EmployeePageContext) {
   const { deviceHardware, storageDevices, networkInfo, appStatus } = detail!;
-  const [modeOpen, setModeOpen] = useState(false);
 
   const selectedDevice = deviceId
     ? devices.find((d) => d.machineId === deviceId)
@@ -45,34 +41,6 @@ function HardwareOverviewBody({ employee, detail, devices, deviceId }: EmployeeP
 
   return (
     <div className="space-y-4">
-      {selectedDevice && (
-        <div className="bg-card rounded-xl border border-border p-4 shadow-card flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
-          <div className="min-w-0 space-y-1.5">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Tracking mode</p>
-            <DeviceTrackingChips device={selectedDevice} />
-            <p className="text-xs text-muted-foreground">
-              Fixed = always on. Roaming = employee can Start/Stop. DLP enforcement is separate.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="shrink-0 gap-2"
-            onClick={() => setModeOpen(true)}
-          >
-            <SlidersHorizontal className="w-4 h-4" />
-            Change mode
-          </Button>
-          <SetTrackingModeDialog
-            open={modeOpen}
-            onOpenChange={setModeOpen}
-            employee={employee}
-            initialMachineId={selectedDevice.machineId}
-          />
-        </div>
-      )}
-
       {!deviceHardware && (
         <EmptyState
           icon={Monitor}

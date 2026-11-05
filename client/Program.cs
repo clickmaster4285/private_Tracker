@@ -235,14 +235,6 @@ if (isTeardownCleanupElevated)
 if (args.Contains("--celebrate-update") && !args.Contains("--background"))
     return;
 
-// Roaming Control Shell / tracking popup — Avalonia-only agent.
-if ((args.Contains("--control-shell") || args.Contains("--tracking-controls"))
-    && !args.Contains("--background"))
-{
-    await RunTrackingControlsAgentAsync(args);
-    return;
-}
-
 var isBackground = args.Contains("--background");
 var isMinimized = args.Contains("--minimized");
 var isGuiAgent = args.Contains("--gui");
@@ -251,8 +243,7 @@ var isGuiAgent = args.Contains("--gui");
 // Only user launches should bring an already-running instance to the front;
 // background/minimized relaunches (e.g. auto-start firing twice, or systemd
 // Restart=always racing) must exit quietly so they never disturb the user.
-var isTrackingControls = args.Contains("--tracking-controls") || args.Contains("--control-shell");
-var isUserLaunch = !isBackground && !isMinimized && !isGuiAgent && !isTrackingControls
+var isUserLaunch = !isBackground && !isMinimized && !isGuiAgent
     && !args.Contains("--celebrate-update");
 
 // L2: unsupervised `client --background` (autostart / menu / scripts) must hand
@@ -274,9 +265,6 @@ if (isGuiAgent)
     App.GuiAgentMode = true;
     ClientProcessMode.GuiAgent = true;
 }
-
-// Fixed/Roaming boot gate (P0: always Full for tracker processes — fail-safe).
-TrackingModeGate.Resolve(args);
 
 // Tracker uses Global\<mutex>; GUI uses a sibling mutex so both can run.
 var mutexName = isGuiAgent
@@ -606,19 +594,6 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<LogCollectorServic
 // IMMEDIATE drain the moment credentials are persisted (RequestImmediateSync).
 builder.Services.AddSingleton<SyncService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SyncService>());
-builder.Services.AddSingleton<TrackingEventReporter>();
-
-// P2 Roaming Stop follower — PauseTracking + drain + purge when desired=stopped.
-if (!isProtectedUninstall && !isRemoveAccount)
-    builder.Services.AddHostedService<TrackingControlFollower>();
-
-// Linux/macOS Fixed/Roaming control poll (Windows keeps this in DlpService).
-if (!isProtectedUninstall && !isRemoveAccount && !OperatingSystem.IsWindows())
-    builder.Services.AddHostedService<DeviceControlPollWorker>();
-
-// Linux: keep roaming Start/Stop modal open (Windows = DlpService TrackerWatchdogWorker).
-if (!isProtectedUninstall && !isRemoveAccount && OperatingSystem.IsLinux())
-    builder.Services.AddHostedService<TrackingControlsSupervisor>();
 
 // Account removal (R4/R5/R6, 2026-10-19): single routine shared by the `--remove-account`
 // CLI flow, the running-instance signal handler and the server-initiated wipe
@@ -905,9 +880,6 @@ try
         // per process.
         SingleInstanceService.OnShowRequested = LaunchSeparateGuiProcess;
 
-        // Roaming Start/Stop: Windows DLP TrackerWatchdogWorker launches
-        // --tracking-controls; Linux TrackingControlsSupervisor (this host) does.
-
         // ─── Account removal while running HEADLESS (client --remove-account) ───
         // This process owns the SQLite connection, so the routine runs HERE, in place:
         // stop collecting → bounded drain → POST /devices/self-remove → wipe + new
@@ -1030,7 +1002,7 @@ static void LaunchSeparateGuiProcess()
 {
     try
     {
-        TrackingControlsActivation.RefreshLinuxDesktopEnvironment();
+        LinuxDesktopEnvironment.Refresh();
         var exe = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(exe)) return;
         Process.Start(new ProcessStartInfo
@@ -1045,46 +1017,6 @@ static void LaunchSeparateGuiProcess()
     {
         Console.Error.WriteLine($"[client] Failed to launch GUI process: {ex.Message}");
     }
-}
-
-/// <summary>
-/// Roaming Start/Stop modal — own process + tray; must not take the tracker mutex.
-/// </summary>
-static async Task RunTrackingControlsAgentAsync(string[] args)
-{
-    // Absolute separate instance: no SQLite host, no MainWindow.
-    // Stays alive in its own tray after close so the watchdog does not relaunch.
-    // Global mutex so the LocalSystem watchdog can see the UI agent.
-    client.Services.CliConsole.DetachForGui();
-    using var agentMutex = new Mutex(
-        true, client.Services.TrackingControlsActivation.MutexName, out var created);
-    if (!created)
-    {
-        // Already running (probably hidden in tray) — ask it to show, then exit.
-        client.Services.TrackingControlsActivation.TrySignalShow();
-        return;
-    }
-
-    App.TrackingControlsMode = true;
-    client.Services.TrackingControlsActivation.StartServer();
-
-    var builder = Host.CreateApplicationBuilder(args);
-    builder.Logging.ClearProviders();
-    var host = builder.Build();
-    App.ServiceProvider = host.Services;
-    await host.StartAsync(CancellationToken.None);
-
-    BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
-
-    client.Services.TrackingControlsActivation.StopServer();
-    try
-    {
-        using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-        await host.StopAsync(stopCts.Token);
-    }
-    catch { /* ignore */ }
-    host.Dispose();
-    Environment.Exit(0);
 }
 
 // ─── Log path resolution ───

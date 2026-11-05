@@ -129,10 +129,6 @@ public class AppConfig
     public int UpdateAutoCheckHours { get; init; } = 24;      // min hours between quiet background checks
     public bool UpdateAutoInstall { get; init; } = true;      // auto-download+install when a check finds a newer version
 
-    // ─── Fixed/Roaming control poll (Linux/macOS user process; Windows = DlpService) ───
-    // Hourly GET /api/v1/devices/control. Independent of DLP. Re-bake config.enc when changed.
-    public int ControlPollSec { get; init; } = 3600;
-
     public static AppConfig FromEnv()
     {
         return new AppConfig
@@ -186,7 +182,6 @@ public class AppConfig
             WsEnabled = IsEnvTruthy(GetEnv("ALPHA_WS_ENABLED")),
             WsPingSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_WS_PING_SEC"), out var wsPing) ? wsPing : 30, 5, 300),
             WsReconnectBaseSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_WS_RECONNECT_BASE_SEC"), out var wsRecon) ? wsRecon : 2, 1, 60),
-            ControlPollSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_CONTROL_POLL_SEC"), out var ctrlPoll) ? ctrlPoll : 3600, 60, 24 * 3600),
         };
     }
 

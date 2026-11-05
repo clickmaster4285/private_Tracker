@@ -1,7 +1,11 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-05 (Terms & Conditions removed)
+> **Last audited:** 2026-11-05 (tracking mode removed)
 > **Changelog:**
+> - 2026-11-05: **Tracking mode / Start-Stop removed.** No Fixed/Roaming, no `--tracking-controls`,
+>   `--control-shell`, `--drain-only`, `control.json` control plane, or `ALPHA_CONTROL_POLL_SEC`.
+>   `ParkTrackingWork` / `ParkSyncWork` are `--gui` only. Watchdog always relaunches
+>   `--background`. Ships in the next installer.
 > - 2026-11-05: **Terms & Conditions acceptance gate removed.** `TermsService`, `TermsWindow`,
 >   `--terms`, `client_terms`, and `ALPHA_TERMS_*` are gone. Existing local DBs drop
 >   `client_terms` on startup. Live stream no longer waits on `live_view` consent.

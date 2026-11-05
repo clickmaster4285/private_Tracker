@@ -1,8 +1,8 @@
 # Always-on Windows tracker + default-deny lockdown
 
-> **Status:** Terms & Conditions removal is implemented (2026-11-05). Tracking-mode deletion and Windows lockdown are still plan-only.
+> **Status:** Terms & Conditions (2026-11-05) and tracking-mode deletion / P0 (2026-11-05) are implemented. Windows lockdown (P1–P3) is still plan-only.
 > **Written:** 2026-11-05
-> **Updated:** 2026-11-05 — tracking mode is removed entirely (no Fixed leftover). Enforcement in this plan is Windows-only. Terms & Conditions is deleted from server, client, and web, including the live-stream consent gate.
+> **Updated:** 2026-11-05 — P0 tracking mode deleted (migration 058). Next: P1 Windows network default-deny. Enforcement in this plan is Windows-only.
 > **Owns:** delete the tracking-mode feature from server, client, and web, a Windows default-deny allowlist (network, web, applications), and the Terms & Conditions feature.
 > **Does not own:** Linux or macOS enforcement, or moving collectors, login, browser reading, or live capture into `AlphaAITracker.Service`.
 
@@ -166,14 +166,14 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 
 **Done when**
 
-- [ ] Repo search has no product path that sets, displays, or returns `fixed` / `roaming` as a tracking mode (migrations 056 may remain as history; 058 drops the live objects).
-- [ ] `GET /devices/control`, `POST /devices/tracking-events`, `PATCH .../tracking-mode`, and all three `/device-configuration/*` routes are unregistered (404).
-- [ ] Sync JSON has no `controlEpoch`.
-- [ ] Windows install: no Start/Stop window, no mode badge, collectors running, presence Online.
-- [ ] End Task on `client.exe` relaunches it in the user session, still collecting.
-- [ ] `--remove-account` still wipes. Product uninstall still needs a removal code.
-- [ ] `go build` / `go vet`, `dotnet build` client + DlpService, `npx tsc --noEmit`.
-- [ ] Docs: `AGENTS.md`, `client/ARCHITECTURE.md`, `server/ARCHITECTURE.md`, `web/ARCHITECTURE.md`, `TESTING.md` §G (replace the Fixed/Roaming playbook with "mode removed").
+- [x] Repo search has no product path that sets, displays, or returns `fixed` / `roaming` as a tracking mode (migrations 056 may remain as history; 058 drops the live objects).
+- [x] `GET /devices/control`, `POST /devices/tracking-events`, `PATCH .../tracking-mode`, and all three `/device-configuration/*` routes are unregistered (404).
+- [x] Sync JSON has no `controlEpoch`.
+- [ ] Windows **installed** build: no Start/Stop window, no mode badge, collectors running, presence Online (Installer-Parity — next installer).
+- [ ] End Task on `client.exe` relaunches it in the user session, still collecting (installed lab).
+- [x] `--remove-account` path retained in source. Product uninstall still needs a removal code.
+- [x] `go build` / `go vet`, `dotnet build` client + DlpService, `npx tsc --noEmit`.
+- [x] Docs: `AGENTS.md`, `client/ARCHITECTURE.md`, `server/ARCHITECTURE.md`, `web/ARCHITECTURE.md`, `TESTING.md` §G, `FILE_HIERARCHY.md`.
 
 ### P1 — Lockdown contract + bootstrap network deny
 

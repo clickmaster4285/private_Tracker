@@ -223,15 +223,8 @@ powershell -ExecutionPolicy Bypass -File .\install-service.ps1
 - Registers **LocalSystem** auto-start service `<WINDOWS_SERVICE_NAME>` with SCM failure recovery
 - Writes `%ProgramData%\<APP_MUTEX>\dlp\service.env` (`ALPHA_DLP_ENABLED=true` plus DLP/control knobs merged from bake `.env`)
 - Tracker login writes `%ProgramData%\<APP_MUTEX>\dlp\device.auth` so the service can DeviceAuth
-- Control store: `%ProgramData%\<APP_MUTEX>\control\control.json` (Fixed/Roaming; see `newplan.md`)
-
-**Tracking-control knobs** (re-bake `config.enc` after changing `client/.env`; `install-service.ps1` upserts into `service.env` without overwriting existing values):
-
-| Key | Default | Purpose |
-|---|---|---|
-| `ALPHA_CONTROL_POLL_SEC` | `3600` | `TrackingControlWorker` DeviceAuth `GET /devices/control` interval (clamped 60…86400) |
-
-Mode (`fixed`/`roaming`) is **never** taken from env — only from server control poll / `control.json`. Planned stop-flush knobs (`ALPHA_STOP_FLUSH_*` in `newplan.md`) are not wired yet.
+- Fixed/Roaming `control.json` / `ALPHA_CONTROL_POLL_SEC` are **removed** (2026-11-05). Leftover
+  `%ProgramData%\<APP_MUTEX>\control\` folders on upgraded machines are unused.
 
 ```powershell
 # Uninstall service (optional -RemoveFiles)

@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff, SlidersHorizontal } from 'lucide-react';
+import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff } from 'lucide-react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -19,8 +19,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
-import SetTrackingModeDialog from '@/components/employees/SetTrackingModeDialog';
-
 // Excel header aliases → canonical field. Headers are matched case-insensitively
 // and whitespace-normalized, so "User ID", "user_id", "EMPLOYEEID", "employee name"
 // and "username" all resolve. Only these columns are extracted from the sheet.
@@ -97,8 +95,6 @@ function UsersListInner() {
   const [removalLoading, setRemovalLoading] = useState(false);
   // Which OS protected-uninstall command was last copied (Linux | Windows).
   const [copiedRemovalCmd, setCopiedRemovalCmd] = useState<string | null>(null);
-  const [trackingModeEmp, setTrackingModeEmp] = useState<Employee | null>(null);
-
   // Form state
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
@@ -687,13 +683,6 @@ function UsersListInner() {
                             <Monitor className="w-4 h-4 text-muted-foreground" />
                             Device Specs
                           </Link>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() => setTrackingModeEmp(emp)}
-                          className="cursor-pointer gap-2.5 px-2.5 py-2"
-                        >
-                          <SlidersHorizontal className="w-4 h-4 text-muted-foreground" />
-                          Set tracking mode…
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => handleEdit(emp)} className="cursor-pointer gap-2.5 px-2.5 py-2">
                           <Pencil className="w-4 h-4 text-muted-foreground" />
@@ -1309,12 +1298,6 @@ function UsersListInner() {
           </div>
         </DialogContent>
       </Dialog>
-
-      <SetTrackingModeDialog
-        open={trackingModeEmp !== null}
-        onOpenChange={(o) => { if (!o) setTrackingModeEmp(null); }}
-        employee={trackingModeEmp}
-      />
     </div>
   );
 }

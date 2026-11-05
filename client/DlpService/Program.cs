@@ -49,10 +49,6 @@ builder.Services.AddSingleton<SilentUpdateState>();
 builder.Services.AddSingleton<SilentUpdateWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SilentUpdateWorker>());
 
-builder.Services.AddSingleton<TrackingControlStore>();
-builder.Services.AddSingleton<TrackingControlWorker>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<TrackingControlWorker>());
-
 builder.Services.AddHostedService<ServiceAclWorker>();
 builder.Services.AddHostedService<PolicyPullWorker>();
 builder.Services.AddHostedService<AlertSyncWorker>();

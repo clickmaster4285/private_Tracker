@@ -2,49 +2,22 @@
 
 Procedures that need a running server (and for DLP, an installed Windows agent). Unit/CI tests live next to the code; this file is for **lab proof**.
 
-Companion: [plan.md](./plan.md) (DLP roadmap), [newplan.md](./newplan.md) (Fixed/Roaming), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md).
+Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
 
-*Last audited: 2026-10-30*
+*Last audited: 2026-11-05*
 
 ---
 
-## G. Device tracking control (Fixed/Roaming) — P0 spine
+## G. Tracking mode removed (always-on)
 
-**Prereqs:** server with migration **056** applied; DeviceAuth token from a logged-in tracker; Windows service with `ALPHA_CONTROL_POLL_SEC` (optional).
+Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, no Start/Stop modal, and no `control.json` control plane. Collectors run for the whole login.
 
-### G.0 Source-level (P0 — no user Stop UI yet)
-
-1. `GET /api/v1/devices/control` with `Authorization: Device <token>` → `trackingMode=fixed`, `keepDlpWhenStopped=true`, `controlEpoch>=1`.
-2. `GET .../devices/control?sinceEpoch=<same>` → `unchanged=true` (still echoes mode).
-3. Any sync (e.g. app-status) response JSON includes `controlEpoch` (nullable on old servers).
-4. `POST /api/v1/devices/tracking-events` with a `stop` event while mode is fixed → that `clientEventId` in `rejectedIds`.
-5. Service: after credentials exist, `%ProgramData%\<APP_MUTEX>\control\control.json` appears with `"mode": "fixed"`; pipe `{"op":"GetTrackingState"}` returns the same.
-6. Tracker boot still collects (P0 gate always Full) — no behavior change vs prior installer until P2.
-
-### G.1 Fixed lockdown (P1 — source / installed)
-
-1. Device effective mode **fixed** (org default or HR set): plain `--remove-account` **still wipes**
-   (2026-10-31 — Fixed no longer blocks account wipe). Expect: drain (or timeout) → wipe → relaunch signed-out.
-2. Pipe `{"op":"RequestStop"}` as interactive user → `ok:false`, `error:"mode_fixed"` (Stop still locked).
-3. Non-interactive / wrong-SID caller on `RequestStop` / `RequestStart` → rejected by `PipeCallerGuard`.
-4. Admin **Remove current device** → next sync `wipe_local` still wipes (server-initiated).
-5. **Product uninstall** still needs **Issue Removal Code** + `--protected-uninstall --code` (Windows Inno / Linux `.deb` prerm).
-6. Lab vectors still open on installed build: End-task relaunch, `sc stop` as standard user (see `newplan.md` §16).
-
-### G.2 Roaming Start/Stop (P2 — source / installed)
-
-**Prereqs:** G.0 + device set to **Roaming** (Employees → Set tracking mode). Prefer installed client **≥ 2.3.12** (Installer-Parity).
-
-1. Pipe `RequestStop` → `desired=stopped`, `phase=draining`; Full tracker PauseTracking → drain → `PurgeSynced` → `phase=idle`; watchdog launches `--control-shell` / `--tracking-controls` as designed.
-2. Start/Stop modal (`--tracking-controls`): **Start** counts day timer; **Stop** freezes timer and force-disconnects presence WS + live stream; local midnight while running → timer `00:00:00` / auto-stop semantics per `LocalRoamingControl`.
-3. ─ / × on the modal → **hide to tray** (process + timer keep running). Tray tooltip **Tracking Start / Stop** (not the main shell tooltip) left-click / menu **Show Start / Stop** restores the modal. Second `--tracking-controls` or GUI **Tracker control** rail button signals the same agent (`TrackingControlsActivation`).
-4. Main shell nav **Tracker control** visible only when effective mode is roaming; Fixed hides it.
-5. Fixed device: `RequestStop` → `mode_fixed`; no roaming Start/Stop UX.
-6. `POST /devices/tracking-events` receives start/stop (`acceptedIds`) when online path is used.
-7. While stopped: DLP USB/hosts/FW still enforced when `keepDlpWhenStopped=true`.
-8. Silent update: no celebration toast; leftover `celebrate.json` is cleared (not launched).
-
-Full acceptance matrix: `newplan.md` §16.
+1. `GET /api/v1/devices/control`, `POST /api/v1/devices/tracking-events`, `PATCH /employees/:id/machines/:machineId/tracking-mode`, and `/device-configuration/*` → **404**.
+2. Sync JSON has **no** `controlEpoch`.
+3. Web: no Device Configuration page, no "Set tracking mode", no mode badge on Employees / Device Specs.
+4. Windows installed build (next installer): no Start/Stop window; End Task on `client.exe` → watchdog relaunches `--background` and collection resumes.
+5. `--remove-account` still drains → self-remove → wipe. Product uninstall still needs **Issue Removal Code** + `--protected-uninstall --code`.
+6. Pre-P0 installer against a post-058 server: control poll 404 is expected; the tracker must keep collecting.
 
 ---
 

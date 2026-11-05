@@ -1,7 +1,12 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-05 (Terms & Conditions removed)
+> **Last audited:** 2026-11-05 (tracking mode removed)
 > **Changelog:**
+> - 2026-11-05: **Tracking mode deleted.** Migration **058** drops the 056 control plane.
+>   DeviceAuth `/devices/control` and `/devices/tracking-events`, JWT
+>   `PATCH .../tracking-mode` and `/device-configuration/*` are unregistered. Sync responses
+>   no longer carry `controlEpoch`. Employee detail `devices[]` no longer projects mode /
+>   desiredState / phase. RBAC seeder deletes `configuration/device-configuration`.
 > - 2026-11-05: **Terms & Conditions removed.** Migration **057** drops `terms_consent` and
 >   `terms_content`. DeviceAuth `/terms-content/active` and `/terms-consent/sync`, and the
 >   JWT `/terms-content` and `/terms-consent` routes, are unregistered. Live-stream push,
@@ -577,8 +582,6 @@ Employee token is carried in the request body (`{employeeId, token, entries: [..
 | POST | `/permission-status/sync` | `permission_status` | Bulk upsert by check_id |
 | POST | `/storage-devices/sync` | `storage_devices` | Bulk upsert |
 | POST | `/devices/self-remove` | `employee_machines`, `employee_devices` | **Remove the account** (DeviceAuth). Marks the CALLING machine `old` + advances `last_track_at`, revokes its device rows, closes open sessions/items and sets `tracking_status='untracked'`. Returns `{removed, machineId, status, lastTrackAt, trackingStatus}`. Called by the client AFTER its final drain. |
-| GET | `/devices/control` | `device_tracking_policies`, `employee_machines`, `device_control_meta` | Fixed/Roaming effective policy + `controlEpoch` (`?sinceEpoch=` short-circuit). Stamps `last_control_seen_at`. Fail-safe mode=`fixed`. See `newplan.md` P0. |
-| POST | `/devices/tracking-events` | `device_tracking_events` | Idempotent Start/Stop batch (`clientEventId`); `acceptedIds`/`rejectedIds`; stop rejected for effective-fixed. |
 | GET | `/dlp/policy` | `dlp_policy_versions` | Pull published bundle (`?sinceVersion=`). Empty/304 when current. *DLP Policy Version Rule*. |
 | POST | `/dlp/alerts/sync` | `dlp_alerts` | Batch upsert by client UUID; returns accepted ids |
 | POST | `/dlp/health` | — | Heartbeat: policyVersion, enforceOK, lastError |

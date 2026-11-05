@@ -16,13 +16,6 @@ public partial class App : Application
     public static bool AllowShutdown { get; set; }
 
     /// <summary>
-    /// Roaming Control Shell / Start–Stop popup only (<c>--control-shell</c> /
-    /// <c>--tracking-controls</c>). Separate process so the headless tracker never
-    /// initializes Avalonia.
-    /// </summary>
-    public static bool TrackingControlsMode { get; set; }
-
-    /// <summary>
     /// Separate GUI process (<c>--gui</c>): Avalonia shell alongside the headless
     /// tracker. Collection/sync stay in the <c>--background</c> process — this flag
     /// parks duplicate hosted services so two collectors never fight over SQLite.
@@ -60,91 +53,6 @@ public partial class App : Application
             if (ServiceProvider == null)
             {
                 throw new InvalidOperationException("ServiceProvider must be set before app starts");
-            }
-
-            // ─── Roaming Start/Stop only — never MainWindow / shell ───
-            // Close → hide to tray (keep process + controls mutex). Linux
-            // TrackingControlsSupervisor relaunches --tracking-controls only when
-            // the process is killed (mutex gone) — not when hidden to tray.
-            if (TrackingControlsMode)
-            {
-                var ctrlVm = new TrackingControlViewModel();
-                desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnExplicitShutdown;
-                var ctrlWindow = new TrackingControlWindow { DataContext = ctrlVm };
-                desktop.MainWindow = ctrlWindow;
-
-                var allowControlsExit = false;
-                ctrlWindow.Closing += (_, e) =>
-                {
-                    if (allowControlsExit) return;
-                    e.Cancel = true;
-                    // Close (X) → tray; keep timers running (do not StopTimers).
-                    ctrlWindow.HideToTray();
-                };
-
-                // Mode flipped Fixed → exit the agent for real (watchdog will not relaunch).
-                ctrlVm.RequestExitFixed += () => Dispatcher.UIThread.Post(() =>
-                {
-                    allowControlsExit = true;
-                    ctrlVm.StopTimers();
-                    try { ctrlWindow.Close(); } catch { /* ignore */ }
-                    Environment.Exit(0);
-                });
-
-                var ctrlTray = new Avalonia.Controls.TrayIcon
-                {
-                    Icon = new Avalonia.Controls.WindowIcon(
-                        Avalonia.Platform.AssetLoader.Open(new Uri("avares://client/Assets/avalonia-logo.ico"))),
-                    // Distinct from the main shell tray tooltip ("Alpha AI Tracker").
-                    ToolTipText = "Tracking Start / Stop",
-                    IsVisible = true,
-                };
-                void ShowControls()
-                {
-                    try
-                    {
-                        if (ctrlWindow.WindowState == Avalonia.Controls.WindowState.Minimized)
-                            ctrlWindow.WindowState = Avalonia.Controls.WindowState.Normal;
-                        ctrlWindow.ShowInTaskbar = false;
-                        ctrlWindow.ApplyResponsiveLayout();
-                        ctrlWindow.Show();
-                        ctrlWindow.Activate();
-                        ctrlWindow.Topmost = false;
-                        ctrlWindow.Topmost = true; // force Z-order on Windows
-                        // Re-arm timers if somehow stopped (tray hide must never freeze the clock).
-                        ctrlVm.Start();
-                    }
-                    catch (Exception ex)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"ShowControls: {ex}");
-                    }
-                }
-
-                // Pipe from GUI "Tracker control" / second --tracking-controls launch.
-                TrackingControlsActivation.OnShowRequested = () =>
-                    Dispatcher.UIThread.Post(ShowControls);
-
-                var showCtrl = new Avalonia.Controls.NativeMenuItem("Show Start / Stop");
-                showCtrl.Click += (_, _) => Dispatcher.UIThread.Post(ShowControls);
-                ctrlTray.Menu = new Avalonia.Controls.NativeMenu { showCtrl };
-                // Left-click (Windows) — post to UI thread; Menu alone is easy to miss.
-                ctrlTray.Clicked += (_, _) => Dispatcher.UIThread.Post(ShowControls);
-                Avalonia.Controls.TrayIcon.SetIcons(this, new Avalonia.Controls.TrayIcons { ctrlTray });
-
-                try
-                {
-                    ctrlWindow.ApplyResponsiveLayout();
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex);
-                }
-
-                desktop.MainWindow = ctrlWindow;
-                ctrlWindow.Show();
-                ctrlWindow.Activate();
-                base.OnFrameworkInitializationCompleted();
-                return;
             }
 
             var viewModel = ServiceProvider.GetRequiredService<MainViewModel>();

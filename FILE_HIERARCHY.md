@@ -78,20 +78,7 @@ client/
 │
 ├── Services/                        long-running hosted services and OS integration
 │   ├── LogCollectorService.cs    ⭐ the heartbeat: collect → persist → sync loop
-│   ├── TrackingModeGate.cs          Full / DrainOnly / ControlShell boot role (P2)
-│   ├── TrackingModeResolver.cs      Effective mode for Stop/UI gates (Fixed; remove-account not gated)
-│   ├── TrackingControlPaths.cs      Platform control.json path (ProgramData vs LocalAppData)
-│   ├── UserTrackingControlStore.cs  Linux/macOS cooperative Fixed/Roaming snapshot writer
-│   ├── DeviceControlPollWorker.cs   Linux/macOS GET /devices/control poller (ALPHA_CONTROL_POLL_SEC)
 │   ├── LinuxUserSystemdUnit.cs      User unit template RestartSec=8 + linger helper (L2)
-│   ├── TrackingControlFollower.cs   PauseTracking + drain + purge on Stop; WS/WebRTC ForceDisconnect
-│   ├── TrackingEventReporter.cs     Queue + POST /devices/tracking-events (UUID id; LocalAppData pending)
-│   ├── LocalRoamingControl.cs       Offline Start/Stop + day working-timer state (LocalAppData)
-│   ├── TrackingControlsActivation.cs  Named pipe to show `--tracking-controls` (tray / GUI / 2nd launch)
-│
-│   (web HR Fixed/Roaming — SetTrackingModeDialog: Fixed|Roaming only, default Fixed;
-│    Device Specs picker trigger = name only — web/src/components/employees/;
-│    Device Configuration tabs — web/src/app/(app)/configuration/device-configuration/)
 │   ├── SyncService.cs               dedicated sync drain (byte-bounded, gzip, backoff)
 │   ├── LiveStreamClient.cs          WebRTC VP8 publisher → /live-stream/push (ABR + connected-gated send)
 │   ├── NetProbeService.cs           Uplink probe → POST /live-stream/uplink-probe; bitrate ladder
@@ -113,9 +100,8 @@ client/
 │                                    WindowsExplorerWatcher · IExplorerWindowProvider
 │                                    · SystemEventWatcher · InstalledSoftwareWatcher · IdleDetector …
 │
-├── DlpService/                   ⭐ Windows LocalSystem DLP + update + tracking-control process
-│   ├── TrackingControlStore.cs / TrackingControlWorker.cs / TrackingControlState.cs
-│   ├── NamedPipeHost.cs          (+ GetTrackingState; RequestStart/Stop; PipeCallerGuard)
+├── DlpService/                   ⭐ Windows LocalSystem DLP + silent update + watchdog process
+│   ├── NamedPipeHost.cs          (policy / teardown / update / health IPC)
 │   ├── Program.cs · AlphaAITracker.Service.csproj · install-service.ps1 · uninstall-service.ps1
 │   ├── PolicyPullWorker · EnforceWorker · DnsBlockPinWorker · UsbStorEnforcer · RemovableDriveMonitor
 │   ├── DomainBlockEnforcer · TcpConnectionKiller · DnsCacheReader
@@ -142,8 +128,7 @@ client/
 │   └── InstalledAppsViewModel.cs    page 6 — live inventory scan + InventoryRow projection
 │
 ├── Views/
-│   ├── TrackingControlWindow.axaml(.cs)  Roaming Start/Stop modal (`--tracking-controls`; tray hide)
-│   ├── MainWindow.axaml(.cs)     ⭐ ROUTER: 4 exclusive states + 246px nav rail (+ Tracker control when roaming)
+│   ├── MainWindow.axaml(.cs)     ⭐ ROUTER: 4 exclusive states + 246px nav rail
 │   └── Pages/                       one UserControl per screen, each with x:DataType
 │       ├── SplashPage           (1)  ├── DashboardPage      (4)
 │       ├── LoginPage            (2)  ├── SystemSpecsPage    (5)

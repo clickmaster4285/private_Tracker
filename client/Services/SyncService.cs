@@ -93,11 +93,6 @@ public class SyncService : BackgroundService
         /// wipe its local DB + machine id and return to the sign-in page.
         /// </summary>
         public string? Action { get; set; }
-        /// <summary>
-        /// Fixed/Roaming control epoch (migration 056). Absent on older servers.
-        /// The LocalSystem TrackingControlWorker owns apply; the tracker only observes.
-        /// </summary>
-        public long? ControlEpoch { get; set; }
     }
 
     private static readonly JsonSerializerOptions SyncResponseJsonOpts = new()
@@ -170,35 +165,9 @@ public class SyncService : BackgroundService
         tcs.TrySetResult(true);
     }
 
-    /// <summary>Last controlEpoch observed on a sync response.</summary>
-    private long? _lastSeenControlEpoch;
-
-    /// <summary>
-    /// True when platform <c>control.json</c> is missing or behind the sync piggyback epoch.
-    /// </summary>
-    private static bool ServerEpochAheadOfLocalControl(long serverEpoch)
-    {
-        try
-        {
-            var path = TrackingControlPaths.ControlJsonPath;
-            if (!File.Exists(path))
-                return true;
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
-            if (!doc.RootElement.TryGetProperty("controlEpoch", out var e) ||
-                !e.TryGetInt64(out var local))
-                return true;
-            return serverEpoch > local;
-        }
-        catch
-        {
-            return true;
-        }
-    }
-
     /// <summary>
     /// Inspects a sync response body for a server-side device action. Raises
     /// <see cref="OnServerRequestedWipe"/> at most once per process.
-    /// Also records <c>controlEpoch</c> when present (Fixed/Roaming change detector).
     /// </summary>
     private void CheckServerAction(string? body)
     {
@@ -213,28 +182,6 @@ public class SyncService : BackgroundService
         catch (JsonException)
         {
             return;
-        }
-
-        if (resp?.ControlEpoch is long epoch)
-        {
-            var prev = _lastSeenControlEpoch;
-            if (epoch != _lastSeenControlEpoch)
-            {
-                _lastSeenControlEpoch = epoch;
-                _logger.LogInformation("Sync response controlEpoch={Epoch} (was {Prev})", epoch, prev);
-            }
-
-            // Wake the platform control poller until control.json catches the server epoch.
-            // One-shot wake was not enough: Reset-during-pull could drop the signal, and
-            // then later syncs saw the same epoch and never retried — Fixed stayed stuck
-            // until the next hourly GET /devices/control.
-            if (epoch != prev || ServerEpochAheadOfLocalControl(epoch))
-            {
-                if (OperatingSystem.IsWindows())
-                    _ = DlpPipeClient.SendAsync(new { op = "RefreshControl" });
-                else
-                    DeviceControlPollWorker.RequestImmediateCheckStatic();
-            }
         }
 
         if (_wipeRequestedFromServer)
@@ -391,8 +338,7 @@ public class SyncService : BackgroundService
         if (client.Core.ClientProcessMode.ParkSyncWork)
         {
             _logger.LogInformation(
-                "SyncService parked (runMode={Mode})",
-                client.Core.ClientProcessMode.RunMode);
+                "SyncService parked (GUI agent — tracker owns sync)");
             try { await Task.Delay(Timeout.Infinite, stoppingToken); }
             catch (OperationCanceledException) { }
             return;

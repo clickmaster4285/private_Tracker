@@ -133,8 +133,7 @@ internal static class UserSessionProcessLauncher
 
     /// <summary>
     /// True when a named mutex already exists (held by another process). Used so the
-    /// watchdog can tell the headless tracker (<c>Global\{APP_MUTEX}</c>) apart from the
-    /// Start/Stop UI agent (<c>Global\{APP_MUTEX}-tracking-controls</c>).
+    /// watchdog can detect the headless tracker (<c>Global\{APP_MUTEX}</c>).
     /// </summary>
     public static bool IsNamedMutexPresent(string mutexName)
     {

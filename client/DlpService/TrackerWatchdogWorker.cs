@@ -5,28 +5,21 @@ namespace AlphaAITracker.Service;
 /// LocalSystem cannot make a process truly unkillable for a local admin, but
 /// restarting within seconds restores tracking. Skips when teardown.ok exists
 /// (authorized uninstall) or device.auth is missing (logged out / wiped).
-/// Distinguishes headless <c>--background</c> (tracker mutex) from the lightweight
-/// Start/Stop UI agent (controls mutex) so the modal can stay open without blocking
-/// Full/DrainOnly relaunch.
+/// Always relaunches the normal headless <c>--background</c> tracker when its mutex is free.
 /// </summary>
 internal sealed class TrackerWatchdogWorker : BackgroundService
 {
     private readonly DlpConfig _cfg;
-    private readonly TrackingControlStore _tracking;
     private readonly ILogger<TrackerWatchdogWorker> _log;
     private DateTimeOffset _lastLaunchAttempt = DateTimeOffset.MinValue;
-    private DateTimeOffset _lastControlsLaunchAttempt = DateTimeOffset.MinValue;
 
     private static string TrackerMutexName => $@"Global\{ServiceIdentity.AppMutex}";
-    private static string ControlsMutexName => $@"Global\{ServiceIdentity.AppMutex}-tracking-controls";
 
     public TrackerWatchdogWorker(
         DlpConfig cfg,
-        TrackingControlStore tracking,
         ILogger<TrackerWatchdogWorker> log)
     {
         _cfg = cfg;
-        _tracking = tracking;
         _log = log;
     }
 
@@ -88,41 +81,14 @@ internal sealed class TrackerWatchdogWorker : BackgroundService
             return;
         }
 
-        var ctrl = _tracking.Snapshot();
-        var mode = (ctrl.Mode ?? "fixed").Trim().ToLowerInvariant();
-        var desired = (ctrl.DesiredState ?? "running").Trim().ToLowerInvariant();
-        var phase = (ctrl.Phase ?? "collecting").Trim().ToLowerInvariant();
-        var roaming = mode == "roaming";
-        var trackerUp = UserSessionProcessLauncher.IsNamedMutexPresent(TrackerMutexName);
-        var controlsUp = UserSessionProcessLauncher.IsNamedMutexPresent(ControlsMutexName);
-
         // Celebration UI removed — never launch --celebrate-update; clear leftover flag.
         UpdatePaths.ClearCelebrate();
 
-        // Roaming Start/Stop modal — separate lightweight process; never the main shell.
-        if (roaming && CooldownOk(ref _lastControlsLaunchAttempt) && !controlsUp)
-        {
-            _log.LogInformation("Watchdog: launching Start/Stop modal (--tracking-controls)");
-            UserSessionProcessLauncher.TryLaunch(path, "--tracking-controls", _log);
-            controlsUp = true;
-        }
-
-        if (trackerUp)
+        if (UserSessionProcessLauncher.IsNamedMutexPresent(TrackerMutexName))
             return;
 
         if (!CooldownOk(ref _lastLaunchAttempt))
             return;
-
-        if (roaming && desired == "stopped")
-        {
-            if (phase is "draining")
-            {
-                _log.LogWarning("Watchdog: drain-only relaunch (roaming stopped/draining) {Path}", path);
-                UserSessionProcessLauncher.TryLaunch(path, "--background --drain-only", _log);
-            }
-            // idle/stopped: collectors stay down; modal handles Start.
-            return;
-        }
 
         _log.LogWarning("Watchdog: tracker mutex free — relaunching --background {Path}", path);
         UserSessionProcessLauncher.TryLaunch(path, "--background", _log);

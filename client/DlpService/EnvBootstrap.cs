@@ -25,9 +25,6 @@ internal static class EnvBootstrap
         ("ALPHA_UPDATE_ENABLED", "true"),
         ("ALPHA_UPDATE_AUTO_INSTALL", "true"),
         ("ALPHA_UPDATE_AUTO_CHECK_HOURS", "24"),
-        // Ship default hourly (.env.example). Lab: set ALPHA_CONTROL_POLL_SEC=60 in client/.env
-        // before encrypt-config / install-service so config.enc + service.env pick it up.
-        ("ALPHA_CONTROL_POLL_SEC", "3600"),
     ];
 
     public static void Apply()
@@ -41,8 +38,8 @@ internal static class EnvBootstrap
 
     /// <summary>
     /// Manual/auto update replaces the service exe but used to leave a stale
-    /// <c>service.env</c> without new keys (e.g. <c>ALPHA_CONTROL_POLL_SEC</c>).
-    /// Append missing ship defaults so Fixed/Roaming poll and other knobs activate
+    /// <c>service.env</c> without new keys (e.g. <c>ALPHA_UPDATE_*</c>).
+    /// Append missing ship defaults so new knobs activate
     /// on the next service start without wiping existing values.
     /// </summary>
     private static void EnsureShippedServiceEnvDefaults()

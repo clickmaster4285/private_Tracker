@@ -17,17 +17,10 @@ type NewSchemaService struct {
 	repo            *repository.NewSchemaRepo
 	employeeRepo    *repository.EmployeeRepo
 	geofenceService *GeofenceService
-	tracking        *TrackingControlService
 }
 
 func NewNewSchemaService(repo *repository.NewSchemaRepo, employeeRepo *repository.EmployeeRepo, geofenceService *GeofenceService) *NewSchemaService {
 	return &NewSchemaService{repo: repo, employeeRepo: employeeRepo, geofenceService: geofenceService}
-}
-
-// WithTrackingControl attaches Fixed/Roaming resolution for employee detail devices[].
-func (s *NewSchemaService) WithTrackingControl(tc *TrackingControlService) *NewSchemaService {
-	s.tracking = tc
-	return s
 }
 
 // ── device_hardware_info ──
@@ -1234,31 +1227,6 @@ func (s *NewSchemaService) GetEmployeeDetail(ctx context.Context, id, machineID 
 			WipeRequestedAt: m.WipeRequestedAt,
 			// The lifecycle row is authoritative for "is this machine current".
 			IsActiveDevice: m.Status == models.MachineStatusActive,
-			// Fail-safe defaults if control plane unavailable / migration pending.
-			EffectiveMode:       models.TrackingModeFixed,
-			EffectiveModeSource: "default",
-			DesiredState:        models.TrackingDesiredRunning,
-			Phase:               models.TrackingPhaseCollecting,
-			TrackingModeOverride: m.TrackingModeOverride,
-			LastControlSeenAt:    m.LastControlSeenAt,
-		}
-		if !m.TrackingStateSince.IsZero() {
-			ts := m.TrackingStateSince
-			dtoDev.TrackingStateSince = &ts
-		}
-		if m.TrackingDesiredState != "" {
-			dtoDev.DesiredState = m.TrackingDesiredState
-		}
-		if m.TrackingPhase != "" {
-			dtoDev.Phase = m.TrackingPhase
-		}
-		if s.tracking != nil {
-			if eff, err := s.tracking.ResolveEffective(ctx, employeeID, machineID); err == nil && eff != nil {
-				dtoDev.EffectiveMode = eff.TrackingMode
-				dtoDev.EffectiveModeSource = eff.EffectiveModeSource
-				dtoDev.DesiredState = eff.DesiredState
-				dtoDev.Phase = eff.Phase
-			}
 		}
 		if hasReg {
 			dtoDev.ID = reg.ID

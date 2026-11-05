@@ -28,7 +28,6 @@ public sealed class WsClient : BackgroundService
     private readonly object _sessionGate = new();
     private ClientWebSocket? _activeWs;
     private CancellationTokenSource? _sessionKill;
-    private int _paused;
 
     public WsClient(
         ILogStore store,
@@ -40,29 +39,6 @@ public sealed class WsClient : BackgroundService
         _config = config;
         _sync = sync;
         _logger = logger;
-    }
-
-    /// <summary>Roaming Stop: abort the presence WebSocket and do not reconnect until Resume.</summary>
-    public void ForceDisconnect()
-    {
-        Interlocked.Exchange(ref _paused, 1);
-        CancellationTokenSource? kill;
-        ClientWebSocket? ws;
-        lock (_sessionGate)
-        {
-            kill = _sessionKill;
-            ws = _activeWs;
-        }
-        try { kill?.Cancel(); } catch { /* ignore */ }
-        try { ws?.Abort(); } catch { /* ignore */ }
-        _logger.LogInformation("WsClient force-disconnected (Roaming Stop)");
-    }
-
-    /// <summary>Roaming Start: allow presence reconnect.</summary>
-    public void ResumeConnections()
-    {
-        Interlocked.Exchange(ref _paused, 0);
-        _logger.LogInformation("WsClient resume allowed (Roaming Start)");
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -89,13 +65,6 @@ public sealed class WsClient : BackgroundService
         var backoffSec = Math.Max(1, _config.WsReconnectBaseSec);
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (Volatile.Read(ref _paused) != 0)
-            {
-                try { await Task.Delay(TimeSpan.FromSeconds(2), stoppingToken); }
-                catch (OperationCanceledException) { break; }
-                continue;
-            }
-
             EmployeeInfo? employee = null;
             try
             {
@@ -148,11 +117,6 @@ public sealed class WsClient : BackgroundService
             {
                 break;
             }
-            catch (OperationCanceledException) when (Volatile.Read(ref _paused) != 0)
-            {
-                // ForceDisconnect — stay paused until ResumeConnections.
-                backoffSec = Math.Max(1, _config.WsReconnectBaseSec);
-            }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "WsClient session ended; reconnect in {Sec}s", backoffSec);
@@ -161,9 +125,6 @@ public sealed class WsClient : BackgroundService
             {
                 lock (_sessionGate) { _sessionKill = null; }
             }
-
-            if (Volatile.Read(ref _paused) != 0)
-                continue;
 
             try
             {

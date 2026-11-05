@@ -1,7 +1,11 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-05 (Terms & Conditions removed)
+> **Last audited:** 2026-11-05 (tracking mode removed)
 > **Changelog:**
+> - 2026-11-05: **Tracking mode removed.** `/configuration/device-configuration`,
+>   `SetTrackingModeDialog`, `TrackingModeBadge`, Employees "Set tracking mode…", and
+>   Device Specs mode chips are gone. `employeesApi.setMachineTrackingMode` and
+>   `deviceConfigurationApi` are deleted. `EmployeeDevice` no longer carries mode fields.
 > - 2026-11-05: **Terms & Conditions removed.** `/settings/terms-and-conditions` and its
 >   create/edit/view routes are gone, along with the sidebar entry. Live stream no longer
 >   shows "Consent required" or blocks a tile on `consentMissing`.
@@ -523,7 +527,6 @@ in the `updateMutation`).
 | `/configuration/apps` | Applications classification | Server (`GET/PATCH /monitoring/apps`) | ✅ |
 | `/configuration/websites` | Websites classification | Server (`GET/POST/PATCH /monitoring/websites`) | ✅ |
 | `/configuration/categories` | Categories & Types CRUD | Server (`/monitoring/types`, `/monitoring/categories`) | ✅ |
-| `/configuration/device-configuration` | Device Configuration (roaming PCs / mode types / Start-Stop logs) | Server (`GET /device-configuration/*`) | ✅ |
 | `/screenshots` | Screenshots | Honest empty state (no endpoint) | ❌ |
 | `/live-stream` | Live stream | WebRTC SFU VP8 preview (Windows; consent `live_view`; FPS; multi-tile `?ids=`; optional ticket `watchBaseUrl`; Open theater) | ✅ |
 | `/live-stream/theater` | Live stream theater | Full-bleed popout (no AppSidebar); employee sidebar + same tiles; `(live-popout)` layout | ✅ |

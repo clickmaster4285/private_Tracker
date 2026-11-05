@@ -85,9 +85,7 @@ func main() {
 	departmentService := services.NewDepartmentService(departmentRepo, employeeRepo)
 	geofenceRepo := repository.NewGeofenceRepo(pool)
 	geofenceService := services.NewGeofenceService(geofenceRepo)
-	trackingControlRepo := repository.NewTrackingControlRepo(pool)
-	trackingControlService := services.NewTrackingControlService(trackingControlRepo)
-	newSchemaService := services.NewNewSchemaService(newSchemaRepo, employeeRepo, geofenceService).WithTrackingControl(trackingControlService)
+	newSchemaService := services.NewNewSchemaService(newSchemaRepo, employeeRepo, geofenceService)
 	monitoringService := services.NewMonitoringService(monitoringRepo)
 	dlpService := services.NewDlpService(dlpRepo, cfg.DlpRemovalCodeTTLMin)
 	rbacService := services.NewRBACService(rbacRepo)
@@ -104,8 +102,7 @@ func main() {
 	userHandler := handlers.NewUserHandler(userService)
 	employeeHandler := handlers.NewEmployeeHandler(employeeService)
 	departmentHandler := handlers.NewDepartmentHandler(departmentService)
-	newSchemaHandler := handlers.NewNewSchemaHandler(newSchemaService, authService).WithTrackingControl(trackingControlService)
-	trackingControlHandler := handlers.NewTrackingControlHandler(trackingControlService, employeeRepo)
+	newSchemaHandler := handlers.NewNewSchemaHandler(newSchemaService, authService)
 	monitoringHandler := handlers.NewMonitoringHandler(monitoringService)
 	dlpHandler := handlers.NewDlpHandler(dlpService)
 	rbacHandler := handlers.NewRBACHandler(rbacService)
@@ -245,7 +242,7 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler, trackingControlHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler)
 
 	// ────────────────
 	// Graceful Shutdown

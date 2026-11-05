@@ -241,61 +241,6 @@ public static class DlpPipeClient
             ct: ct);
     }
 
-    /// <summary>Read Fixed/Roaming tracking control snapshot from the service pipe.</summary>
-    public static Task<PipeCallResult> GetTrackingStateDetailedAsync(CancellationToken ct = default)
-    {
-        if (!OperatingSystem.IsWindows())
-            return Task.FromResult(new PipeCallResult(false, false,
-                "{\"ok\":false,\"error\":\"windows_only\"}", "windows_only"));
-        return SendDetailedAsync(
-            new { op = "GetTrackingState" },
-            connectTimeoutMs: DefaultConnectTimeoutMs,
-            responseTimeoutMs: DefaultResponseTimeoutMs,
-            ct: ct);
-    }
-
-    public static Task<PipeCallResult> RequestStopDetailedAsync(
-        string? reason = null, long? generation = null, CancellationToken ct = default)
-    {
-        if (!OperatingSystem.IsWindows())
-            return Task.FromResult(new PipeCallResult(false, false,
-                "{\"ok\":false,\"error\":\"windows_only\"}", "windows_only"));
-        return SendDetailedAsync(
-            new { op = "RequestStop", reason, generation },
-            connectTimeoutMs: DefaultConnectTimeoutMs,
-            responseTimeoutMs: DefaultResponseTimeoutMs,
-            ct: ct);
-    }
-
-    public static Task<PipeCallResult> RequestStartDetailedAsync(
-        string? workLocation = null, long? generation = null, CancellationToken ct = default)
-    {
-        if (!OperatingSystem.IsWindows())
-            return Task.FromResult(new PipeCallResult(false, false,
-                "{\"ok\":false,\"error\":\"windows_only\"}", "windows_only"));
-        return SendDetailedAsync(
-            new { op = "RequestStart", workLocation, generation },
-            connectTimeoutMs: DefaultConnectTimeoutMs,
-            responseTimeoutMs: DefaultResponseTimeoutMs,
-            ct: ct);
-    }
-
-    public static Task<PipeCallResult> ReportPhaseDetailedAsync(
-        string phase, long? generation = null, CancellationToken ct = default)
-    {
-        if (!OperatingSystem.IsWindows())
-            return Task.FromResult(new PipeCallResult(false, false,
-                "{\"ok\":false,\"error\":\"windows_only\"}", "windows_only"));
-        return SendDetailedAsync(
-            new { op = "ReportPhase", phase, generation },
-            connectTimeoutMs: DefaultConnectTimeoutMs,
-            responseTimeoutMs: DefaultResponseTimeoutMs,
-            ct: ct);
-    }
-
-    public static Task<(bool Ok, string Body)> RefreshControlAsync(CancellationToken ct = default)
-        => SendAsync(new { op = "RefreshControl" }, ct: ct);
-
     /// <summary>Read Chrome-like updater phase from the DLP/update pipe.</summary>
     public static async Task<(bool Ok, string Body)> GetUpdateStatusAsync(CancellationToken ct = default)
     {

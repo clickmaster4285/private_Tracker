@@ -9,8 +9,6 @@ import { useUrlActivityFilter } from '@/hooks/use-url-activity-filter';
 import { formatRelative } from '@/lib/format';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select';
 import { employeesApi, type Employee, type EmployeeDevice, type EmployeeDetail } from '@/lib/api';
-import TrackingModeBadge, { deviceEffectiveMode } from '@/components/employees/TrackingModeBadge';
-
 /**
  * Device label used everywhere in Device Specs: "{employee name} ({hostname})".
  * A device whose login never sent a name still has the hostname the machine
@@ -265,7 +263,6 @@ export default function EmployeePage({
                         )}
                         {deviceStatusLabel(device)}
                       </span>
-                      <TrackingModeBadge mode={deviceEffectiveMode(device)} className="shrink-0" />
                       {device.status === 'old' && device.lastTrackAt ? (
                         <span className="shrink-0 text-muted-foreground text-xs">
                           · last tracked {formatRelative(device.lastTrackAt)}

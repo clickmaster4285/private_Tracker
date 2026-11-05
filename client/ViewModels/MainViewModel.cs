@@ -338,14 +338,6 @@ public partial class MainViewModel : ViewModelBase
     public bool IsSystemSpecsPage => ActivePage == AppPage.SystemSpecs;
     public bool IsInstalledAppsPage => ActivePage == AppPage.InstalledApps;
 
-    /// <summary>
-    /// Rail: "Tracker control" — only when effective mode is Roaming (Fixed hides it).
-    /// </summary>
-    [ObservableProperty]
-    private bool _showTrackingControlsNav;
-
-    private CancellationTokenSource? _roamingNavCts;
-
     public string ActivePageTitle => ActivePage switch
     {
         AppPage.SystemSpecs => "System Specifications",
@@ -410,42 +402,6 @@ public partial class MainViewModel : ViewModelBase
         // (persisted in app_status), never blocks the UI, and auto-installs when a
         // newer version exists and ALPHA_UPDATE_AUTO_INSTALL is on.
         _ = Update.RunAutoCheckIfDueAsync(CancellationToken.None);
-
-        StartRoamingNavWatcher();
-    }
-
-    /// <summary>Opens the roaming Start/Stop modal (separate process / tray agent).</summary>
-    [RelayCommand]
-    private void OpenTrackingControls()
-    {
-        if (!ShowTrackingControlsNav) return;
-        TrackingControlsActivation.ShowOrLaunch();
-    }
-
-    private void StartRoamingNavWatcher()
-    {
-        _roamingNavCts?.Cancel();
-        _roamingNavCts = new CancellationTokenSource();
-        var ct = _roamingNavCts.Token;
-        _ = Task.Run(async () =>
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                try
-                {
-                    var snap = await TrackingModeResolver.ResolveAsync(ct).ConfigureAwait(false);
-                    var show = !TrackingModeResolver.IsFixed(snap);
-                    Avalonia.Threading.Dispatcher.UIThread.Post(() => ShowTrackingControlsNav = show);
-                }
-                catch
-                {
-                    Avalonia.Threading.Dispatcher.UIThread.Post(() => ShowTrackingControlsNav = false);
-                }
-
-                try { await Task.Delay(TimeSpan.FromSeconds(15), ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-            }
-        }, ct);
     }
 
     public async Task InitializeAsync(CancellationToken ct)
@@ -488,8 +444,6 @@ public partial class MainViewModel : ViewModelBase
         {
             IsLoggedIn = false;
             CurrentPermissionStep = PermissionStep.None;
-            ShowTrackingControlsNav = false;
-            _roamingNavCts?.Cancel();
         }
     }
 
@@ -522,8 +476,6 @@ public partial class MainViewModel : ViewModelBase
         //    MainWindow.axaml binds these flags directly.
         IsLoggedIn = false;
         CurrentPermissionStep = PermissionStep.None;
-        ShowTrackingControlsNav = false;
-        _roamingNavCts?.Cancel();
         IsSplashVisible = false;
         EmployeeName = string.Empty;
         EmployeeDepartment = string.Empty;
