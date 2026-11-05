@@ -1,7 +1,10 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-04 (Web Activity Page/URL wrap)
+> **Last audited:** 2026-11-05 (Terms & Conditions removed)
 > **Changelog:**
+> - 2026-11-05: **Terms & Conditions removed.** `/settings/terms-and-conditions` and its
+>   create/edit/view routes are gone, along with the sidebar entry. Live stream no longer
+>   shows "Consent required" or blocks a tile on `consentMissing`.
 > - 2026-11-04: **`/employee-journey/web` expanded pages wrap long titles/URLs.** Nested
 >   Page/URL columns use `table-fixed` + `break-words`/`break-all` (no ellipsis truncate that
 >   still forced parent horizontal scroll). Colspan cell `max-w-0` keeps wrap inside the card.
@@ -551,10 +554,6 @@ in the `updateMutation`).
 | `/settings/billing` | Billing | Placeholder | ❌ |
 | `/settings/compliance` | Compliance | Placeholder | ❌ |
 | `/settings/security` | Security | Placeholder | ❌ |
-| `/settings/terms-and-conditions` | T&C **list** — tabbed Featured/Custom terms (active tab is URL-synced `?tab=`), card opens the view route; ✏️ / 🗑 row actions; "New Terms" → `/create`. Uses `termsContentApi.list/delete`. | Server (`/terms-content`) | ✅ |
-| `/settings/terms-and-conditions/view/[id]` | T&C **view detail** — full read-only content + version/created/updated meta; Edit → `/edit/[id]`; Delete (custom only) with confirm. Uses `termsContentApi.get/delete`. | Server (`/terms-content`) | ✅ |
-| `/settings/terms-and-conditions/create` | T&C **create form** — heading + rich-text body + version (`RichTextEditor`); on save navigates to the new term's view. Uses `termsContentApi.create`. | Server (`/terms-content`) | ✅ |
-| `/settings/terms-and-conditions/edit/[id]` | T&C **edit form** — loads the term, saves via `termsContentApi.update`, navigates to its view. Uses `termsContentApi.get/update`. | Server (`/terms-content`) | ✅ |
 
 
 > The former `src/lib/store.ts` localStorage mock-data factory was **deleted 2026-08-25**. Pages that

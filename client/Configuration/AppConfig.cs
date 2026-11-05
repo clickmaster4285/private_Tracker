@@ -75,16 +75,6 @@ public class AppConfig
     public int EventAggregationWindowSec { get; init; } = 300; // 5-min sync buckets (S1)
     public int TaMaxLocalRows { get; init; } = 50_000;       // unsynced row ceiling (S6)
 
-    // ─── Terms & Conditions acceptance gate ───
-    // TermsService pulls the server's active terms (GET /terms-content/active), diffs
-    // them against the local client_terms table by (id, terms_version, content_hash)
-    // and surfaces pending ones for the locked fullscreen acceptance flow. Consent is
-    // POSTed to /terms-consent/sync (DeviceAuth) and only marked accepted locally after
-    // a 2xx — an unacknowledged acceptance must never masquerade as accepted
-    // (same principle as the 2026-09-09 sync-fix rule).
-    public bool TermsEnabled { get; init; } = true;
-    public int TermsCheckHours { get; init; } = 6;   // periodic re-fetch cadence (login + resume wake it sooner)
-
     // ─── GPS & Location (Phase 3, finalplan §16) ───
     // Default OFF — requires OS location permission + employee consent.
     public bool LocationEnabled { get; init; } = false;
@@ -182,8 +172,6 @@ public class AppConfig
             LockHysteresisSeconds = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_LOCK_HYSTERESIS_SEC"), out var lockHys) ? lockHys : 30),
             EventAggregationWindowSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_EVENT_AGGREGATION_WINDOW_SEC"), out var aggWin) ? aggWin : 300),
             TaMaxLocalRows = Math.Max(1000, int.TryParse(GetEnv("ALPHA_TA_MAX_LOCAL_ROWS"), out var taMax) ? taMax : 50_000),
-            TermsEnabled = GetEnv("ALPHA_TERMS_ENABLED") is not ("0" or "false" or "False"),
-            TermsCheckHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TERMS_CHECK_HOURS"), out var termsHours) ? termsHours : 6),
             LocationEnabled = GetEnv("ALPHA_LOCATION_ENABLED") is ("1" or "true" or "True"),
             LocationPollSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_LOCATION_POLL_SEC"), out var locPoll) ? locPoll : 300),
             LocationIpFallback = GetEnv("ALPHA_LOCATION_IP_FALLBACK") is ("1" or "true" or "True"),

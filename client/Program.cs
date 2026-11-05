@@ -64,8 +64,6 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"LockHysteresisSeconds={cfg.LockHysteresisSeconds}");
     Console.WriteLine($"EventAggregationWindowSec={cfg.EventAggregationWindowSec}");
     Console.WriteLine($"TaMaxLocalRows={cfg.TaMaxLocalRows}");
-    Console.WriteLine($"TermsEnabled={cfg.TermsEnabled}");
-    Console.WriteLine($"TermsCheckHours={cfg.TermsCheckHours}");
     Console.WriteLine($"LocationEnabled={cfg.LocationEnabled}");
     Console.WriteLine($"LocationIpFallback={cfg.LocationIpFallback}");
     Console.WriteLine($"LocationPollSec={cfg.LocationPollSec}");
@@ -230,18 +228,6 @@ if (isTeardownCleanupElevated)
         $"usb={cleanup.UsbRestored} hostsCleared={cleanup.HostsCleared} " +
         $"dlpGone={cleanup.ServiceGone} summary={cleanup.Summary}");
     Environment.ExitCode = (cleanup.UsbRestored && cleanup.HostsCleared && cleanup.ServiceGone) ? 0 : 2;
-    return;
-}
-
-// ─── Terms agent mode (instance 3, 2026-09-16) ───
-// `client.exe --terms` runs a STANDALONE Terms & Conditions app: its own process,
-// its own neutral GUI (TermsWindow), no tracking, no sync engine, no shell. It owns
-// the whole T&C lifecycle — pull, diff, show, accept, sync consent — against the
-// SAME local SQLite, then exits. The tracker GUI never shows terms itself; it
-// spawns this agent when pending terms exist (TermsService.SpawnTermsAgent).
-if (args.Contains("--terms"))
-{
-    await RunTermsAgentAsync(args);
     return;
 }
 
@@ -538,16 +524,6 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.Lo
 // ────────────────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<client.Services.ScheduleCacheService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.ScheduleCacheService>());
-
-// ────────────────────────────────────────────────────────────────────────────
-// Terms & Conditions acceptance gate (2026-09-16): TermsService pulls the server's
-// active terms (GET /terms-content/active, DeviceAuth), diffs them into the local
-// client_terms table and records consent via POST /terms-consent/sync. The
-// MainViewModel router raises the locked TermsPage while pending terms exist.
-// No-op when ALPHA_TERMS_ENABLED=false.
-// ────────────────────────────────────────────────────────────────────────────
-builder.Services.AddSingleton<client.Services.TermsService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.TermsService>());
 
 // ────────────────────────────────────────────────────────────────────────────
 // Time & Attendance (Phase 1, A.8): AttendanceAggregator rolls up today's
@@ -1107,66 +1083,6 @@ static async Task RunTrackingControlsAgentAsync(string[] args)
         await host.StopAsync(stopCts.Token);
     }
     catch { /* ignore */ }
-    host.Dispose();
-    Environment.Exit(0);
-}
-
-// ─── Terms agent (instance 3) ───
-// Minimal host: config + SQLite + HttpClient + TermsService ONLY. None of the
-// tracking/sync/inventory services are registered — this process is exclusively
-// the T&C app. Single-instanced by its OWN mutex (derived from AppInfo.AppMutex)
-// so it runs ALONGSIDE the tracker instance without tripping its guard.
-static async Task RunTermsAgentAsync(string[] args)
-{
-    using var agentMutex = new Mutex(true, client.Core.AppInfo.AppMutex + "-terms-agent", out var agentCreated);
-    if (!agentCreated)
-    {
-        return; // an agent instance is already showing terms
-    }
-
-    client.Services.TermsService.IsAgentMode = true;
-
-    var config = client.Configuration.AppConfig.FromEnv();
-    var builder = Host.CreateApplicationBuilder(args);
-    builder.Logging.ClearProviders();
-    builder.Logging.AddConsole();
-    builder.Logging.AddFile(ResolveLogPath());
-    builder.Logging.SetMinimumLevel(LogLevel.Information);
-
-    builder.Services.AddSingleton(config);
-    builder.Services.AddSingleton<ILogStore>(sp =>
-        new SqliteLogStore(ResolveDbPath(config.DbPath), config.DbEncryptionKey, null, () => config.ClientId));
-    builder.Services.AddSingleton<HttpClient>(sp => new HttpClient { Timeout = TimeSpan.FromSeconds(30) });
-    builder.Services.AddSingleton<client.Services.TermsService>();
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.TermsService>());
-    builder.Services.AddTransient<client.ViewModels.TermsViewModel>();
-
-    var host = builder.Build();
-
-    await host.Services.GetRequiredService<ILogStore>()
-        .InitializeAsync(CancellationToken.None);
-
-    App.ServiceProvider = host.Services;
-    App.TermsAgentMode = true;
-
-    await host.StartAsync(CancellationToken.None);
-
-    // Own Avalonia lifetime — when the terms window closes (all accepted or user
-    // dismissed), StartWithClassicDesktopLifetime returns and the process exits.
-    BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
-
-    // The window is gone — the agent's job is done. Stop the host with a BOUNDED
-    // wait and then exit deterministically: a hung hosted-service stop must never
-    // leave a zombie windowless agent process behind (2026-09-16 — the agent
-    // outlived its own closed window because the unbounded StopAsync blocked).
-    // Safe here: the agent has no collector/sync in flight, and consent writes
-    // are already flushed synchronously at accept time.
-    try
-    {
-        using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await host.StopAsync(stopCts.Token);
-    }
-    catch { /* stop failures are irrelevant for the agent */ }
     host.Dispose();
     Environment.Exit(0);
 }

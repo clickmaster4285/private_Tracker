@@ -1,7 +1,11 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-03 (attendance heartbeat / sync drain — client **2.3.25**)
+> **Last audited:** 2026-11-05 (Terms & Conditions removed)
 > **Changelog:**
+> - 2026-11-05: **Terms & Conditions acceptance gate removed.** `TermsService`, `TermsWindow`,
+>   `--terms`, `client_terms`, and `ALPHA_TERMS_*` are gone. Existing local DBs drop
+>   `client_terms` on startup. Live stream no longer waits on `live_view` consent.
+>   Ships in the next installer.
 > - 2026-11-03: **Attendance heartbeat no longer starves after reboot (2.3.25).**
 >   `SyncService` stamps `last_heartbeat_at` at the start of every authenticated drain pass
 >   (not only inside `LogCollectorService` collect cycles) and drains `/app-status/sync`

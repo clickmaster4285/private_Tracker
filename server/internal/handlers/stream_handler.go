@@ -35,15 +35,14 @@ const (
 
 // StreamHandler serves live-stream WebRTC signaling + REST endpoints.
 type StreamHandler struct {
-	hub              *stream.Hub
-	presence         *ws.Hub // optional — instant online via GET /api/v1/ws
-	employeeRepo     *repository.EmployeeRepo
-	termsConsentRepo *repository.TermsConsentRepo
-	taRepo           *repository.TimeAttendanceRepo
-	deviceRepo       *repository.DeviceRepo // optional — DeviceAuth re-check on push sockets
-	allowedOrigins   map[string]bool
-	upgrader         websocket.Upgrader
-	offerSem         chan struct{}
+	hub            *stream.Hub
+	presence       *ws.Hub // optional — instant online via GET /api/v1/ws
+	employeeRepo   *repository.EmployeeRepo
+	taRepo         *repository.TimeAttendanceRepo
+	deviceRepo     *repository.DeviceRepo // optional — DeviceAuth re-check on push sockets
+	allowedOrigins map[string]bool
+	upgrader       websocket.Upgrader
+	offerSem       chan struct{}
 }
 
 // NewStreamHandler constructs the handler. presence may be nil (falls back to heartbeat online).
@@ -52,7 +51,6 @@ func NewStreamHandler(
 	hub *stream.Hub,
 	presence *ws.Hub,
 	employeeRepo *repository.EmployeeRepo,
-	termsConsentRepo *repository.TermsConsentRepo,
 	taRepo *repository.TimeAttendanceRepo,
 	deviceRepo *repository.DeviceRepo,
 	allowedOrigins []string,
@@ -62,14 +60,13 @@ func NewStreamHandler(
 		originSet[strings.TrimSpace(o)] = true
 	}
 	h := &StreamHandler{
-		hub:              hub,
-		presence:         presence,
-		employeeRepo:     employeeRepo,
-		termsConsentRepo: termsConsentRepo,
-		taRepo:           taRepo,
-		deviceRepo:       deviceRepo,
-		allowedOrigins:   originSet,
-		offerSem:         make(chan struct{}, maxConcurrentOffers),
+		hub:            hub,
+		presence:       presence,
+		employeeRepo:   employeeRepo,
+		taRepo:         taRepo,
+		deviceRepo:     deviceRepo,
+		allowedOrigins: originSet,
+		offerSem:       make(chan struct{}, maxConcurrentOffers),
 	}
 	h.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4096,
@@ -105,7 +102,6 @@ type LiveStreamEmployee struct {
 	Streaming       bool   `json:"streaming"`
 	StreamAvailable bool   `json:"streamAvailable"`
 	ClientConnected bool   `json:"clientConnected"` // live-stream push signaling socket
-	ConsentMissing  bool   `json:"consentMissing"`
 }
 
 // ListEmployees handles GET /api/v1/live-stream/employees (JWTAuth).
@@ -159,13 +155,6 @@ func (h *StreamHandler) ListEmployees(c echo.Context) error {
 			Code: http.StatusInternalServerError, Message: "Failed to load heartbeats", Detail: err.Error(),
 		})
 	}
-	accepted, err := h.termsConsentRepo.ListAcceptedEmployeeIDs(c.Request().Context(), stream.FeatureID)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, dto.APIError{
-			Code: http.StatusInternalServerError, Message: "Failed to load consent", Detail: err.Error(),
-		})
-	}
-
 	now := time.Now().UTC()
 	presenceOn := h.presence != nil && h.presence.Config().Enabled
 	out := make([]LiveStreamEmployee, 0, len(employees))
@@ -194,7 +183,6 @@ func (h *StreamHandler) ListEmployees(c echo.Context) error {
 			Streaming:       snap.Streaming,
 			StreamAvailable: snap.StreamAvailable,
 			ClientConnected: snap.ClientConnected,
-			ConsentMissing:  !accepted[e.EmployeeID],
 		}
 		if limit > 0 && len(out) >= limit {
 			continue
@@ -273,19 +261,6 @@ func (h *StreamHandler) IssueWatchTicket(c echo.Context) error {
 			Code: http.StatusNotFound, Message: "Employee not found",
 		})
 	}
-	accepted, err := h.termsConsentRepo.HasAccepted(c.Request().Context(), empID, stream.FeatureID, "")
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, dto.APIError{
-			Code: http.StatusInternalServerError, Message: "Consent check failed",
-		})
-	}
-	if !accepted {
-		return c.JSON(http.StatusForbidden, dto.APIError{
-			Code: http.StatusForbidden, Message: "consent_required",
-			Detail: "Employee has not accepted live_view terms",
-		})
-	}
-
 	ticket, expiresIn, err := h.hub.IssueWatchTicket(userID, empID)
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, dto.APIError{
@@ -360,19 +335,6 @@ func (h *StreamHandler) Push(c echo.Context) error {
 		})
 	}
 	deviceID, _ := c.Get("device_id").(string)
-	accepted, err := h.termsConsentRepo.HasAccepted(c.Request().Context(), empID, stream.FeatureID, "")
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, dto.APIError{
-			Code: http.StatusInternalServerError, Message: "Consent check failed",
-		})
-	}
-	if !accepted {
-		log.Printf("[live-stream] push refused employee=%s reason=consent_required", empID)
-		return c.JSON(http.StatusForbidden, dto.APIError{
-			Code: http.StatusForbidden, Message: "consent_required",
-			Detail: "Employee must accept live_view terms before streaming",
-		})
-	}
 
 	conn, err := h.upgrader.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
@@ -569,7 +531,6 @@ func statusPayload(snap stream.EmployeeSnapshot) map[string]interface{} {
 		"streaming":       snap.Streaming,
 		"streamAvailable": snap.StreamAvailable,
 		"clientConnected": snap.ClientConnected,
-		"consentMissing":  false,
 		"monitors":        snap.Monitors,
 		"selectedMonitor": snap.SelectedMonitor,
 	}
@@ -613,18 +574,6 @@ func (h *StreamHandler) Watch(c echo.Context) error {
 			Code: http.StatusNotFound, Message: "Employee not found",
 		})
 	}
-	accepted, err := h.termsConsentRepo.HasAccepted(c.Request().Context(), empID, stream.FeatureID, "")
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, dto.APIError{
-			Code: http.StatusInternalServerError, Message: "Consent check failed",
-		})
-	}
-	if !accepted {
-		return c.JSON(http.StatusForbidden, dto.APIError{
-			Code: http.StatusForbidden, Message: "consent_required",
-		})
-	}
-
 	if err := h.hub.CanSubscribe(empID); err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, stream.ErrTooManyWatchers) || errors.Is(err, stream.ErrTooManyStreams) {
@@ -740,19 +689,19 @@ func (h *StreamHandler) Watch(c echo.Context) error {
 			go func() {
 				defer func() { <-h.offerSem }()
 				h.hub.SFU().UnwatchTrackReady(empID, watcherID)
-			trickle := newIceTrickle(write)
-			answer, withTrack, err := h.hub.SFU().AcceptSubscriberOffer(empID, watcherID, sdp, trickle.on)
-			if err != nil {
-				if errors.Is(err, stream.ErrSuperseded) {
-					log.Printf("[live-stream] subscriber offer superseded employee=%s watcher=%d", empID, watcherID)
+				trickle := newIceTrickle(write)
+				answer, withTrack, err := h.hub.SFU().AcceptSubscriberOffer(empID, watcherID, sdp, trickle.on)
+				if err != nil {
+					if errors.Is(err, stream.ErrSuperseded) {
+						log.Printf("[live-stream] subscriber offer superseded employee=%s watcher=%d", empID, watcherID)
+						return
+					}
+					log.Printf("[live-stream] subscriber offer employee=%s: %v", empID, err)
+					_ = write(map[string]string{"type": "error", "code": "offer_failed"})
 					return
 				}
-				log.Printf("[live-stream] subscriber offer employee=%s: %v", empID, err)
-				_ = write(map[string]string{"type": "error", "code": "offer_failed"})
-				return
-			}
-			_ = write(map[string]string{"type": "answer", "sdp": answer})
-			trickle.answerMarked()
+				_ = write(map[string]string{"type": "answer", "sdp": answer})
+				trickle.answerMarked()
 				if withTrack {
 					// Late joiner: VP8 decoder needs an IDR or the tile stays LIVE/black.
 					h.hub.NudgePublisherKeyframe(empID)

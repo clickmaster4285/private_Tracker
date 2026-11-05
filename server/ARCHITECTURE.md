@@ -1,7 +1,12 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-03 (attendance Last Seen / alive signals)
+> **Last audited:** 2026-11-05 (Terms & Conditions removed)
 > **Changelog:**
+> - 2026-11-05: **Terms & Conditions removed.** Migration **057** drops `terms_consent` and
+>   `terms_content`. DeviceAuth `/terms-content/active` and `/terms-consent/sync`, and the
+>   JWT `/terms-content` and `/terms-consent` routes, are unregistered. Live-stream push,
+>   watch, and the employee list no longer check consent. Dashboard `live.consentMissing`
+>   is gone. RBAC seeder deletes `settings/terms-and-conditions`.
 > - 2026-11-03: **Attendance / timesheets Last Seen while the tracker is still online.**
 >   `attendanceForDay` `lastActiveAt` was max(session_events, single `app_status.last_heartbeat_at`
 >   value) — sparse OS events + a stalled heartbeat left Last Seen / Active frozen (e.g. power_on
@@ -652,27 +657,6 @@ path that moves draft rules onto endpoints (immutable `dlp_policy_versions`).
 > App Usage “Running” use different signals (presence WS / app_sessions); do not assume they
 > share Last Seen. Idle/lock math still comes only from session events.
 
-### Terms & Conditions Consent (Protected — audit trail)
-
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/terms-consent/sync` | Bulk insert consent records (append-only). Used by client `SyncService`. |
-| GET | `/terms-consent?employeeId=` | List consent records for one employee (newest first). Used by web `/settings/terms-and-conditions`. |
-| GET | `/terms-consent/check?employeeId=&featureId=` | Check if an employee has accepted a specific feature's T&C. |
-
-### Terms & Conditions Content (Protected — editable by admin)
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/terms-content` | List all T&C content (featured + custom). |
-| GET | `/terms-content/:featureId` | Get T&C content for one feature. |
-| PUT | `/terms-content/:featureId` | Update T&C content (heading, body, version). |
-| POST | `/terms-content` | Create new custom T&C entry. |
-| DELETE | `/terms-content/:featureId` | Soft-delete a custom T&C entry (featured terms cannot be deleted). |
-
-> **Two term types.** Featured terms (`is_system=true`) are seeded by migration 037 and cannot
-> be deleted. Custom terms (`is_system=false`) can be created and deleted by the admin.
-
 ### Live stream + presence (WebRTC SFU, V3)
 
 Preview-only — no frame storage in Postgres or on disk. Auth split follows the Client-vs-Web API Auth Separation Rule.
@@ -682,7 +666,7 @@ Preview-only — no frame storage in Postgres or on disk. Auth split follows the
 | GET | `/live-stream/push` | DeviceAuth (WS) | Desktop publisher signaling (`hello`/`offer`/`answer`/`ice` + `force_keyframe` ctrl) |
 | POST | `/live-stream/uplink-probe` | DeviceAuth | Client uplink benchmark body (discarded); times RTT for bitrate ladder |
 | GET | `/ws` | DeviceAuth (WS) | Presence / keep-alive (Online/`wsConnected`); mirrored to Redis when available |
-| GET | `/live-stream/employees` | JWT | Admin list + online/consent/wsConnected flags |
+| GET | `/live-stream/employees` | JWT | Admin list + online/wsConnected flags |
 | GET | `/live-stream/watch-ticket` | JWT | Short-lived ticket (Redis when available); may include `watchBaseUrl` |
 | GET | `/live-stream/watch` | Watch ticket (WS) | Admin subscriber signaling + WebRTC receive (may 307 if publisher elsewhere) |
 
@@ -1007,7 +991,6 @@ applied_at      TIMESTAMPTZ DEFAULT NOW()
 - installed_applications: `app_fingerprint` UNIQUE, `binary_name`, `(employee_id, detected_at DESC)`, `app_name`
 - installed_packages: `package_fingerprint` UNIQUE, `source_manager`, `category`, `(employee_id, detected_at DESC)`
 - refresh_tokens: `(user_id)`, `(expires_at)`
-- terms_consent: `(employee_id, feature_id)`, `(created_at DESC)`
 
 ### Migration Tool
 

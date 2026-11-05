@@ -131,8 +131,7 @@ public sealed class LiveStreamClient : BackgroundService
             {
                 _logger.LogWarning(
                     ex,
-                    "LiveStreamClient session ended; reconnect in {Sec}s " +
-                    "(403/consent_required means accept live_view terms on the client)",
+                    "LiveStreamClient session ended; reconnect in {Sec}s",
                     backoffSec);
             }
             finally

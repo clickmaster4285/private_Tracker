@@ -22,7 +22,6 @@ public partial class MainViewModel : ViewModelBase
     private readonly LogCollectorService _logCollector;
     private readonly SyncService _syncService;
     private readonly AccountRemovalService _accountRemoval;
-    private readonly TermsService _terms;
 
     /// <summary>Self-update state — bound by the top-bar buttons and the dashboard banner.</summary>
     public AppUpdateService Update { get; }
@@ -236,62 +235,6 @@ public partial class MainViewModel : ViewModelBase
     public bool IsProfile => IsLoggedIn && CurrentPermissionStep == PermissionStep.None;
     public bool RequiresPermissionAction => IsLoggedIn && CurrentPermissionStep != PermissionStep.None;
 
-    // ─── Terms & Conditions modal (2026-09-16) ───
-    // The acceptance flow lives in its OWN standalone modal window (TermsWindow) —
-    // visually unrelated to the tracker shell. The main window keeps its previous
-    // position/behavior (normal title bar, hide-to-tray); the modal is shown on top
-    // and blocks interaction until every pending term is accepted.
-    [ObservableProperty]
-    private bool _requiresTermsAcceptance;
-
-    /// <summary>Show the modal when pending terms exist; no-op otherwise. Called after
-    /// login, session restore, and every TermsService refresh (new terms mid-session
-    /// re-open the modal).</summary>
-    public async Task EvaluateTermsGateAsync(CancellationToken ct = default)
-    {
-        if (!IsLoggedIn || !_config.TermsEnabled)
-        {
-            RequiresTermsAcceptance = false;
-            return;
-        }
-
-        var pending = await _terms.GetPendingTermsAsync(ct);
-        if (pending.Count > 0)
-        {
-            RequiresTermsAcceptance = true;
-            await Terms.LoadAsync(ct);
-        }
-        else
-        {
-            RequiresTermsAcceptance = false;
-        }
-
-        // Always re-notify: when the flag was ALREADY true (e.g. new terms arrived
-        // after the user finished the first flow) the generated setter raises no
-        // PropertyChanged, so the App-level visibility handler would never run and
-        // the modal would stay closed. The handler is idempotent (show → activate,
-        // hide → no-op), so a redundant notification is harmless.
-        OnPropertyChanged(nameof(RequiresTermsAcceptance));
-    }
-
-    /// <summary>TermsService finished a refresh — new terms mid-session re-open the
-    /// modal. ⚠️ Fired on the TermsService background thread — marshal to the UI
-    /// thread or Avalonia's binding/window system can miss the change.</summary>
-    private void OnPendingTermsChanged()
-    {
-        Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
-        {
-            try
-            {
-                await EvaluateTermsGateAsync();
-            }
-            catch
-            {
-                // A gate re-evaluation must never crash the background refresh.
-            }
-        });
-    }
-
     public string StepTitle => CurrentPermissionStep switch
     {
         PermissionStep.AutoStart => "Enable Auto-Start",
@@ -352,7 +295,6 @@ public partial class MainViewModel : ViewModelBase
         SyncService syncService,
         AccountRemovalService accountRemoval,
         AppUpdateService updateService,
-        TermsService terms,
         DashboardViewModel dashboard,
         SystemSpecsViewModel systemSpecs,
         InstalledAppsViewModel installedApps)
@@ -365,13 +307,10 @@ public partial class MainViewModel : ViewModelBase
         _logCollector = logCollector;
         _syncService = syncService;
         _accountRemoval = accountRemoval;
-        _terms = terms;
         Update = updateService;
         Dashboard = dashboard;
         SystemSpecs = systemSpecs;
         InstalledApps = installedApps;
-        Terms = new TermsViewModel(terms);
-        _terms.PendingTermsChanged += OnPendingTermsChanged;
     }
 
     // ─── Post-setup navigation (pages 4–6) ───
@@ -386,9 +325,6 @@ public partial class MainViewModel : ViewModelBase
 
     /// <summary>Page 6 — Installed Applications.</summary>
     public InstalledAppsViewModel InstalledApps { get; }
-
-    /// <summary>Page 7 — Terms &amp; Conditions acceptance gate (locked fullscreen flow).</summary>
-    public TermsViewModel Terms { get; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsDashboardPage))]
@@ -546,12 +482,6 @@ public partial class MainViewModel : ViewModelBase
             // Forced auto-start — always ensure it's configured
             _autoStart.EnableAutoStartForced();
 
-            // Terms gate (2026-09-16): restore the pending queue BEFORE the shell so a
-            // reboot with unaccepted terms re-locks the UI immediately. Ask the service
-            // for an immediate pull too — new terms arrive while the gate is up.
-            await EvaluateTermsGateAsync(ct);
-            _terms.RequestImmediatePull();
-
             await EnterShellAsync();
         }
         else
@@ -588,14 +518,13 @@ public partial class MainViewModel : ViewModelBase
         await _accountRemoval.RunAsync(ct);
 
         // 3. Land on the sign-in page. IsLoggedIn=false flips MainWindow from the
-        //    shell / permission wizard to LoginPage and disarms the terms gate;
+        //    shell / permission wizard to LoginPage.
         //    MainWindow.axaml binds these flags directly.
         IsLoggedIn = false;
         CurrentPermissionStep = PermissionStep.None;
         ShowTrackingControlsNav = false;
         _roamingNavCts?.Cancel();
         IsSplashVisible = false;
-        RequiresTermsAcceptance = false;
         EmployeeName = string.Empty;
         EmployeeDepartment = string.Empty;
         EmployeeAvatar = string.Empty;
@@ -1056,11 +985,6 @@ public partial class MainViewModel : ViewModelBase
 
             // Scan for browsers and enable auto-start after GUI login too
             _autoStart.EnableAutoStartForced();
-
-            // Terms gate (2026-09-16): first-login acceptance flow — the gate rises
-            // here if the server has terms this employee has not accepted yet.
-            await EvaluateTermsGateAsync();
-            _terms.RequestImmediatePull();
 
             await EnterShellAsync();
         }

@@ -311,31 +311,4 @@ public interface ILogStore
     /// <summary>Read the most recent clock-skew measurement for a server URL. Read-only
     /// connection. Returns null when never measured (first-run case).</summary>
     Task<(DateTime MeasuredAt, double SkewSeconds)?> GetLatestTimeSkewAsync(string serverUrl, CancellationToken ct);
-
-    // ════════════════════════════════════════════════════════════════════════
-    // Terms & Conditions acceptance gate (2026-09-16)
-    // ════════════════════════════════════════════════════════════════════════
-
-    /// <summary>Upsert one server term for an employee. A row is PENDING when it is new
-    /// (no row for this employee+id) or CHANGED (terms_version or content_hash differ from    /// the stored row) — changed terms reset is_accepted to 0 so the employee re-accepts.
-    /// Unchanged terms keep their acceptance state untouched. Sort order rides along so    /// the pending queue preserves the server's presentation order while offline.</summary>
-    Task UpsertClientTermAsync(ClientTerm term, CancellationToken ct);
-
-    /// <summary>Pending (is_accepted = 0) terms for one employee in presentation order
-    /// (sort_order, created_at, id) — the acceptance-gate queue.</summary>
-    Task<IReadOnlyList<ClientTerm>> GetPendingClientTermsAsync(string employeeId, CancellationToken ct);
-    /// <summary>Count of pending terms for one employee — the cheap gate check.</summary>
-    Task<int> CountPendingClientTermsAsync(string employeeId, CancellationToken ct);
-    /// <summary>Mark one term as agreed by the USER (clicked "I agree"). The row stays
-    /// pending (is_accepted=0) until the server acknowledges the consent.</summary>
-    Task MarkClientTermUserAcceptedAsync(string termId, string employeeId, CancellationToken ct);
-
-    /// <summary>Mark one term accepted (server acknowledged via 2xx). Called ONLY after
-    /// the consent POST succeeds — an unacknowledged acceptance must never masquerade
-    /// as accepted (2026-09-09 sync-fix principle).</summary>
-    Task MarkClientTermAcceptedAsync(string termId, string employeeId, DateTime acceptedAt, CancellationToken ct);
-    /// <summary>Purge pending rows whose terms the server no longer requires (deactivated or
-    /// deleted server-side — an admin "un-require" signal). Accepted rows are retained as the
-    /// local audit mirror. Returns the number of pending rows removed.</summary>
-    Task<int> PurgeStalePendingClientTermsAsync(string employeeId, IReadOnlySet<string> activeTermIds, CancellationToken ct);
 }

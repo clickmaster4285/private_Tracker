@@ -4,16 +4,16 @@ package dto
 // All arrays are server-bounded (topN / recentLimit). Live counts are integers
 // only — the Online Now name list uses GET /live-stream/employees separately.
 type DashboardSummaryResponse struct {
-	Range           DashboardRange           `json:"range"`
-	Employees       DashboardEmployees       `json:"employees"`
-	Activity        DashboardActivity        `json:"activity"`
-	Monitoring      DashboardMonitoring      `json:"monitoring"`
-	Devices         DashboardDevices         `json:"devices"`
-	Attendance      DashboardAttendance      `json:"attendance"`
-	Live            DashboardLive            `json:"live"`
-	TopApps         []DashboardTopApp        `json:"topApps"`
-	TopDomains      []DashboardTopDomain     `json:"topDomains"`
-	RecentSessions  []DashboardRecentSession `json:"recentSessions"`
+	Range          DashboardRange           `json:"range"`
+	Employees      DashboardEmployees       `json:"employees"`
+	Activity       DashboardActivity        `json:"activity"`
+	Monitoring     DashboardMonitoring      `json:"monitoring"`
+	Devices        DashboardDevices         `json:"devices"`
+	Attendance     DashboardAttendance      `json:"attendance"`
+	Live           DashboardLive            `json:"live"`
+	TopApps        []DashboardTopApp        `json:"topApps"`
+	TopDomains     []DashboardTopDomain     `json:"topDomains"`
+	RecentSessions []DashboardRecentSession `json:"recentSessions"`
 }
 
 type DashboardRange struct {
@@ -40,11 +40,11 @@ type DashboardMonitoring struct {
 }
 
 type DashboardDevices struct {
-	Active   int                    `json:"active"`
-	Seen15m  int                    `json:"seen15m"`
-	Seen24h  int                    `json:"seen24h"`
-	Stale7d  int                    `json:"stale7d"`
-	Versions []DashboardVersionRow  `json:"versions"`
+	Active   int                   `json:"active"`
+	Seen15m  int                   `json:"seen15m"`
+	Seen24h  int                   `json:"seen24h"`
+	Stale7d  int                   `json:"stale7d"`
+	Versions []DashboardVersionRow `json:"versions"`
 }
 
 type DashboardVersionRow struct {
@@ -68,10 +68,9 @@ type DashboardAttendance struct {
 }
 
 type DashboardLive struct {
-	Online             int  `json:"online"`
-	Streaming          int  `json:"streaming"`
-	ConsentMissing     int  `json:"consentMissing"`
-	PresenceAvailable  bool `json:"presenceAvailable"`
+	Online            int  `json:"online"`
+	Streaming         int  `json:"streaming"`
+	PresenceAvailable bool `json:"presenceAvailable"`
 }
 
 type DashboardTopApp struct {

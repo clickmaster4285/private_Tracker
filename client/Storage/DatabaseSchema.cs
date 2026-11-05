@@ -410,31 +410,6 @@ internal static class DatabaseSchema
 
         CREATE INDEX IF NOT EXISTS idx_location_samples_captured
             ON location_samples(captured_at DESC);
-
-        -- Terms & Conditions acceptance gate. One row per (employee, server term).
-        -- Equality = (id, terms_version, content_hash): a changed body or bumped version
-        -- inserts a NEW pending row so the employee is re-prompted. Accepted rows are
-        -- never duplicated and retained as the local audit mirror.
-        CREATE TABLE IF NOT EXISTS client_terms (
-            id               TEXT NOT NULL,
-            feature_id       TEXT NOT NULL DEFAULT '',
-            heading          TEXT NOT NULL DEFAULT '',
-            body             TEXT NOT NULL DEFAULT '',
-            terms_version    TEXT NOT NULL DEFAULT '1.0',
-            content_hash     TEXT NOT NULL DEFAULT '',
-            sort_order       INTEGER NOT NULL DEFAULT 0,
-            is_accepted      INTEGER NOT NULL DEFAULT 0,
-            is_user_accepted INTEGER NOT NULL DEFAULT 0,
-            accepted_at      TEXT,
-            employee_id      TEXT NOT NULL DEFAULT '',
-            synced_at        TEXT,
-            created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now')),
-            updated_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now')),
-            PRIMARY KEY (id, employee_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_client_terms_employee_pending
-            ON client_terms(employee_id, is_accepted);
     ";
 
     internal const string MigrateSql = @"
@@ -562,37 +537,7 @@ internal static class DatabaseSchema
             ON location_samples(is_synced, captured_at);
         CREATE INDEX IF NOT EXISTS idx_location_samples_captured
             ON location_samples(captured_at DESC);
-        -- Terms & Conditions gate (2026-09-16): add the table to EXISTING databases too —
-        -- CreateTableSql above only runs on fresh DBs.
-        CREATE TABLE IF NOT EXISTS client_terms (
-            id               TEXT NOT NULL,
-            feature_id       TEXT NOT NULL DEFAULT '',
-            heading          TEXT NOT NULL DEFAULT '',
-            body             TEXT NOT NULL DEFAULT '',
-            terms_version    TEXT NOT NULL DEFAULT '1.0',
-            content_hash     TEXT NOT NULL DEFAULT '',
-            sort_order       INTEGER NOT NULL DEFAULT 0,
-            is_accepted      INTEGER NOT NULL DEFAULT 0,
-            is_user_accepted INTEGER NOT NULL DEFAULT 0,
-            accepted_at      TEXT,
-            employee_id      TEXT NOT NULL DEFAULT '',
-            synced_at        TEXT,
-            created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now')),
-            updated_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now')),
-            PRIMARY KEY (id, employee_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_client_terms_employee_pending
-            ON client_terms(employee_id, is_accepted);
-        -- 2026-09-16 fix - the consent-retry loop treated every is_accepted=0 row as
-        -- user agreed but awaiting server ack and auto-accepted terms the user had never
-        -- seen. The two states are now separate columns - is_user_accepted=1 (user
-        -- clicked agree) is the ONLY state eligible for consent re-sending.
-        ALTER TABLE client_terms ADD COLUMN is_user_accepted INTEGER NOT NULL DEFAULT 0;
-        -- Data repair (one-time, idempotent): rows the buggy retry loop marked accepted
-        -- carry is_accepted=1 with is_user_accepted=0 — the user never clicked agree.
-        -- Re-open them so the gate honestly re-prompts.
-        UPDATE client_terms SET is_accepted = 0, accepted_at = NULL, synced_at = NULL
-        WHERE is_accepted = 1 AND is_user_accepted = 0;
+        DROP TABLE IF EXISTS client_terms;
     ";
 
     // PHASE 1: INSERT STATEMENTS

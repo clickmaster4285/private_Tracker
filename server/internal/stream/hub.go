@@ -21,9 +21,6 @@ type ClusterBackend interface {
 	ConsumeWatchTicket(ctx context.Context, ticket, employeeID string) (userID string, err error)
 }
 
-// FeatureID is the terms_consent feature key for live preview.
-const FeatureID = "live_view"
-
 const (
 	watchTicketTTL    = 60 * time.Second
 	maxPendingTickets = 2000

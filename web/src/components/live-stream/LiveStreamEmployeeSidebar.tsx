@@ -170,8 +170,7 @@ function EmployeeRow({
           {' · '}
           {emp.wsConnected ? 'WS connected' : 'WS off'}
           {emp.clientConnected ? ' · Stream ready' : ''}
-          {emp.consentMissing ? ' · Consent missing' : ''}
-          {!emp.consentMissing && emp.online && !emp.streamAvailable && emp.clientConnected
+          {emp.online && !emp.streamAvailable && emp.clientConnected
             ? ' · Capture unavailable'
             : ''}
         </p>

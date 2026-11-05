@@ -1,9 +1,9 @@
 # Always-on Windows tracker + default-deny lockdown
 
-> **Status:** plan only. Nothing in this file is implemented.
+> **Status:** Terms & Conditions removal is implemented (2026-11-05). Tracking-mode deletion and Windows lockdown are still plan-only.
 > **Written:** 2026-11-05
-> **Updated:** 2026-11-05 — tracking mode is removed entirely (no Fixed leftover). Enforcement in this plan is Windows-only.
-> **Owns:** delete the tracking-mode feature from server, client, and web, and a Windows default-deny allowlist (network, web, applications).
+> **Updated:** 2026-11-05 — tracking mode is removed entirely (no Fixed leftover). Enforcement in this plan is Windows-only. Terms & Conditions is deleted from server, client, and web, including the live-stream consent gate.
+> **Owns:** delete the tracking-mode feature from server, client, and web, a Windows default-deny allowlist (network, web, applications), and the Terms & Conditions feature.
 > **Does not own:** Linux or macOS enforcement, or moving collectors, login, browser reading, or live capture into `AlphaAITracker.Service`.
 
 Execute with `@prompt.md`. Read `AGENTS.md` before each phase. Ship one phase at a time. A phase is done only when its checklist, its lab, and the documentation handoff in `@prompt.md` are done.
@@ -21,6 +21,7 @@ Execute with `@prompt.md`. Read `AGENTS.md` before each phase. Ship one phase at
 7. **Identity is publisher or hash, never a display name.** No new hardcoded software-name lists (`AGENTS.md`).
 8. **Uninstall clears enforcement.** Protected uninstall and teardown must remove firewall, DNS, browser policy, and application-control artifacts. A removed product must not leave the PC locked.
 9. **Alerts are aggregated.** A default-deny filter must not write one unsynced alert per blocked connection. Unsynced alerts are still deleted only when `acceptedIds` lists them.
+10. **Terms & Conditions is gone.** No settings page, no client acceptance window, no consent check on live stream or any other page. Migration **057** drops `terms_consent` and `terms_content`. Tracking-mode deletion uses migration **058**.
 
 ## 2. Out of scope
 
@@ -134,7 +135,7 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 
 **Server**
 
-- Migration **057** drops the 056 control plane:
+- Migration **058** drops the 056 control plane:
   - tables `device_tracking_policies`, `device_control_meta`, `device_tracking_events`, `device_policy_audit`
   - `employee_machines` columns `tracking_mode_override`, `tracking_desired_state`, `tracking_phase`, `tracking_state_since`, `last_control_seen_at`, `control_version`
 - Historical Start/Stop rows go with `device_tracking_events`. Do not keep a read-only log of a feature that no longer exists.
@@ -165,7 +166,7 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 
 **Done when**
 
-- [ ] Repo search has no product path that sets, displays, or returns `fixed` / `roaming` as a tracking mode (migrations 056 may remain as history; 057 drops the live objects).
+- [ ] Repo search has no product path that sets, displays, or returns `fixed` / `roaming` as a tracking mode (migrations 056 may remain as history; 058 drops the live objects).
 - [ ] `GET /devices/control`, `POST /devices/tracking-events`, `PATCH .../tracking-mode`, and all three `/device-configuration/*` routes are unregistered (404).
 - [ ] Sync JSON has no `controlEpoch`.
 - [ ] Windows install: no Start/Stop window, no mode badge, collectors running, presence Online.

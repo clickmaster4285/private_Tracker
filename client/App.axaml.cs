@@ -15,11 +15,6 @@ public partial class App : Application
     public static IServiceProvider? ServiceProvider { get; internal set; }
     public static bool AllowShutdown { get; set; }
 
-    /// <summary>True in the standalone terms-agent process (client.exe --terms):
-    /// OnFrameworkInitializationCompleted then creates ONLY the TermsWindow with the
-    /// agent's own DI services — no MainViewModel, no shell, no tray.</summary>
-    public static bool TermsAgentMode { get; set; }
-
     /// <summary>
     /// Roaming Control Shell / Start–Stop popup only (<c>--control-shell</c> /
     /// <c>--tracking-controls</c>). Separate process so the headless tracker never
@@ -148,57 +143,6 @@ public partial class App : Application
                 desktop.MainWindow = ctrlWindow;
                 ctrlWindow.Show();
                 ctrlWindow.Activate();
-                base.OnFrameworkInitializationCompleted();
-                return;
-            }
-
-            // ─── Terms agent mode: ONLY the standalone terms window ───
-            // A completely separate app surface: neutral-styled TermsWindow bound to
-            // TermsViewModel from the agent's own DI container. No MainViewModel, no
-            // shell, no tray, no collector. ShutdownMode=OnMainWindowClose so the
-            // process exits when the terms window closes.
-            if (TermsAgentMode)
-            {
-                var termsVm = ServiceProvider.GetRequiredService<client.ViewModels.TermsViewModel>();
-                desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnMainWindowClose;
-
-                var agentWindow = new TermsWindow { DataContext = termsVm };
-                desktop.MainWindow = agentWindow;
-
-                // Refuse dismissal while terms are still pending.
-                agentWindow.Closing += (s, e) =>
-                {
-                    if (termsVm.TotalCount > 0 && termsVm.CurrentTerm != null && !AllowShutdown)
-                    {
-                        e.Cancel = true;
-                    }
-                };
-
-                // Flow complete (last pending term accepted → queue empty): close the
-                // window. (2026-09-16 bug: this subscription was missing, so the modal
-                // stayed open forever after the final acceptance.)
-                termsVm.Done += () => Dispatcher.UIThread.Post(() =>
-                {
-                    try { agentWindow.Close(); }
-                    catch { /* already closing/closed */ }
-                });
-
-                // Decisive exit — the agent's job ends with its window. The agent holds
-                // NO unsaved state (consents are flushed synchronously at accept time),
-                // so once the window is gone the process has nothing left to do.
-                // Environment.Exit(0) is deliberate: ShutdownMode.OnMainWindowClose
-                // proved unreliable here — the window closed but
-                // StartWithClassicDesktopLifetime never returned, leaving a zombie
-                // windowless agent process (2026-09-16). Exit also covers the
-                // empty-queue race where the window closes during initialization.
-                void ExitAgent()
-                {
-                    Environment.Exit(0);
-                }
-                agentWindow.Closed += (s, e) => ExitAgent();
-
-                agentWindow.Show();
-                _ = termsVm.LoadAsync();
                 base.OnFrameworkInitializationCompleted();
                 return;
             }
@@ -419,13 +363,6 @@ public partial class App : Application
             {
                 mainWindow.Show();
             }
-
-            // ─── Terms & Conditions (2026-09-16) ───
-            // The tracker GUI never shows terms itself: the standalone terms-agent
-            // process (client.exe --terms, instance 3) owns the acceptance flow. The
-            // MainViewModel spawns the agent when pending terms exist — its DI reaches
-            // TermsService, whose ReadyToSpawn logic is wired through TermsViewModel.
-            // No tracker-side window, no tracker-side close guard.
         }
 
         base.OnFrameworkInitializationCompleted();

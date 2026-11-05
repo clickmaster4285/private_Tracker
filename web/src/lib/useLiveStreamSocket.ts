@@ -1,14 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { liveStreamApi, type IceServerConfig, ApiError } from '@/lib/api';
+import { liveStreamApi, type IceServerConfig } from '@/lib/api';
 
 export type LiveStreamSocketStatus =
   | 'idle'
   | 'connecting'
   | 'live'
   | 'offline'
-  | 'consentMissing'
   | 'unavailable'
   | 'error';
 
@@ -25,7 +24,6 @@ export interface LiveStreamSocketState {
   streaming: boolean;
   streamAvailable: boolean;
   clientConnected: boolean;
-  consentMissing: boolean;
   error: string | null;
   monitors: LiveStreamMonitor[];
   selectedMonitor: number;
@@ -88,7 +86,6 @@ export function useLiveStreamSocket(
     streaming: false,
     streamAvailable: false,
     clientConnected: false,
-    consentMissing: false,
     error: null,
     monitors: [],
     selectedMonitor: 0,
@@ -120,7 +117,6 @@ export function useLiveStreamSocket(
         streaming: false,
         streamAvailable: false,
         clientConnected: false,
-        consentMissing: false,
         error: null,
         monitors: [],
         selectedMonitor: 0,
@@ -216,7 +212,7 @@ export function useLiveStreamSocket(
           setState((s) => ({
             ...s,
             streaming: false,
-            status: s.status === 'consentMissing' ? 'consentMissing' : 'connecting',
+            status: 'connecting',
           }));
         }
       };
@@ -268,22 +264,17 @@ export function useLiveStreamSocket(
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : 'ticket_failed';
-        const detail = err instanceof ApiError ? `${err.message} ${err.detail ?? ''}` : msg;
-        const consent = /consent_required/i.test(detail);
         setState((s) => ({
           ...s,
-          status: consent ? 'consentMissing' : 'error',
-          consentMissing: consent,
+          status: 'error',
           error: msg,
           streaming: false,
         }));
-        if (!consent) {
-          attempt += 1;
-          const delay = Math.min(15_000, 1500 * Math.pow(2, Math.min(attempt, 4)));
-          reconnectTimer = setTimeout(() => {
-            void connect();
-          }, delay);
-        }
+        attempt += 1;
+        const delay = Math.min(15_000, 1500 * Math.pow(2, Math.min(attempt, 4)));
+        reconnectTimer = setTimeout(() => {
+          void connect();
+        }, delay);
         return;
       }
 
@@ -322,7 +313,6 @@ export function useLiveStreamSocket(
             streaming?: boolean;
             streamAvailable?: boolean;
             clientConnected?: boolean;
-            consentMissing?: boolean;
             code?: string;
             monitors?: LiveStreamMonitor[];
             selectedMonitor?: number;
@@ -340,19 +330,16 @@ export function useLiveStreamSocket(
               streaming: liveRef.current || !!msg.streaming,
               streamAvailable: !!msg.streamAvailable,
               clientConnected: !!msg.clientConnected,
-              consentMissing: !!msg.consentMissing,
               monitors: Array.isArray(msg.monitors) ? msg.monitors : s.monitors,
               selectedMonitor:
                 typeof msg.selectedMonitor === 'number' ? msg.selectedMonitor : s.selectedMonitor,
-              status: msg.consentMissing
-                ? 'consentMissing'
-                : liveRef.current
-                  ? 'live'
-                  : !msg.clientConnected
-                    ? 'connecting'
-                    : msg.streamAvailable === false
-                      ? 'unavailable'
-                      : 'connecting',
+              status: liveRef.current
+                ? 'live'
+                : !msg.clientConnected
+                  ? 'connecting'
+                  : msg.streamAvailable === false
+                    ? 'unavailable'
+                    : 'connecting',
             }));
             // Do NOT renegotiate on status — that used to fire every 2s and
             // tore down working PeerConnections (blank / pixelated / stuck).
@@ -405,13 +392,10 @@ export function useLiveStreamSocket(
 
           if (msg.type === 'error') {
             const code = msg.code || 'error';
-            // Never treat offer/ICE failures as consent — that was a false UI state.
-            const consent = code === 'consent_required';
             setState((s) => ({
               ...s,
-              status: consent ? 'consentMissing' : 'error',
+              status: 'error',
               error: code,
-              consentMissing: consent,
             }));
           }
         } catch {
@@ -435,7 +419,7 @@ export function useLiveStreamSocket(
         setState((s) => ({
           ...s,
           streaming: false,
-          status: s.status === 'consentMissing' ? 'consentMissing' : 'connecting',
+          status: 'connecting',
         }));
         reconnectTimer = setTimeout(() => {
           void connect();

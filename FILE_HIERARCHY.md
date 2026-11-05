@@ -269,7 +269,7 @@ web/
     │       ├── goals · kpis · projects · productivity-scoring
     │       ├── screenshots · live-stream (WebRTC SFU; FPS; Open theater → /live-stream/theater) · gps-location
     │       └── settings (billing · compliance · notifications · security ·
-    │                     tracking · user-management · terms-and-conditions · profile)
+    │                     tracking · user-management · profile)
     │
     │   (live-popout)/                 full-bleed theater shell (no AppSidebar)
     │       └── live-stream/theater/   /live-stream/theater?ids= watch wall

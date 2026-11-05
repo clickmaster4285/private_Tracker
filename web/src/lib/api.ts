@@ -1395,79 +1395,6 @@ export const hoursInsightsApi = {
 };
 
 // ──────────────────────────
-// Terms & Conditions consent
-// ──────────────────────────
-
-export interface TermsConsentEntry {
-  id: string;
-  employeeId: string;
-  featureId: string;
-  termsVersion: string;
-  action: 'accepted' | 'revoked' | 're_accepted';
-  createdAt: string;
-}
-
-export interface TermsConsentCheckResponse {
-  accepted: boolean;
-  employeeId: string;
-  featureId: string;
-}
-
-export const termsConsentApi = {
-  list: (employeeId: string) =>
-    request<{ entries: TermsConsentEntry[]; total: number }>('/terms-consent', {
-      params: { employeeId },
-    }),
-  check: (employeeId: string, featureId: string) =>
-    request<TermsConsentCheckResponse>('/terms-consent/check', {
-      params: { employeeId, featureId },
-    }),
-};
-
-// ──────────────────────────
-// Terms & Conditions content management
-// ──────────────────────────
-
-export interface TermsContentItem {
-  id: string;
-  heading: string;
-  body: string;
-  termsVersion: string;
-  isSystem: boolean;
-  featureId?: string;
-  featureType?: string;
-  isActive: number;
-  sortOrder: number;
-  updatedAt: string;
-  createdAt: string;
-}
-
-export const termsContentApi = {
-  list: () => request<{ items: TermsContentItem[] }>('/terms-content'),
-  get: (id: string) =>
-    request<TermsContentItem>(`/terms-content/${id}`),
-  update: (id: string, data: { heading: string; body: string; termsVersion: string }) =>
-    request<TermsContentItem>(`/terms-content/${id}`, {
-      method: 'PUT',
-      body: data,
-    }),
-  create: (data: { heading: string; body: string; termsVersion: string }) =>
-    request<TermsContentItem>('/terms-content', {
-      method: 'POST',
-      body: data,
-    }),
-  delete: (id: string) =>
-    request<void>(`/terms-content/${id}`, {
-      method: 'DELETE',
-    }),
-  updateActive: (id: string, isActive: number) =>
-    request<{ message: string; isActive: string }>(`/terms-content/${id}/active`, {
-      method: 'PATCH',
-      body: { isActive },
-    }),
-};
-
-// ──────────────────────────
 // Live Stream API
 // ──────────────────────────
 
@@ -1482,7 +1409,6 @@ export interface LiveStreamEmployee {
   streamAvailable: boolean;
   /** Live-stream WebRTC push signaling socket. */
   clientConnected: boolean;
-  consentMissing: boolean;
 }
 
 export interface IceServerConfig {
@@ -1573,7 +1499,6 @@ export interface DashboardSummaryResponse {
   live: {
     online: number;
     streaming: number;
-    consentMissing: number;
     presenceAvailable: boolean;
   };
   topApps: DashboardTopApp[];

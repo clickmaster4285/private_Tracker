@@ -79,15 +79,6 @@ func main() {
 	refreshTokenRepo := repository.NewRefreshTokenRepo(pool)
 	shiftRepo := repository.NewShiftRepo(pool)
 	timeAttendanceRepo := repository.NewTimeAttendanceRepo(pool)
-	termsConsentRepo := repository.NewTermsConsentRepo(pool)
-	termsContentRepo := repository.NewTermsContentRepo(pool)
-
-	// Seed featured Terms & Conditions (idempotent — safe on every startup)
-	termsSeeder := services.NewTermsContentSeeder(termsContentRepo)
-	if err := termsSeeder.SeedFeaturedTerms(context.Background()); err != nil {
-		log.Printf("[server] WARNING: terms seeder error: %v", err)
-	}
-
 	authService := services.NewAuthService(userRepo, rbacRepo, refreshTokenRepo, cfg.JWT, cfg.Admin)
 	userService := services.NewUserService(userRepo, rbacRepo, employeeRepo)
 	employeeService := services.NewEmployeeService(employeeRepo, shiftRepo, redisClient)
@@ -121,8 +112,6 @@ func main() {
 	shiftHandler := handlers.NewShiftHandler(shiftService)
 	timeAttendanceHandler := handlers.NewTimeAttendanceHandler(timeAttendanceService)
 	geofenceHandler := handlers.NewGeofenceHandler(geofenceService)
-	termsConsentHandler := handlers.NewTermsConsentHandler(termsConsentRepo)
-	termsContentHandler := handlers.NewTermsContentHandler(termsContentRepo)
 
 	iceServers := make([]stream.ICEServerConfig, 0, 2)
 	if len(cfg.LiveStream.STUNURLs) > 0 {
@@ -180,7 +169,7 @@ func main() {
 	}
 
 	streamHandler := handlers.NewStreamHandler(
-		streamHub, presenceHub, employeeRepo, termsConsentRepo, timeAttendanceRepo, deviceRepo, cfg.CORS.AllowedOrigins,
+		streamHub, presenceHub, employeeRepo, timeAttendanceRepo, deviceRepo, cfg.CORS.AllowedOrigins,
 	)
 	if cfg.LiveStream.Enabled {
 		log.Printf("[server] live-stream webrtc sfu enabled (maxStreams=%d bitrate=%dkbps)", cfg.LiveStream.MaxStreams, cfg.LiveStream.MaxBitrateKbps)
@@ -190,7 +179,7 @@ func main() {
 
 	dashboardRepo := repository.NewDashboardRepo(pool)
 	dashboardService := services.NewDashboardService(
-		dashboardRepo, employeeRepo, termsConsentRepo, timeAttendanceRepo, timeAttendanceService, streamHub, presenceHub,
+		dashboardRepo, employeeRepo, timeAttendanceRepo, timeAttendanceService, streamHub, presenceHub,
 	)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService)
 
@@ -256,7 +245,7 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, termsConsentHandler, termsContentHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler, trackingControlHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler, trackingControlHandler)
 
 	// ────────────────
 	// Graceful Shutdown

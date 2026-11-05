@@ -22,33 +22,30 @@ const (
 
 // DashboardService builds the home-page summary aggregate.
 type DashboardService struct {
-	repo             *repository.DashboardRepo
-	employeeRepo     *repository.EmployeeRepo
-	termsConsentRepo *repository.TermsConsentRepo
-	taRepo           *repository.TimeAttendanceRepo
-	taService        *TimeAttendanceService
-	streamHub        *stream.Hub
-	presence         *ws.Hub // optional
+	repo         *repository.DashboardRepo
+	employeeRepo *repository.EmployeeRepo
+	taRepo       *repository.TimeAttendanceRepo
+	taService    *TimeAttendanceService
+	streamHub    *stream.Hub
+	presence     *ws.Hub // optional
 }
 
 // NewDashboardService constructs a DashboardService. presence may be nil.
 func NewDashboardService(
 	repo *repository.DashboardRepo,
 	employeeRepo *repository.EmployeeRepo,
-	termsConsentRepo *repository.TermsConsentRepo,
 	taRepo *repository.TimeAttendanceRepo,
 	taService *TimeAttendanceService,
 	streamHub *stream.Hub,
 	presence *ws.Hub,
 ) *DashboardService {
 	return &DashboardService{
-		repo:             repo,
-		employeeRepo:     employeeRepo,
-		termsConsentRepo: termsConsentRepo,
-		taRepo:           taRepo,
-		taService:        taService,
-		streamHub:        streamHub,
-		presence:         presence,
+		repo:         repo,
+		employeeRepo: employeeRepo,
+		taRepo:       taRepo,
+		taService:    taService,
+		streamHub:    streamHub,
+		presence:     presence,
 	}
 }
 
@@ -250,11 +247,6 @@ func (s *DashboardService) liveCounts(ctx context.Context, departmentID *int) (d
 	if err != nil {
 		return out, fmt.Errorf("dashboard live heartbeats: %w", err)
 	}
-	accepted, err := s.termsConsentRepo.ListAcceptedEmployeeIDs(ctx, stream.FeatureID)
-	if err != nil {
-		return out, fmt.Errorf("dashboard live consent: %w", err)
-	}
-
 	now := time.Now().UTC()
 	presenceOn := s.presence != nil && s.presence.Config().Enabled
 	for _, e := range employees {
@@ -271,9 +263,6 @@ func (s *DashboardService) liveCounts(ctx context.Context, departmentID *int) (d
 		}
 		if snap.Streaming {
 			out.Streaming++
-		}
-		if !accepted[e.EmployeeID] {
-			out.ConsentMissing++
 		}
 	}
 	return out, nil

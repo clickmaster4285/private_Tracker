@@ -27,8 +27,7 @@ export function LiveStreamWatchTile({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const tileRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const canWatch = !emp?.consentMissing;
-  const socket = useLiveStreamSocket(employeeId, videoRef, { enabled: canWatch });
+  const socket = useLiveStreamSocket(employeeId, videoRef);
   const fps = useVideoFps(videoRef, socket.status === 'live');
 
   useEffect(() => {
@@ -164,15 +163,6 @@ function WatchOverlay({
         icon={Monitor}
         title="Unknown employee"
         body="This employee is no longer in the list."
-      />
-    );
-  }
-  if (emp.consentMissing || socket.status === 'consentMissing') {
-    return (
-      <EmptyPane
-        icon={ShieldAlert}
-        title="Consent required"
-        body="This employee has not accepted Live Screen Viewing terms."
       />
     );
   }

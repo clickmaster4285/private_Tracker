@@ -1,7 +1,14 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-04
+> **Last audited:** 2026-11-05
 > **Changelog:**
+>
+> - 2026-11-05: **Terms & Conditions removed (server + client + web).** Settings page,
+>   client `--terms` window, `terms_consent` / `terms_content`, and the live-stream
+>   consent gate are gone. Migration **057** drops both tables. Boot seeder deletes the
+>   `settings/terms-and-conditions` RBAC submodule. Live watch and push no longer return
+>   `consent_required`. Tracking-mode deletion in `plan.md` moves to migration **058**.
+>   Verified: `go build` / `go vet`, `dotnet build` client (0 warnings), `npx tsc --noEmit`.
 >
 > - 2026-11-04: **Web Activity expanded Page/URL wrap instead of horizontal scroll (web).**
 >   Long search-query titles and URLs in `/employee-journey/web` expand rows widened the
@@ -1933,7 +1940,6 @@ stored the data that client just sent.**
    the column and stamps it from the single-row `machine_identity` table, whose value comes from a
    **lazy** `AppConfig.ClientId` provider (a wipe resets the id, so a re-login in the same process
    must persist the new one — a value captured at construction would stamp the retired machine).
-   `terms_consent` is intentionally employee-scoped.
 3. **Devices with `machine_id = ''`** are the honest "unknown machine" bucket: they appear only in
    the employee-wide aggregate, never under a specific device.
 4. **Remove current device (admin) = persist-then-wipe.** `POST /employees/:id/devices/remove`
