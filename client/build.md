@@ -156,54 +156,35 @@ rm ~/.config/autostart/alpha-ai-tracker.desktop
 
 ---
 
-## Release to GitHub
+## Release (publish to the server setup folder)
 
-After building installers, you can publish them as a GitHub Release.
+Installers are served to clients by the API server from its setup folder
+(`server/setup/`, env `RELEASES_DIR`). Installed clients check it every minute and
+self-update when a newer version appears. No GitHub / `gh` CLI is involved.
 
-### Prerequisites
-
-```bash
-# Install GitHub CLI
-sudo apt install gh   # Ubuntu/Debian
-# or: brew install gh  # macOS
-
-# Authenticate
-echo "YOUR_GITHUB_TOKEN" | gh auth login --with-token
-# Or: gh auth login  # interactive browser-based auth
-```
-
-### Create a Release (One Command)
-
-Run **from the** `client/` **directory**.
+Run **from the** `client/` **directory** (on Windows: from **Git Bash** — PowerShell's
+`bash` is WSL and cannot see `dotnet`).
 
 ```bash
-# Build all installers, create git tag, and upload to GitHub Releases
-bash publish/release.sh v0.2.0
-
-# Or without a version (defaults to v0.2.0)
-bash publish/release.sh
+bash publish/release.sh            # build + copy to ../server/setup/v<VERSION>.<ext>
+bash publish/release.sh -b win     # Windows only → ../server/setup/v<VERSION>.exe
+bash publish/release.sh --setup-dir /path/to/setup
 ```
 
 This will:
 
-1. Build all installers via `build-installer.sh`
-2. Commit any pending changes
-3. Create and push the git tag (e.g. `v0.2.0`)
-4. Create a GitHub Release with the installer files attached
-5. Verify the release was created
+1. Build the installers via `build-installer.sh` (bakes `config.enc`)
+2. Copy each one into the setup folder named by `VERSION` (e.g. `v1.0.0.exe`)
 
-### Manual Upload
+Optional release notes shown in the client banner and on `/releases`: `setup/v1.0.0.md`.
 
-If you prefer to upload manually:
+### Manual publish
+
+Copy any installer into the API host's setup folder; the filename must contain the version:
 
 ```bash
-cd client
-bash publish/build-installer.sh
-# Then go to https://github.com/clickmaster4285/Alpha-AI-Tracker/releases/new
-# and upload the files from installers/
+cp installers/AlphaAITracker-Setup-1.0.0.exe ../server/setup/v1.0.0.exe
 ```
-
----
 
 ## Windows DLP service
 

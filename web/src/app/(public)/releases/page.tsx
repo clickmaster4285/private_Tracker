@@ -183,8 +183,8 @@ function ReleasesBody() {
           {APP_SHORT_NAME} Releases
         </h1>
         <p className="text-muted-foreground max-w-2xl text-sm sm:text-base">
-          Download the Windows and Linux desktop applications. Installers are served through this site —
-          no GitHub account required.
+          Download the Windows and Linux desktop applications. Installers are served directly by the
+          Alpha API server — no account required.
         </p>
       </div>
 

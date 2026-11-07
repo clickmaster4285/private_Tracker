@@ -1,7 +1,19 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-06 (P3 AppLocker Exe+Appx)
+> **Last audited:** 2026-11-07 (local blocker switches)
 > **Changelog:**
+> - 2026-11-07: **Local blocker switches.** `DlpConfig` gains `NetworkLockdown`
+>   (`ALPHA_DLP_NETWORK_LOCKDOWN`) and `AppBlock` (`ALPHA_DLP_APP_BLOCK`) next to `UsbBlock` / `WebBlock`.
+>   `EnforceWorker` gates `ApplyLockdownAsync`, the lockdown browser allow-set in `ApplyWebAsync`, and
+>   `ApplyAppLockdownAsync` (AppLocker + `AppProcessGuard`) on them; `false` clears leftovers with state
+>   `disabled_local`. USB `false` now writes "allow" once so a stale block is lifted.
+> - 2026-11-07: **Auto-update every 60s from the server `setup/` folder.** `ALPHA_UPDATE_AUTO_CHECK_HOURS`
+>   → `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60, min 15) in `AppConfig`, `DlpConfig`, `EnvBootstrap`
+>   ship defaults, `generate-windows-vars.sh`, `installer-windows.iss`. `SilentUpdateWorker`: cadence =
+>   interval, failure backoff 1m/5m/15m, `apply_failed.txt` 1h guard. `AppUpdateService`: same cadence,
+>   Linux auto-install once/hour/version. Asset version match accepts `v1.0.0.exe`. `release.sh` now
+>   copies installers to `../server/setup/v<VERSION>.<ext>` (no `gh`/git). Verified: `dotnet build`
+>   client + DlpService (0 warnings), `dotnet test` 37/37. Installer-Parity: next installer carries it.
 > - 2026-11-06: **P3 AppLocker launch dialog.** Exe + Appx Enforce, MSI empty-deny,
 >   UTF-16 XML, AppIDSvc restart, Taskmgr Denied verify. Blocked apps show the Windows
 >   organization dialog on launch; `AppProcessGuard` remains backup. Installer **2.10.2+**.
@@ -642,7 +654,7 @@ client.exe (user session) — collectors, GUI, device.auth bridge, --protected-u
 
 | Path | Role |
 |------|------|
-| `%ProgramData%\<APP_MUTEX>\dlp\service.env` | `ALPHA_DLP_*` for the service process |
+| `%ProgramData%\<APP_MUTEX>\dlp\service.env` | `ALPHA_DLP_*` for the service process (incl. local switches `USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK` — `false` = never apply, even if the server policy blocks) |
 | `%ProgramData%\<APP_MUTEX>\dlp\device.auth` | Device token written by tracker after login |
 | `%ProgramData%\<APP_MUTEX>\dlp\dlp.db` | Current policy plus every unsynced alert, with no age or count cap. Accepted alerts and their evidence are deleted. Audit keeps the newest 200 rows |
 | `%ProgramData%\<APP_MUTEX>\dlp\policy\policy.vN.json` | Debug snapshots of applied bundles; only the latest 3 versions are kept |
@@ -990,9 +1002,8 @@ Watchers (IObservableEventSource)          EventCoordinator                 Jour
 | `ALPHA_SYNC_BACKOFF_MAX_SEC` | 300 | exponential-backoff ceiling on sync failure (5 min) |
 | `ALPHA_SYNC_COMPRESSION` | true | gzip request bodies (server: `middleware.Decompress()`) |
 | `ALPHA_BROWSER_HISTORY_POLL_SECONDS` | 10 | history re-read cadence |
-| `REPO` | — | **Publish tooling only** (`publish/release.sh` → `gh release`); not read by the running client |
 | `ALPHA_UPDATE_ENABLED` | true | master switch for self-update (background checks + auto-install + GUI); requires `ALPHA_SERVER_URL` |
-| `ALPHA_UPDATE_AUTO_CHECK_HOURS` | 24 | min hours between quiet background update checks (persisted `update_last_check_at` in app_status) |
+| `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background update checks against the server (min 15); service + GUI |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install when a check finds a newer version (Linux still shows the polkit password dialog) |
 | `ALPHA_STREAM_ENABLED` | false | master switch for WebRTC live-stream publisher |
 | `ALPHA_STREAM_FPS` | 12 | capture / encode cadence (1–30); may drop under ABR degrade |
@@ -1006,7 +1017,7 @@ Watchers (IObservableEventSource)          EventCoordinator                 Jour
 
 > Web downloads and the desktop self-updater both use the server public bridge
 > (`GET /api/v1/releases` + `/downloads/:assetId`; see `doc/plan.md`). `AppUpdateService`
-> needs `ALPHA_SERVER_URL` only. `REPO=` remains for `release.sh` / `gh`, not the updater.
+> needs `ALPHA_SERVER_URL` only. Installers live in the server's `setup/` folder (`RELEASES_DIR`).
 >
 > **Installer-Parity:** any change to `ALPHA_STREAM_*` / `ALPHA_WS_*` / update behaviour requires
 > `.env` → `encrypt-config.sh` → new installer so `config.enc` carries the knobs.
@@ -1035,7 +1046,7 @@ Watchers (IObservableEventSource)          EventCoordinator                 Jour
 | `build-dmg.sh` | macOS `.dmg` |
 | `installer-windows.iss` | Inno Setup (auto-kills running processes) |
 | `generate-windows-vars.sh` | Reads `APP_IDENTIFIERS` + `VERSION` → `windows_vars.iss`, so the Inno script carries no literal product name |
-| `release.sh` | GitHub release workflow |
+| `release.sh` | build + copy installers into `server/setup/v<VERSION>.<ext>` |
 | `encrypt-config.sh` | `.env` → `config.enc` (transport key) |
 | `firefox-a11y-apparmor.sh` | **snap Firefox fix**: loads a surgical copy of the snap AppArmor profile adding ONE `dbus (receive)` rule so the AT-SPI bridge can read snap-Firefox windows (sandbox stays enforcing); installs `alpha-ai-firefox-a11y.service` to re-apply at boot / after `snap refresh`; `--undo` supported; requires Firefox restart |
 
@@ -1113,10 +1124,12 @@ Two consequences worth knowing before you touch either file:
 
 ## 18. Self-Update via public releases bridge (`AppUpdateService` + Windows `SilentUpdateWorker`)
 
-> Added 2026-08-12 (GitHub direct). **Updated 2026-10-26** for private repos: the client uses the
-> same Alpha API bridge as the website `/releases` page. Installers are still **published** to
-> GitHub by `release.sh`; the API holds `GITHUB_TOKEN` and streams assets. The client never calls
-> `api.github.com`.
+> Added 2026-08-12 (GitHub direct). **Updated 2026-11-07:** GitHub is gone end-to-end. The server
+> serves installers from its local `setup/` folder (`RELEASES_DIR`, e.g. `setup/v1.0.0.exe`) on the same
+> `/api/v1/releases` + `/downloads/:id` contract; `release.sh` copies installers there. Service and GUI
+> check every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (60s) and install a newer version themselves. A failed
+> silent apply writes `updates\apply_failed.txt`; that version is not retried for 1h (otherwise the helper
+> would stop the tracker every minute). Linux auto-install is throttled to once/hour/version (polkit prompt).
 >
 > **Updated 2026-10-27 — Chrome-like Windows silent updater:** download + Inno apply moved into
 > `AlphaAITracker.Service` (`SilentUpdateWorker`, LocalSystem). No mid-update UAC after the first
@@ -1165,12 +1178,11 @@ Two consequences worth knowing before you touch either file:
 |---|---|---|
 | `ALPHA_SERVER_URL` | required | API base used for `/api/v1/releases` + `/downloads/:id` |
 | `ALPHA_UPDATE_ENABLED` | true | master switch (service worker + GUI no-op when false) |
-| `ALPHA_UPDATE_AUTO_CHECK_HOURS` | 24 | min hours between background checks |
+| `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background checks |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install without a click |
-| `REPO` | — | `release.sh` / `gh` only — not read by the updater |
 
 ⚠️ **Installers are not code-signed / checksum-verified** — the download is trusted over the API TLS
-(and the server's GitHub token). Signing is a future hardening step. First install still needs
+(only size is checked against the release list). Signing is a future hardening step. First install still needs
 admin once (`PrivilegesRequired=admin`); subsequent updates do not prompt UAC.
 
 ## 19. Time & Attendance (Phase 1 — client foundation)

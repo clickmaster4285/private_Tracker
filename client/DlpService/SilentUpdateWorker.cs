@@ -9,19 +9,28 @@ namespace AlphaAITracker.Service;
 
 /// <summary>
 /// Chrome-like silent Windows updater owned by LocalSystem.
-/// Checks the public releases bridge, Range-downloads the installer under ProgramData
+/// Every <c>ALPHA_UPDATE_CHECK_INTERVAL_SEC</c> (default 60s) it asks the API server
+/// (<c>GET /api/v1/releases</c>, installers from the server's setup folder) whether a
+/// newer version than the installed one exists, Range-downloads the installer under ProgramData
 /// while the tracker keeps running, then spawns a detached SYSTEM PowerShell helper
 /// that runs Inno <c>/VERYSILENT</c> without UAC. Independent of <c>ALPHA_DLP_ENABLED</c>.
 /// </summary>
 public sealed class SilentUpdateWorker : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan[] FailureBackoffs =
     {
+        TimeSpan.FromMinutes(1),
+        TimeSpan.FromMinutes(5),
         TimeSpan.FromMinutes(15),
-        TimeSpan.FromHours(1),
-        TimeSpan.FromHours(6),
     };
+
+    /// <summary>
+    /// A version whose silent apply failed is not retried for this long — otherwise the
+    /// helper would stop the tracker and re-run a broken installer every minute.
+    /// </summary>
+    private static readonly TimeSpan FailedApplyRetryAfter = TimeSpan.FromHours(1);
+
+    private TimeSpan CheckInterval => TimeSpan.FromSeconds(Math.Max(15, _cfg.UpdateCheckIntervalSec));
 
     private readonly DlpConfig _cfg;
     private readonly SilentUpdateState _state;
@@ -58,8 +67,8 @@ public sealed class SilentUpdateWorker : BackgroundService
         }
 
         _log.LogInformation(
-            "SilentUpdateWorker active (checkHours={Hours}, autoInstall={Auto})",
-            _cfg.UpdateAutoCheckHours, _cfg.UpdateAutoInstall);
+            "SilentUpdateWorker active (checkEverySec={Sec}, autoInstall={Auto})",
+            _cfg.UpdateCheckIntervalSec, _cfg.UpdateAutoInstall);
 
         // Celebration UI removed — clear leftover celebrate.json from older builds.
         try { UpdatePaths.ClearCelebrate(); } catch { /* ignore */ }
@@ -87,10 +96,10 @@ public sealed class SilentUpdateWorker : BackgroundService
                 ScheduleBackoff();
             }
 
-            // Wait up to PollInterval, but wake immediately on RequestUpdateCheck.
+            // Wait up to CheckInterval, but wake immediately on RequestUpdateCheck.
             try
             {
-                var woken = await _wake.WaitAsync(PollInterval, stoppingToken);
+                var woken = await _wake.WaitAsync(CheckInterval, stoppingToken);
                 if (woken)
                 {
                     // Drain extra signals so one burst = one follow-up pass.
@@ -116,7 +125,7 @@ public sealed class SilentUpdateWorker : BackgroundService
             if (!File.Exists(UpdatePaths.LastCheckPath)) return true;
             var raw = File.ReadAllText(UpdatePaths.LastCheckPath).Trim();
             if (!DateTimeOffset.TryParse(raw, out var last)) return true;
-            return DateTimeOffset.UtcNow - last >= TimeSpan.FromHours(_cfg.UpdateAutoCheckHours);
+            return DateTimeOffset.UtcNow - last >= CheckInterval;
         }
         catch
         {
@@ -157,8 +166,7 @@ public sealed class SilentUpdateWorker : BackgroundService
             {
                 _state.Set("idle", hint ?? "no_update");
                 _state.MarkSuccess();
-                _nextAllowedAttempt = DateTimeOffset.UtcNow +
-                    TimeSpan.FromHours(_cfg.UpdateAutoCheckHours);
+                _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
                 return;
             }
 
@@ -166,8 +174,7 @@ public sealed class SilentUpdateWorker : BackgroundService
             if (UpdateVersion.Compare(info.Version, current) <= 0)
             {
                 _state.MarkSuccess();
-                _nextAllowedAttempt = DateTimeOffset.UtcNow +
-                    TimeSpan.FromHours(_cfg.UpdateAutoCheckHours);
+                _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
                 _log.LogDebug("Silent update: already on {Ver}", current);
                 return;
             }
@@ -175,6 +182,13 @@ public sealed class SilentUpdateWorker : BackgroundService
             if (!_cfg.UpdateAutoInstall && !force)
             {
                 _state.Set("available", $"update_available:{info.Version}");
+                return;
+            }
+
+            if (RecentlyFailedApply(info.Version))
+            {
+                _state.Set("available", $"apply_failed_retry_later:{info.Version}");
+                _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
                 return;
             }
 
@@ -186,11 +200,29 @@ public sealed class SilentUpdateWorker : BackgroundService
             _state.Set("applying", "spawning_helper");
             SpawnApplyHelper(installerPath, info.Version, current);
             // Helper owns the rest; do not clear in_progress here.
-            _nextAllowedAttempt = DateTimeOffset.UtcNow + TimeSpan.FromHours(_cfg.UpdateAutoCheckHours);
+            _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    /// <summary>True when the apply helper recorded a failure for this version within the last hour.</summary>
+    private static bool RecentlyFailedApply(string version)
+    {
+        try
+        {
+            var path = UpdatePaths.ApplyFailedPath;
+            if (!File.Exists(path)) return false;
+            var lines = File.ReadAllLines(path);
+            if (lines.Length == 0 || !string.Equals(lines[0].Trim(), version, StringComparison.OrdinalIgnoreCase))
+                return false;
+            return DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < FailedApplyRetryAfter;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -281,7 +313,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         }
 
         var rx = new Regex(
-            @"(^|[\-_.])" + Regex.Escape(version) + @"(?=$|[\-_.])",
+            @"(^|[\-_.vV])" + Regex.Escape(version) + @"(?=$|[\-_.])",
             RegexOptions.IgnoreCase);
         return forPlatform.FirstOrDefault(a => rx.IsMatch(a.Name))
                ?? forPlatform.FirstOrDefault();
@@ -415,6 +447,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine($"$updatesDir = '{PsQuote(updatesDir)}'");
         sb.AppendLine($"$newVersion = '{PsQuote(newVersion)}'");
         sb.AppendLine($"$oldVersion = '{PsQuote(oldVersion)}'");
+        sb.AppendLine($"$failedFlag = '{PsQuote(UpdatePaths.ApplyFailedPath)}'");
         // Stop tracker so Program Files files unlock (Inno also CloseApplications=force).
         sb.AppendLine("Write-UpdateLog 'Stopping tracker for file replace'");
         sb.AppendLine("Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue");
@@ -432,11 +465,13 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("  Write-UpdateLog (\"Installer finished (exit {0})\" -f $exitCode)");
         sb.AppendLine("} catch {");
         sb.AppendLine("  Write-UpdateLog (\"Installer failed: {0}\" -f $_.Exception.Message)");
+        sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  exit 1");
         sb.AppendLine("}");
         sb.AppendLine("if ($exitCode -ne 0) {");
         sb.AppendLine("  Write-UpdateLog 'Installer non-zero exit — clearing in_progress'");
+        sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  exit $exitCode");
         sb.AppendLine("}");
@@ -444,6 +479,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         // No celebration toast — delete any leftover celebrate.json from older helpers.
         sb.AppendLine("Remove-Item -LiteralPath $celebrate -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("Remove-Item -LiteralPath $failedFlag -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Get-ChildItem -LiteralPath $updatesDir -Filter '*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Get-ChildItem -LiteralPath $updatesDir -Filter '*.part' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue");

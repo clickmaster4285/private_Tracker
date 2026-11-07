@@ -1,7 +1,11 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-05 (P3 app catalog)
+> **Last audited:** 2026-11-07 (releases from setup folder)
 > **Changelog:**
+> - 2026-11-07: **Releases from local `setup/` folder; GitHub bridge removed.** `GitHubReleaseService`
+>   + `GITHUB_*` env deleted. `LocalReleaseService` scans `RELEASES_DIR` (default `setup`) and keeps the
+>   same `/releases` + `/downloads/:assetId` contract (web + clients unchanged on the wire). Downloads via
+>   `http.ServeContent` (Range/HEAD). Verified: `go build`, `go vet`, `go test` services+handlers.
 > - 2026-11-05: **P3 catalog app allow.** Migration **064** `installed_application_id` /
 >   `app_name` / `install_path` on draft + snapshot apps. Create accepts catalog id;
 >   Publish `ExpandEnabledAllowApps` emits path-first identities into `allow.apps`.
@@ -461,15 +465,18 @@ All endpoints are under `/api/v1`. Full route inventory (~46 routes):
 | POST | `/auth/refresh` | Refresh cookie | Validates + ROTATES the refresh token, re-mints both cookies. 401 ⇒ session unrecoverable. |
 | POST | `/auth/employee-login` | None | Employee desktop login. Returns long-lived JWT + device token. |
 
-### Public releases / installer download bridge (no login)
+### Public releases / installer downloads (no login)
 
-Keeps the GitHub repository **private** while visitors download approved release assets. Token is server-side only (`GITHUB_TOKEN`). See `doc/plan.md`.
+Served from the local setup folder (`RELEASES_DIR`, default `setup`; e.g. `setup/v1.0.0.exe`) by
+`services/local_release_service.go` + `handlers/release_handler.go`. No GitHub. Version = first `X.Y.Z` in
+the filename; `.exe`/`.deb`/`.dmg` only; optional notes `v<version>.md`. Folder re-listed at most every 10s.
+Asset ids are a stable FNV hash of the filename (JS-safe integer).
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/releases` | None | Published release metadata + `latestStable` + installer assets (`.exe` / `.deb` / `.dmg`). Drafts excluded. Cached (`GITHUB_RELEASES_CACHE_TTL`, default 5m). |
-| GET | `/downloads/:assetId` | None | Stream a validated published installer; supports `Range` when upstream allows. |
-| HEAD | `/downloads/:assetId` | None | Metadata-only (Content-Length / Disposition / Accept-Ranges) without pulling bytes from GitHub. |
+| GET | `/releases` | None | One release per version (newest first) + `latestStable` + installer assets. Polled every minute by desktop updaters. |
+| GET | `/downloads/:assetId` | None | Stream the installer (`http.ServeContent` — `Range` resume supported). Per-IP soft rate limit. |
+| HEAD | `/downloads/:assetId` | None | Metadata only (Content-Length / Disposition / Accept-Ranges). |
 
 CORS for these routes exposes `Content-Disposition`, `Content-Length`, `Content-Range`, `Accept-Ranges` and allows the `Range` request header.
 

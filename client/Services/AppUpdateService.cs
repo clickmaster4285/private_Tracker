@@ -16,8 +16,9 @@ using Microsoft.Extensions.Logging;
 namespace client.Services;
 
 /// <summary>
-/// Self-updater: checks the Alpha AI Tracker public releases bridge
-/// (<c>GET {ALPHA_SERVER_URL}/api/v1/releases</c>) for a newer installer than the
+/// Self-updater: every <c>ALPHA_UPDATE_CHECK_INTERVAL_SEC</c> (default 60s) checks the
+/// API server (<c>GET {ALPHA_SERVER_URL}/api/v1/releases</c>, installers from the
+/// server's setup folder) for a newer installer than the
 /// running <see cref="AppInfo.Version"/>.
 ///
 /// <b>Windows:</b> a service that returns <c>ok</c> downloads and applies silently.
@@ -204,6 +205,18 @@ public class AppUpdateService : ObservableObject, IHostedService
     /// </summary>
     private bool BridgeConfigured => !string.IsNullOrWhiteSpace(_config.ServerUrl);
 
+    /// <summary>How often the background loop asks the server for a newer version (default 60s).</summary>
+    private TimeSpan CheckInterval => TimeSpan.FromSeconds(Math.Max(15, _config.UpdateCheckIntervalSec));
+
+    /// <summary>
+    /// Linux auto-install shows a polkit password dialog. With a one-minute cadence a
+    /// cancelled or failed install would re-prompt every minute, so one version is
+    /// auto-installed at most once per hour (the Update button is never throttled).
+    /// </summary>
+    private static readonly TimeSpan AutoInstallRetryAfter = TimeSpan.FromHours(1);
+    private string? _autoInstallVersion;
+    private DateTime _autoInstallAt = DateTime.MinValue;
+
     // ─── IHostedService — the quiet auto-check loop ───
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -228,7 +241,7 @@ public class AppUpdateService : ObservableObject, IHostedService
 
     private async Task RunBackgroundLoopAsync(CancellationToken ct)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(30));
+        using var timer = new PeriodicTimer(CheckInterval);
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
@@ -259,7 +272,8 @@ public class AppUpdateService : ObservableObject, IHostedService
                 ? parsed.ToUniversalTime()
                 : DateTime.MinValue;
 
-            if (DateTime.UtcNow - lastAt < TimeSpan.FromHours(Math.Max(1, _config.UpdateAutoCheckHours)))
+            // Small slack so a check stamped a moment after the previous tick is not skipped.
+            if (DateTime.UtcNow - lastAt < CheckInterval - TimeSpan.FromSeconds(5))
                 return;
 
             await CheckForUpdatesCoreAsync(auto: true, ct);
@@ -432,7 +446,7 @@ public class AppUpdateService : ObservableObject, IHostedService
 
     /// <summary>
     /// Opens the public website releases page when a browse URL can be derived.
-    /// Installers themselves always come from the API bridge, not GitHub.
+    /// Installers themselves always come from the API server download endpoint.
     /// </summary>
     private void OpenReleasesPage()
     {
@@ -451,7 +465,7 @@ public class AppUpdateService : ObservableObject, IHostedService
     private async Task CheckForUpdatesCoreAsync(bool auto, CancellationToken ct)
     {
         // Atomic gate: the check can be triggered from the UI button, EnterShellAsync
-        // and the 30-min background loop. Without this, two callers could pass the
+        // and the background loop (every ALPHA_UPDATE_CHECK_INTERVAL_SEC). Without this, two callers could pass the
         // IsChecking guard and BOTH auto-install (two pkexec dialogs on Linux).
         if (!await _checkGate.WaitAsync(0, ct)) return;
         try
@@ -533,8 +547,11 @@ public class AppUpdateService : ObservableObject, IHostedService
             UpdateAvailable = true;
             StatusText = $"Update available: v{latest.Version}";
 
-            if (auto && _config.UpdateAutoInstall)
+            if (auto && _config.UpdateAutoInstall
+                && !(latest.Version == _autoInstallVersion && DateTime.UtcNow - _autoInstallAt < AutoInstallRetryAfter))
             {
+                _autoInstallVersion = latest.Version;
+                _autoInstallAt = DateTime.UtcNow;
                 // Linux: download + pkexec. Windows never reaches here.
                 _ = Task.Run(() => AutoInstallQuietAsync(latest, ct), CancellationToken.None);
             }
@@ -617,7 +634,7 @@ public class AppUpdateService : ObservableObject, IHostedService
         {
             _logger.LogDebug("Releases bridge check returned {Code}", (int)resp.StatusCode);
             return (null, resp.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable
-                ? "Update service unavailable — ask your admin to configure GITHUB_TOKEN on the API."
+                ? "Update service unavailable on the server."
                 : resp.StatusCode == System.Net.HttpStatusCode.NotFound
                     ? "No release published yet."
                     : $"Update check failed (HTTP {(int)resp.StatusCode}).");
@@ -722,7 +739,7 @@ public class AppUpdateService : ObservableObject, IHostedService
     {
         if (string.IsNullOrWhiteSpace(version) || candidates.Count == 0) return null;
         var rx = new System.Text.RegularExpressions.Regex(
-            @"(^|[\-_.])" + System.Text.RegularExpressions.Regex.Escape(version) + @"(?=$|[\-_.])",
+            @"(^|[\-_.vV])" + System.Text.RegularExpressions.Regex.Escape(version) + @"(?=$|[\-_.])",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         return candidates.FirstOrDefault(a => rx.IsMatch(a.Name));
     }

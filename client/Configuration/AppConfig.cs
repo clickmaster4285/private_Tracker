@@ -126,7 +126,7 @@ public class AppConfig
     // GET {ServerUrl}/api/v1/releases + GET /api/v1/downloads/:assetId. No GitHub
     // token on the client. (REPO= in .env is only for publish/release.sh / gh CLI.)
     public bool UpdateEnabled { get; init; } = true;          // master switch for all update behaviour
-    public int UpdateAutoCheckHours { get; init; } = 24;      // min hours between quiet background checks
+    public int UpdateCheckIntervalSec { get; init; } = 60;    // seconds between background checks against the server
     public bool UpdateAutoInstall { get; init; } = true;      // auto-download+install when a check finds a newer version
 
     public static AppConfig FromEnv()
@@ -159,7 +159,7 @@ public class AppConfig
             SyncRetentionHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_RETENTION_HOURS"), out var syncRet) ? syncRet : 24),
             RemoveAccountSyncTimeoutSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_REMOVE_ACCOUNT_SYNC_TIMEOUT_SEC"), out var remTmo) ? remTmo : 120),
             UpdateEnabled = GetEnv("ALPHA_UPDATE_ENABLED") is not ("0" or "false" or "False"),
-            UpdateAutoCheckHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_UPDATE_AUTO_CHECK_HOURS"), out var updHours) ? updHours : 24),
+            UpdateCheckIntervalSec = Math.Max(15, int.TryParse(GetEnv("ALPHA_UPDATE_CHECK_INTERVAL_SEC"), out var updSec) ? updSec : 60),
             UpdateAutoInstall = GetEnv("ALPHA_UPDATE_AUTO_INSTALL") is not ("0" or "false" or "False"),
             TaEnabled = GetEnv("ALPHA_TA_ENABLED") is not ("0" or "false" or "False"),
             IdleThresholdSeconds = Math.Max(10, int.TryParse(GetEnv("ALPHA_IDLE_THRESHOLD_SEC"), out var idleTh) ? idleTh : 120),

@@ -40,18 +40,13 @@ type Config struct {
 	// (GET /api/v1/ws) — independent of LiveStream.
 	PresenceWS PresenceWSConfig
 
-	// GitHub configures the private-repo releases metadata + download bridge.
-	// Empty Token disables public /releases API endpoints (503) without failing boot.
-	GitHub GitHubConfig
+	// Releases configures the local installer folder behind /releases + /downloads.
+	Releases ReleasesConfig
 }
 
-// GitHubConfig holds read-only credentials for the private Releases API bridge.
-type GitHubConfig struct {
-	Owner      string
-	Repo       string
-	Token      string
-	APIVersion string
-	CacheTTL   time.Duration
+// ReleasesConfig points at the folder holding client installers (e.g. setup/v1.0.0.exe).
+type ReleasesConfig struct {
+	Dir string
 }
 
 // LiveStreamConfig holds caps for the in-memory WebRTC SFU (no DB persistence).
@@ -205,12 +200,8 @@ func Load() (*Config, error) {
 			MaxConnections: getEnvInt("PRESENCE_WS_MAX_CONNECTIONS", 10000),
 		},
 
-		GitHub: GitHubConfig{
-			Owner:      strings.TrimSpace(getEnv("GITHUB_OWNER", "clickmaster4285")),
-			Repo:       strings.TrimSpace(getEnv("GITHUB_REPO", "Alpha-AI-Tracker")),
-			Token:      strings.TrimSpace(getEnv("GITHUB_TOKEN", "")),
-			APIVersion: strings.TrimSpace(getEnv("GITHUB_API_VERSION", "2022-11-28")),
-			CacheTTL:   getEnvDuration("GITHUB_RELEASES_CACHE_TTL", 5*time.Minute),
+		Releases: ReleasesConfig{
+			Dir: strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
 		},
 	}
 

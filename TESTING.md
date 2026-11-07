@@ -51,22 +51,21 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 
 ---
 
-## Public `/releases` + private GitHub download bridge
+## Public `/releases` + client auto-update from `server/setup/`
 
-**Prereqs:** API with `GITHUB_OWNER` / `GITHUB_REPO` / `GITHUB_TOKEN` (Contents: Read) set; web pointed at that API (`NEXT_PUBLIC_API_URL`). Repo may be private.
+**Prereqs:** API running with `RELEASES_DIR` (default `setup` next to the server); web pointed at that API.
 
-1. Open `/releases` in a **logged-out** / private window → versions list (newest first); drafts absent; prereleases labeled; latest stable marked.
-2. Expand release notes → Markdown renders without scripts; empty body shows fallback.
-3. Click Windows / Linux download → browser native download of the real installer filename (not a GitHub login page).
-4. API checks:
+1. Put `v1.0.0.exe` (and optionally `v1.0.0.md`) in the setup folder → `GET /api/v1/releases` lists `v1.0.0` as `latestStable` within ~10s (no restart).
+2. Open `/releases` logged-out → version listed; download gives the real filename.
+3. API checks:
    ```bash
    curl -sS "$API/api/v1/releases" | head
    ASSET_ID=…   # from JSON assets[].id
    curl -I "$API/api/v1/downloads/$ASSET_ID"
-   curl -v -H "Range: bytes=0-1023" -o range-test.bin "$API/api/v1/downloads/$ASSET_ID"
+   curl -v -H "Range: bytes=0-1023" -o range-test.bin "$API/api/v1/downloads/$ASSET_ID"   # 206, 1024 bytes
    ```
-   Expect `200`/`206`, `Content-Disposition` with a safe filename, no `Authorization` / GitHub token in response headers. Confirm `range-test.bin` is 1024 bytes when upstream supports Range.
-5. Negative: unknown `assetId` → 404; empty `GITHUB_TOKEN` → 503 on these routes only; protected admin routes still require JWT.
+4. Auto-update: install an older build on a Windows lab PC, drop a newer `vX.Y.Z.exe` in the setup folder → within ~1–2 min `%ProgramData%\<APP_MUTEX>\updates\update.log` shows the SYSTEM silent apply and the tracker relaunches on the new version. A failed apply writes `updates\apply_failed.txt` and that version is not retried for 1 hour.
+5. Negative: unknown `assetId` → 404; non-numeric → 400; missing setup folder → empty list (200).
 
 ---
 
@@ -83,7 +82,7 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 
 ### B. USBSTOR coarse block + alert
 
-1. With a published `usb_storage` **block** rule and `ALPHA_DLP_USB_BLOCK=true`, plug a USB mass-storage stick.
+1. With a published `usb_storage` **block** rule and `ALPHA_DLP_USB_BLOCK=true`, plug a USB mass-storage stick. (Local switches: set `ALPHA_DLP_USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK=false` in `service.env`, restart the service → that blocker clears within ~15s and `dlp.db` `enforcement_audit` shows `state=disabled_local` for lockdown/AppLocker.)
 2. Expect: Removable volumes unavailable / USBSTOR disabled (coarse — whole class, not per-file).
 3. Web `/dlp-alerts` within ≤ `ALPHA_DLP_ALERT_SYNC_SEC`: new row (`actionTaken` `blocked` or `alerted`), `policyVersion` matches.
 4. Open the row → detail dialog → change status/notes → **Save** → History shows `dlp_alert_events` entries. Status must **not** update on dropdown change alone.

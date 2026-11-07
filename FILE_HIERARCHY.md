@@ -145,7 +145,7 @@ client/
 │   ├── build-deb.sh  build-dmg.sh  installer-windows.iss   per-platform packagers
 │   ├── generate-windows-vars.sh     APP_IDENTIFIERS + VERSION → windows_vars.iss
 │   ├── encrypt-config.sh            .env → config.enc (must run AFTER any new env var is added)
-│   ├── release.sh                   full pipeline + GitHub release
+│   ├── release.sh                   build + copy installers → server/setup/v<VERSION>.<ext>
 │   ├── firefox-a11y-apparmor.sh     runtime-referenced; lives here so it is always bundled
 │   ├── avalonia-logo.ico
 │   └── linux/ macos/ windows/       ⚠️ GENERATED publish output — never edit; windows/ also holds
@@ -261,13 +261,13 @@ web/
     │       └── live-stream/theater/   /live-stream/theater?ids= watch wall
     │
     │   (public)/                      ⭐ no ProtectedRoute — public marketing/download surfaces
-    │       └── releases/              /releases — published GitHub releases + installer download buttons
+    │       └── releases/              /releases — versions from server setup/ folder + installer download buttons
     │
     ├── components/
     │   ├── layout/                AppLayout · AppSidebar (Device Specs + Employee Journey are
     │   │                          collapsible sections) · TopBar · ProtectedRoute
     │   ├── live-stream/           WatchTile (FPS) · EmployeeSidebar · PreviewGrid · selection helpers
-    │   ├── releases/              SafeMarkdown (sanitized GitHub release notes)
+    │   ├── releases/              SafeMarkdown (sanitized release notes, setup/v<ver>.md)
     │   ├── DownloadAppSection.tsx login + dashboard download dialog → API bridge (not GitHub)
     │   ├── dlp/                   DlpAlertDetailDialog (triage Save + history)
     │   ├── EmployeeSelector.tsx   searchable employee picker (shared query with EmployeePage)

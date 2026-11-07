@@ -1,7 +1,32 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-06
+> **Last audited:** 2026-11-07
 > **Changelog:**
+>
+> - 2026-11-07: **Local blocker switches in client `.env` (DlpService).** Four `true|false` keys decide
+>   whether this PC applies each blocker at all: `ALPHA_DLP_USB_BLOCK` (USB storage),
+>   `ALPHA_DLP_WEB_BLOCK` (Web Blocker domains), new `ALPHA_DLP_NETWORK_LOCKDOWN` (default-deny
+>   outbound 80/443 firewall, `/allowlists/web`) and new `ALPHA_DLP_APP_BLOCK` (AppLocker + running-app
+>   kill, `/allowlists/apps`). `false` = never applied even when the published server policy blocks,
+>   and any leftover from an earlier run is cleared (audit state `disabled_local`; USB `false` now lifts
+>   a stale USBSTOR block on the first tick). Default `true` (unchanged behaviour). Flow: `.env` →
+>   `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` / `.deb`; `EnvBootstrap`
+>   seeds missing keys as `true`; pipe `Health` reports all four. Read at service start (restart the
+>   service after editing `service.env`). Verified: `dotnet build` DlpService + client (0 warnings),
+>   `dotnet test` 37/37. Installer-Parity: re-bake + rebuild installer to ship non-default values.
+>
+> - 2026-11-07: **Client auto-update from the server `setup/` folder (GitHub removed).** Server:
+>   `GitHubReleaseService` + `GITHUB_*` env deleted; new `LocalReleaseService` serves installers
+>   dropped in `RELEASES_DIR` (default `server/setup`, e.g. `v1.0.0.exe`; version = first X.Y.Z in the
+>   filename; optional `v1.0.0.md` notes) on the unchanged `GET /api/v1/releases` +
+>   `GET|HEAD /api/v1/downloads/:assetId` contract (Range via `http.ServeContent`). Client: Windows
+>   service `SilentUpdateWorker` and GUI `AppUpdateService` check every
+>   `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s; replaces `ALPHA_UPDATE_AUTO_CHECK_HOURS`) and
+>   self-install a newer version (failed apply → 1h retry guard). `publish/release.sh` now builds and
+>   copies installers into `server/setup/` (no `gh`, no git push). Web: wording only. Verified:
+>   `go build`/`go vet`/`go test` (services+handlers), `dotnet build` client + DlpService, `dotnet test`
+>   37/37, `npx tsc --noEmit`. Installer-Parity: re-bake `config.enc` + rebuild installer; existing
+>   installs gain the 60s key via `EnvBootstrap` ship defaults on the next service start.
 >
 > - 2026-11-06: **P3 AppLocker launch block (Exe + Appx).** Blocked apps get the Windows
 >   “blocked by your organization” dialog on double-click — not open-then-kill.

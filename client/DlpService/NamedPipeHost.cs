@@ -338,6 +338,8 @@ public sealed class NamedPipeHost : BackgroundService
             policyVersion = version,
             usbBlock = _cfg.UsbBlock,
             webBlock = _cfg.WebBlock,
+            networkLockdown = _cfg.NetworkLockdown,
+            appBlock = _cfg.AppBlock,
             update = _updateState.Snapshot(),
         });
     }

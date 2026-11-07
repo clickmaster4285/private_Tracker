@@ -190,13 +190,12 @@ func main() {
 	logGraphicalService := services.NewLogGraphicalService(logGraphicalRepo)
 	logGraphicalHandler := handlers.NewLogGraphicalHandler(logGraphicalService)
 
-	githubReleaseService := services.NewGitHubReleaseService(cfg.GitHub)
-	releaseHandler := handlers.NewReleaseHandler(githubReleaseService)
-	if githubReleaseService.Configured() {
-		log.Printf("[server] github releases bridge enabled (owner=%s repo=%s cache=%s)",
-			cfg.GitHub.Owner, cfg.GitHub.Repo, cfg.GitHub.CacheTTL)
+	releaseService := services.NewLocalReleaseService(cfg.Releases.Dir)
+	releaseHandler := handlers.NewReleaseHandler(releaseService)
+	if st, err := os.Stat(releaseService.Dir()); err == nil && st.IsDir() {
+		log.Printf("[server] releases served from %s (/api/v1/releases, /api/v1/downloads)", releaseService.Dir())
 	} else {
-		log.Println("[server] WARNING: GITHUB_TOKEN unset — public /api/v1/releases and /api/v1/downloads will return 503")
+		log.Printf("[server] WARNING: releases dir %s not found — /api/v1/releases returns an empty list until installers are added", releaseService.Dir())
 	}
 
 	// ────────────────

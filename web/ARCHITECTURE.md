@@ -1,7 +1,9 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-05 (Allowlists module)
+> **Last audited:** 2026-11-07 (releases copy)
 > **Changelog:**
+> - 2026-11-07: `/releases` copy no longer mentions GitHub — installers come from the API server's
+>   `setup/` folder (same `/api/v1/releases` contract). Verified: `npx tsc --noEmit`.
 > - 2026-11-05: **P3 App Allow List catalog picker.** `/allowlists/apps` selects from
 >   `monitoringApi.apps.list` (same catalog as Configuration → Applications); create
 >   posts `installedApplicationId` and auto-publishes. Table shows app name + resolved
@@ -248,7 +250,7 @@
 - Employee and department management (CRUD via real API calls)
 - Activity log viewing with filtering and pagination (via real API calls)
 - Permission/role management UI (client-side only, stored in localStorage)
-- Desktop app download dialog (fetches latest GitHub release)
+- Desktop app download dialog + public `/releases` (installers served by the API from its `setup/` folder)
 - Mock data seeding for ~25+ feature pages that are not yet API-connected
 
 **Does NOT own:**
