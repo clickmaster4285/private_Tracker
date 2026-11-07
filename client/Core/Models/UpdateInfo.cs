@@ -22,12 +22,12 @@ public class UpdateInfo
     public string AssetName { get; init; } = string.Empty;
 
     /// <summary>
-    /// Download URL for the asset — always the Alpha API bridge
-    /// (<c>{ALPHA_SERVER_URL}/api/v1/downloads/{AssetId}</c>), never a private GitHub URL.
+    /// Download URL for the asset — always the Alpha API server
+    /// (<c>{ALPHA_SERVER_URL}/api/v1/downloads/{AssetId}</c>).
     /// </summary>
     public string DownloadUrl { get; init; } = string.Empty;
 
-    /// <summary>GitHub release asset id used by the download bridge.</summary>
+    /// <summary>Server asset id (stable per installer filename) used by the download endpoint.</summary>
     public long AssetId { get; init; }
 
     /// <summary>Published byte length from the release list. Zero when the list omitted it.</summary>
@@ -51,7 +51,7 @@ public class UpdateInfo
     }
 
     /// <summary>
-    /// Normalizes a GitHub tag into a plain "X.Y.Z" version string, or null when the
+    /// Normalizes a release tag into a plain "X.Y.Z" version string, or null when the
     /// tag carries no recognizable three-part version (e.g. "nightly").
     /// </summary>
     public static string? NormalizeVersion(string tag)

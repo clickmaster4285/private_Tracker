@@ -71,8 +71,8 @@ public sealed class EnforceWorker : BackgroundService
 
         await _store.InitializeAsync(stoppingToken);
         _logger.LogInformation(
-            "EnforceWorker running (usbBlock={Usb}, webBlock={Web})",
-            _cfg.UsbBlock, _cfg.WebBlock);
+            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App})",
+            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -153,13 +153,13 @@ public sealed class EnforceWorker : BackgroundService
                        !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var want = hasCreds && !paused && bundle.LockdownEnabled;
+        var want = _cfg.AppBlock && hasCreds && !paused && bundle.LockdownEnabled;
 
         if (!want)
         {
             var clear = await Task.Run(AppAllowEnforcer.Clear, ct);
-            var state = paused ? "paused" : "off";
-            if (clear.Changed || _lastAppLockdownState is not (null or "off" or "paused"))
+            var state = !_cfg.AppBlock ? "disabled_local" : paused ? "paused" : "off";
+            if (clear.Changed || _lastAppLockdownState is not (null or "off" or "paused" or "disabled_local"))
             {
                 await _store.AuditAsync("app_lockdown_clear", $"state={state} detail={clear.Detail}", ct);
                 _logger.LogInformation("AppLocker CLEARED (state={State}, detail={Detail})", state, clear.Detail);
@@ -221,13 +221,13 @@ public sealed class EnforceWorker : BackgroundService
                        !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var want = hasCreds && !paused && bundle.LockdownEnabled;
+        var want = _cfg.NetworkLockdown && hasCreds && !paused && bundle.LockdownEnabled;
 
         if (!want)
         {
             var clear = await Task.Run(LockdownNetworkEnforcer.Clear, ct);
-            var state = paused ? "paused" : "off";
-            if (clear.Changed || _lastLockdownState is not (null or "off" or "paused"))
+            var state = !_cfg.NetworkLockdown ? "disabled_local" : paused ? "paused" : "off";
+            if (clear.Changed || _lastLockdownState is not (null or "off" or "paused" or "disabled_local"))
             {
                 await _store.AuditAsync("lockdown_clear", $"state={state} detail={clear.Detail}", ct);
                 _logger.LogInformation("Lockdown filters CLEARED (state={State}, detail={Detail})", state, clear.Detail);
@@ -289,7 +289,9 @@ public sealed class EnforceWorker : BackgroundService
         PolicyBundle bundle, long version, bool wantUsbBlock, CancellationToken ct)
     {
         // Do not touch the registry just to "confirm allow" on cold start with no block rules.
-        if (!wantUsbBlock && _lastUsbBlock != true)
+        // Exception: ALPHA_DLP_USB_BLOCK=false must lift a block an earlier run left behind,
+        // so the first tick with the local switch off always writes "allow" once.
+        if (!wantUsbBlock && _lastUsbBlock != true && (_cfg.UsbBlock || _lastUsbBlock == false))
         {
             _lastUsbBlock = false;
             return;
@@ -375,7 +377,7 @@ public sealed class EnforceWorker : BackgroundService
                        !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var lockdownOn = hasCreds && !paused && bundle.LockdownEnabled;
+        var lockdownOn = _cfg.NetworkLockdown && hasCreds && !paused && bundle.LockdownEnabled;
         var lockdownAllow = lockdownOn
             ? BuildLockdownBrowserAllowHosts(bundle, wantDomains, _cfg.ServerUrl)
             : null;

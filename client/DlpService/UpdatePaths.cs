@@ -17,6 +17,8 @@ internal static class UpdatePaths
     public static string LogPath => Path.Combine(RootDir, "update.log");
     public static string LastCheckPath => Path.Combine(RootDir, "last_check_at.txt");
     public static string InProgressFlag => Path.Combine(RootDir, "update_in_progress");
+    /// <summary>Written by the apply helper when the installer fails (line 1 = version).</summary>
+    public static string ApplyFailedPath => Path.Combine(RootDir, "apply_failed.txt");
     /// <summary>Legacy path — only cleared, never written (celebration UI removed).</summary>
     public static string CelebrateFlag => Path.Combine(RootDir, "celebrate.json");
     public static string ApplyScriptPath => Path.Combine(RootDir, "aat_update_apply.ps1");

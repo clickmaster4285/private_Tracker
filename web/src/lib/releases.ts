@@ -1,4 +1,4 @@
-/** Public releases / download helpers (no login; no GitHub token in the browser). */
+/** Public releases / download helpers (no login; installers come from the API server setup folder). */
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 

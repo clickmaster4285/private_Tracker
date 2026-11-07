@@ -2,11 +2,10 @@ package handlers
 
 import (
 	"errors"
-	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,15 +14,17 @@ import (
 	"golang.org/x/time/rate"
 )
 
-// ReleaseHandler serves public release metadata and the private-asset download bridge.
+// ReleaseHandler serves release metadata and installer downloads from the server's
+// local setup folder (RELEASES_DIR). Public: the website /releases page and the
+// desktop updaters (client + Windows service) call it without login.
 type ReleaseHandler struct {
-	svc *services.GitHubReleaseService
+	svc *services.LocalReleaseService
 
 	// Per-IP soft rate limit for downloads (abuse prevention; no login required).
 	limiters sync.Map // string → *rate.Limiter
 }
 
-func NewReleaseHandler(svc *services.GitHubReleaseService) *ReleaseHandler {
+func NewReleaseHandler(svc *services.LocalReleaseService) *ReleaseHandler {
 	return &ReleaseHandler{svc: svc}
 }
 
@@ -42,166 +43,71 @@ func (h *ReleaseHandler) limiterFor(ip string) *rate.Limiter {
 
 // ListReleases — GET /api/v1/releases (public).
 func (h *ReleaseHandler) ListReleases(c echo.Context) error {
-	if h.svc == nil || !h.svc.Configured() {
+	if h.svc == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "Release downloads are temporarily unavailable",
 		})
 	}
-	resp, err := h.svc.ListReleases(c.Request().Context())
+	resp, err := h.svc.ListReleases()
 	if err != nil {
-		return mapGitHubErr(c, err)
+		log.Printf("[releases] list error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Could not read releases",
+		})
 	}
-	c.Response().Header().Set("Cache-Control", "public, max-age=60")
+	// Short cache: updaters poll every minute and must see a new installer quickly.
+	c.Response().Header().Set("Cache-Control", "no-cache")
 	return c.JSON(http.StatusOK, resp)
 }
 
-// DownloadAsset — GET|HEAD /api/v1/downloads/:assetId (public).
+// DownloadAsset — GET|HEAD /api/v1/downloads/:assetId (public). Range is supported
+// (http.ServeContent) so updaters can resume a partial download.
 func (h *ReleaseHandler) DownloadAsset(c echo.Context) error {
-	if h.svc == nil || !h.svc.Configured() {
+	if h.svc == nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error": "Release downloads are temporarily unavailable",
 		})
 	}
 
-	if !h.limiterFor(c.RealIP()).Allow() {
+	assetID, err := strconv.ParseInt(c.Param("assetId"), 10, 64)
+	if err != nil || assetID <= 0 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid asset id"})
+	}
+
+	if c.Request().Method != http.MethodHead && !h.limiterFor(c.RealIP()).Allow() {
 		return c.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "Too many download requests; try again shortly",
 		})
 	}
 
-	idStr := c.Param("assetId")
-	assetID, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil || assetID <= 0 {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid asset id"})
-	}
-
-	rangeHeader := strings.TrimSpace(c.Request().Header.Get("Range"))
-	isHead := c.Request().Method == http.MethodHead
-
-	// Warm metadata cache and reject unsatisfiable ranges before opening upstream.
-	meta, err := h.svc.ListReleases(c.Request().Context())
+	asset, err := h.svc.LookupAsset(assetID)
 	if err != nil {
-		return mapGitHubErr(c, err)
+		if errors.Is(err, services.ErrAssetNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "Installer not found"})
+		}
+		log.Printf("[releases] lookup asset=%d error: %v", assetID, err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not read releases"})
 	}
-	var knownSize int64
-	found := false
-	for _, rel := range meta.Releases {
-		for _, a := range rel.Assets {
-			if a.ID == assetID {
-				found = true
-				knownSize = a.Size
-				break
-			}
-		}
-		if found {
-			break
-		}
-	}
-	var assetName, assetPlatform, assetCT string
-	for _, rel := range meta.Releases {
-		for _, a := range rel.Assets {
-			if a.ID == assetID {
-				assetName = a.Name
-				assetPlatform = a.Platform
-				assetCT = a.ContentType
-				break
-			}
-		}
-		if assetName != "" {
-			break
-		}
-	}
-	if !found || assetName == "" {
+
+	f, err := os.Open(asset.Path)
+	if err != nil {
+		log.Printf("[releases] open %s: %v", asset.Path, err)
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "Installer not found"})
 	}
-	if rangeHeader != "" && knownSize > 0 {
-		_, _, status, msg := services.ParseByteRange(rangeHeader, knownSize)
-		if status == http.StatusRequestedRangeNotSatisfiable {
-			c.Response().Header().Set("Content-Range", "bytes */"+strconv.FormatInt(knownSize, 10))
-			return c.JSON(status, map[string]string{"error": msg})
-		}
-	}
+	defer f.Close()
 
-	if assetCT == "" {
-		assetCT = "application/octet-stream"
-	}
-
-	// HEAD is metadata-only — do not pull installer bytes from GitHub.
-	if isHead {
-		c.Response().Header().Set("Content-Disposition", services.SafeContentDisposition(assetName))
-		c.Response().Header().Set("Content-Type", assetCT)
-		c.Response().Header().Set("X-Content-Type-Options", "nosniff")
-		c.Response().Header().Set("Cache-Control", "private, no-store")
-		c.Response().Header().Set("Accept-Ranges", "bytes")
-		if knownSize > 0 {
-			c.Response().Header().Set("Content-Length", strconv.FormatInt(knownSize, 10))
-		}
-		return c.NoContent(http.StatusOK)
-	}
+	hdr := c.Response().Header()
+	hdr.Set("Content-Disposition", services.SafeContentDisposition(asset.Name))
+	hdr.Set("Content-Type", asset.ContentType)
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("Cache-Control", "private, no-store")
 
 	start := time.Now()
-	stream, err := h.svc.OpenAssetStream(c.Request().Context(), assetID, rangeHeader)
-	if err != nil {
-		return mapGitHubErr(c, err)
+	http.ServeContent(c.Response(), c.Request(), asset.Name, asset.ModTime, f)
+	if c.Request().Method != http.MethodHead {
+		log.Printf("[releases] download asset=%d file=%s version=%s status=%d bytes=%d dur=%s",
+			assetID, asset.Name, asset.Version, c.Response().Status, c.Response().Size,
+			time.Since(start).Round(time.Millisecond))
 	}
-	defer stream.Body.Close()
-
-	c.Response().Header().Set("Content-Disposition", services.SafeContentDisposition(stream.Filename))
-	c.Response().Header().Set("Content-Type", stream.ContentType)
-	c.Response().Header().Set("X-Content-Type-Options", "nosniff")
-	c.Response().Header().Set("Cache-Control", "private, no-store")
-	if stream.AcceptRanges || stream.Size > 0 {
-		c.Response().Header().Set("Accept-Ranges", "bytes")
-	}
-	if stream.ContentRange != "" {
-		c.Response().Header().Set("Content-Range", stream.ContentRange)
-	}
-	if stream.ContentLength >= 0 {
-		c.Response().Header().Set("Content-Length", strconv.FormatInt(stream.ContentLength, 10))
-	} else if stream.StatusCode == http.StatusOK && stream.Size > 0 && rangeHeader == "" {
-		c.Response().Header().Set("Content-Length", strconv.FormatInt(stream.Size, 10))
-	}
-
-	status := stream.StatusCode
-	if status == 0 {
-		status = http.StatusOK
-	}
-
-	c.Response().WriteHeader(status)
-	written, copyErr := io.Copy(c.Response(), stream.Body)
-	dur := time.Since(start).Round(time.Millisecond)
-	if copyErr != nil {
-		// Client disconnect / upstream cut mid-stream — do not rewrite status (headers already sent).
-		log.Printf("[releases] download asset=%d tag=%s platform=%s status=%d bytes=%d dur=%s result=interrupted err=%v",
-			assetID, stream.TagName, stream.Platform, status, written, dur, copyErr)
-		return nil
-	}
-	log.Printf("[releases] download asset=%d tag=%s platform=%s status=%d bytes=%d dur=%s result=ok",
-		assetID, stream.TagName, assetPlatform, status, written, dur)
 	return nil
-}
-
-func mapGitHubErr(c echo.Context, err error) error {
-	switch {
-	case errors.Is(err, services.ErrGitHubNotConfigured):
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error": "Release downloads are temporarily unavailable",
-		})
-	case errors.Is(err, services.ErrAssetNotFound), errors.Is(err, services.ErrAssetNotAllowed):
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "Installer not found"})
-	case errors.Is(err, services.ErrGitHubUnauthorized):
-		log.Printf("[releases] upstream auth failure (token invalid or insufficient scope)")
-		return c.JSON(http.StatusServiceUnavailable, map[string]string{
-			"error": "Release downloads are temporarily unavailable",
-		})
-	case errors.Is(err, services.ErrGitHubRateLimited):
-		return c.JSON(http.StatusTooManyRequests, map[string]string{
-			"error": "Upstream rate limit; try again later",
-		})
-	default:
-		log.Printf("[releases] error: %v", err)
-		return c.JSON(http.StatusBadGateway, map[string]string{
-			"error": "Could not reach release source",
-		})
-	}
 }

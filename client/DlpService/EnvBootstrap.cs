@@ -18,13 +18,15 @@ internal static class EnvBootstrap
         ("ALPHA_DLP_ENABLED", "true"),
         ("ALPHA_DLP_USB_BLOCK", "true"),
         ("ALPHA_DLP_WEB_BLOCK", "true"),
+        ("ALPHA_DLP_NETWORK_LOCKDOWN", "true"),
+        ("ALPHA_DLP_APP_BLOCK", "true"),
         ("ALPHA_DLP_POLICY_POLL_SEC", "300"),
         ("ALPHA_DLP_ALERT_SYNC_SEC", "60"),
         ("ALPHA_DLP_WATCHDOG", "true"),
         ("ALPHA_DLP_WATCHDOG_POLL_SEC", "8"),
         ("ALPHA_UPDATE_ENABLED", "true"),
         ("ALPHA_UPDATE_AUTO_INSTALL", "true"),
-        ("ALPHA_UPDATE_AUTO_CHECK_HOURS", "24"),
+        ("ALPHA_UPDATE_CHECK_INTERVAL_SEC", "60"),
     ];
 
     public static void Apply()

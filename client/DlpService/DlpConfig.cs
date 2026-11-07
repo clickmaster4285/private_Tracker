@@ -13,8 +13,18 @@ public sealed class DlpConfig
     public string DataDir { get; init; } = "";
     public int PolicyPollSec { get; init; } = 300;
     public int AlertSyncSec { get; init; } = 60;
+    /// <summary>
+    /// Local kill-switches for each blocker (client .env -> service.env). When false the
+    /// service never applies that blocker, even if the published server policy asks for
+    /// it, and clears anything an earlier run left behind.
+    /// </summary>
     public bool UsbBlock { get; init; } = true;
+    /// <summary>Web Blocker domains (<c>/web-blocker</c>): hosts sink + firewall + DNS pin.</summary>
     public bool WebBlock { get; init; } = true;
+    /// <summary>Network lockdown (<c>/allowlists/web</c>): default-deny outbound 80/443 firewall.</summary>
+    public bool NetworkLockdown { get; init; } = true;
+    /// <summary>App lockdown (<c>/allowlists/apps</c>): AppLocker default-deny + running-app kill sweep.</summary>
+    public bool AppBlock { get; init; } = true;
     /// <summary>
     /// Parsed so an existing <c>ALPHA_DLP_MAX_LOCAL_ALERTS</c> still loads.
     /// Unsynced alerts are not deleted when this count is passed.
@@ -28,7 +38,7 @@ public sealed class DlpConfig
 
     /// <summary>Chrome-like silent updater (LocalSystem). Independent of <see cref="Enabled"/>.</summary>
     public bool UpdateEnabled { get; init; } = true;
-    public int UpdateAutoCheckHours { get; init; } = 24;
+    public int UpdateCheckIntervalSec { get; init; } = 60;
     public bool UpdateAutoInstall { get; init; } = true;
 
     public string DbPath => Path.Combine(DataDir, "dlp.db");
@@ -53,6 +63,8 @@ public sealed class DlpConfig
             AlertSyncSec = GetInt("ALPHA_DLP_ALERT_SYNC_SEC", 60),
             UsbBlock = GetBool("ALPHA_DLP_USB_BLOCK", true),
             WebBlock = GetBool("ALPHA_DLP_WEB_BLOCK", true),
+            NetworkLockdown = GetBool("ALPHA_DLP_NETWORK_LOCKDOWN", true),
+            AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
             DedupSec = GetInt("ALPHA_DLP_DEDUP_SEC", 300),
             PipeName = Environment.GetEnvironmentVariable("ALPHA_DLP_PIPE_NAME") is { Length: > 0 } p
@@ -62,7 +74,7 @@ public sealed class DlpConfig
             WatchdogPollSec = GetInt("ALPHA_DLP_WATCHDOG_POLL_SEC", 8),
             // Mirror client defaults: on unless explicitly disabled.
             UpdateEnabled = GetBool("ALPHA_UPDATE_ENABLED", true),
-            UpdateAutoCheckHours = Math.Max(1, GetInt("ALPHA_UPDATE_AUTO_CHECK_HOURS", 24)),
+            UpdateCheckIntervalSec = Math.Max(15, GetInt("ALPHA_UPDATE_CHECK_INTERVAL_SEC", 60)),
             UpdateAutoInstall = GetBool("ALPHA_UPDATE_AUTO_INSTALL", true),
         };
         cfg.RefreshCredentials();

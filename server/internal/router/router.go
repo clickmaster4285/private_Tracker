@@ -76,8 +76,8 @@ func Setup(
 	a.POST("/refresh", authHandler.Refresh)
 	a.POST("/employee-login", authHandler.EmployeeLogin)
 
-	// Public GitHub Releases bridge (private repo → public installer downloads).
-	// No JWT / DeviceAuth — visitors on /releases must download without login.
+	// Public releases from the server's setup folder (RELEASES_DIR).
+	// No JWT / DeviceAuth — /releases visitors and desktop updaters download without login.
 	if releaseHandler != nil {
 		e.GET("/api/v1/releases", releaseHandler.ListReleases)
 		e.GET("/api/v1/downloads/:assetId", releaseHandler.DownloadAsset)

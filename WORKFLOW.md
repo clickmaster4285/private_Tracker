@@ -4,7 +4,7 @@ How work actually moves through this repo — the loops you run daily, and the g
 
 Rules live in [AGENTS.md](./AGENTS.md) §6; this file is the *procedure* for obeying them. File locations: [FILE_HIERARCHY.md](./FILE_HIERARCHY.md).
 
-*Last audited: 2026-10-31 — Device Configuration (`/configuration/device-configuration`) + tracking-events client queue/UUID fix. Prior: public `/releases` + private GitHub download bridge (`GITHUB_*` on server); Security & DLP P0+P1 (`ALPHA_DLP_*`, Windows service + Inno gate). Commands verified against `client/publish/*.sh`, `client/DlpService/install-service.ps1`, `server/Makefile`, `web/package.json`.*
+*Last audited: 2026-11-07 — client auto-update from the server `setup/` folder (GitHub release bridge + `gh` release flow removed; clients check every 60s). Prior 2026-10-31: Device Configuration (`/configuration/device-configuration`) + tracking-events client queue/UUID fix. Prior: public `/releases` + private GitHub download bridge (`GITHUB_*` on server); Security & DLP P0+P1 (`ALPHA_DLP_*`, Windows service + Inno gate). Commands verified against `client/publish/*.sh`, `client/DlpService/install-service.ps1`, `server/Makefile`, `web/package.json`.*
 
 ---
 
@@ -209,38 +209,28 @@ What `build-installer.sh` does, in order: publishes each requested RID → **ver
 
 ```bash
 cd client
-bash publish/release.sh            # tags v$(cat VERSION)
-bash publish/release.sh v0.3.0     # or pin explicitly
+bash publish/release.sh                 # all platforms this machine can build
+bash publish/release.sh -b win          # Windows only
+bash publish/release.sh --setup-dir /srv/alpha/setup   # custom destination
 ```
 
-It builds all platforms, commits, tags, pushes the tag, and creates (or replaces) the GitHub release with the artifacts attached — release title, notes and artifact names all derived from `APP_IDENTIFIERS` + `VERSION`. It requires the `gh` CLI to be authenticated; if the release step fails it prints the manual `gh release create` command to run.
+It builds the installers (`build-installer.sh`, which also bakes `config.enc`) and copies them into the API
+server's setup folder named by `client/VERSION` — `server/setup/v1.0.0.exe`, `v1.0.0_amd64.deb`,
+`v1.0.0.dmg` (destination: `--setup-dir`, else `$RELEASES_DIR`, else `../server/setup`). No GitHub, no
+`gh`, no git commit/tag/push. On Windows run it from **Git Bash** (PowerShell `bash` is WSL and has no
+`dotnet`). Optional release notes: drop `setup/v1.0.0.md` next to the installer.
 
 Bump `VERSION` **before** releasing, and confirm §5 passed on at least one platform first — `release.sh` builds artifacts, it does not test them.
 
-### Private GitHub repo → public website downloads
+### How clients pick up a release
 
-The repo may be **private**. Visitors still download installers from the website:
-
-1. Create a fine-grained PAT (or GitHub App token) with **Contents: Read** on `GITHUB_OWNER`/`GITHUB_REPO` only.
-2. Set on the **API** host (never in `NEXT_PUBLIC_*` / browser bundles):
-
-   ```env
-   GITHUB_OWNER=clickmaster4285
-   GITHUB_REPO=Alpha-AI-Tracker
-   GITHUB_TOKEN=ghp_…
-   GITHUB_API_VERSION=2022-11-28
-   GITHUB_RELEASES_CACHE_TTL=5m
-   ```
-
-3. Restart the Go server. Confirm:
-   - logged-out `https://<web>/releases` lists versions;
-   - `GET /api/v1/releases` returns JSON;
-   - `GET /api/v1/downloads/<assetId>` streams an `.exe` / `.deb`;
-   - optional: `curl -I` and `Range: bytes=0-1023` for resume checks.
-
-Design notes: [`doc/plan.md`](./doc/plan.md). Empty `GITHUB_TOKEN` → those endpoints return **503** (rest of the API keeps running).
-
-**Note:** desktop client auto-update (`AppUpdateService`) still calls GitHub directly — private repo breaks that path until the client uses this bridge (separate follow-up).
+The API serves the folder (`RELEASES_DIR`, default `setup`, relative to the server's working dir or
+binary) through `GET /api/v1/releases` + `GET|HEAD /api/v1/downloads/:assetId` (public, Range-capable).
+The version is the first `X.Y.Z` in each filename; the highest version is `latestStable`. Every installed
+client checks every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default **60s**) and, when the server has a newer
+version than the installed one, downloads and installs it itself (Windows: silent via the LocalSystem
+service, no UAC; Linux: `pkexec dpkg`). For a remote API host, copy the installer into that host's
+`RELEASES_DIR` — no server restart needed (the folder is re-listed every 10s).
 
 ---
 

@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 
-/** Renders GitHub release notes as sanitized Markdown (no raw HTML scripts). */
+/** Renders release notes (setup/v<version>.md) as sanitized Markdown (no raw HTML scripts). */
 export default function SafeMarkdown({ content }: { content: string }) {
   const text = content?.trim();
   if (!text) {
