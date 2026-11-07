@@ -480,7 +480,13 @@ public sealed class NamedPipeHost : BackgroundService
                         "Teardown cleared AlphaAI-DLP hosts/FW|nft/PIN (changed={Changed}, detail={Detail})",
                         web.Changed, web.Detail);
                     if (OperatingSystem.IsWindows())
+                    {
+                        var apps = AppAllowEnforcer.Clear();
+                        _logger.LogWarning(
+                            "Teardown cleared AppLocker (changed={Changed}, detail={Detail})",
+                            apps.Changed, apps.Detail);
                         ServiceAclHardener.TryApplyOpen(_logger);
+                    }
                 }
 
                 _logger.LogWarning(

@@ -119,7 +119,8 @@ public sealed class PolicyStore : IAsyncDisposable
                     seq INTEGER PRIMARY KEY,
                     publisher TEXT NOT NULL DEFAULT '',
                     product TEXT NOT NULL DEFAULT '',
-                    sha256 TEXT NOT NULL DEFAULT ''
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    path TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS policy_kv (
@@ -156,6 +157,19 @@ public sealed class PolicyStore : IAsyncDisposable
                 );
                 """;
             await cmd.ExecuteNonQueryAsync();
+        }
+
+        // Existing installs: CREATE IF NOT EXISTS does not add new columns.
+        try
+        {
+            await using var alter = _conn!.CreateCommand();
+            alter.CommandText =
+                "ALTER TABLE policy_allow_apps ADD COLUMN path TEXT NOT NULL DEFAULT ''";
+            await alter.ExecuteNonQueryAsync();
+        }
+        catch
+        {
+            // Column already present.
         }
 
         await MigrateLegacyAsync();
@@ -646,17 +660,20 @@ public sealed class PolicyStore : IAsyncDisposable
             var publisher = el.TryGetProperty("publisher", out var p) ? p.GetString() ?? "" : "";
             var product = el.TryGetProperty("product", out var pr) ? pr.GetString() ?? "" : "";
             var sha = el.TryGetProperty("sha256", out var s) ? s.GetString() ?? "" : "";
+            var path = el.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "";
             publisher = publisher.Trim();
             product = product.Trim();
+            path = path.Trim();
             sha = sha.Trim().ToLowerInvariant().Replace("sha256:", "", StringComparison.OrdinalIgnoreCase);
-            if (publisher.Length == 0 && sha.Length != 64) continue;
+            if (publisher.Length == 0 && path.Length == 0 && sha.Length != 64) continue;
             await using var cmd = _conn!.CreateCommand();
             cmd.CommandText =
-                "INSERT INTO policy_allow_apps (seq, publisher, product, sha256) VALUES ($i,$p,$r,$h)";
+                "INSERT INTO policy_allow_apps (seq, publisher, product, sha256, path) VALUES ($i,$p,$r,$h,$a)";
             cmd.Parameters.AddWithValue("$i", seq++);
             cmd.Parameters.AddWithValue("$p", publisher);
             cmd.Parameters.AddWithValue("$r", product);
             cmd.Parameters.AddWithValue("$h", sha);
+            cmd.Parameters.AddWithValue("$a", path);
             await cmd.ExecuteNonQueryAsync();
         }
     }
@@ -815,7 +832,7 @@ public sealed class PolicyStore : IAsyncDisposable
         await using (var appCmd = _conn!.CreateCommand())
         {
             appCmd.CommandText =
-                "SELECT publisher, product, sha256 FROM policy_allow_apps ORDER BY seq";
+                "SELECT publisher, product, sha256, COALESCE(path,'') FROM policy_allow_apps ORDER BY seq";
             await using var appReader = await appCmd.ExecuteReaderAsync(ct);
             while (await appReader.ReadAsync(ct))
             {
@@ -823,9 +840,11 @@ public sealed class PolicyStore : IAsyncDisposable
                 var pub = appReader.GetString(0);
                 var prod = appReader.GetString(1);
                 var sha = appReader.GetString(2);
+                var path = appReader.GetString(3);
                 if (!string.IsNullOrEmpty(pub)) row["publisher"] = pub;
                 if (!string.IsNullOrEmpty(prod)) row["product"] = prod;
                 if (!string.IsNullOrEmpty(sha)) row["sha256"] = sha;
+                if (!string.IsNullOrEmpty(path)) row["path"] = path;
                 if (row.Count > 0) allowApps.Add(row);
             }
         }

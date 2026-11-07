@@ -1,7 +1,10 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-05 (Allowlists enabled)
+> **Last audited:** 2026-11-05 (P3 app catalog)
 > **Changelog:**
+> - 2026-11-05: **P3 catalog app allow.** Migration **064** `installed_application_id` /
+>   `app_name` / `install_path` on draft + snapshot apps. Create accepts catalog id;
+>   Publish `ExpandEnabledAllowApps` emits path-first identities into `allow.apps`.
 > - 2026-11-05: **Allowlists Active/Inactive.** Migration **063** `enabled` on draft
 >   hosts/apps; list `?enabled=true|false`; Publish snapshots only `enabled=TRUE`.
 > - 2026-11-05: **P1 lockdown contract.** Migration **059** draft + snapshot tables;

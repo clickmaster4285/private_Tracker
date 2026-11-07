@@ -23,6 +23,8 @@ public sealed class EnforceWorker : BackgroundService
     private string? _lastLockdownState;
     private bool _lockdownOverflowAudited;
     private DateTimeOffset _lastLockdownWarn = DateTimeOffset.MinValue;
+    private string? _lastAppLockdownState;
+    private DateTimeOffset _lastAppLockdownWarn = DateTimeOffset.MinValue;
 
     public EnforceWorker(
         DlpConfig cfg,
@@ -53,6 +55,16 @@ public sealed class EnforceWorker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Lockdown clear on park failed");
+            }
+            try
+            {
+                var appClear = await Task.Run(AppAllowEnforcer.Clear, stoppingToken);
+                if (appClear.Changed || !appClear.Applied)
+                    _logger.LogWarning("Parked: cleared AppLocker ({Detail})", appClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "AppLocker clear on park failed");
             }
             return;
         }
@@ -123,7 +135,79 @@ public sealed class EnforceWorker : BackgroundService
         await ApplyUsbAsync(bundle, version, wantUsbBlock, ct);
         // Lockdown (allow-world) first; explicit web-block domains below still apply inside it.
         await ApplyLockdownAsync(bundle, ct);
+        await ApplyAppLockdownAsync(bundle, ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
+    }
+
+    /// <summary>
+    /// AppLocker EXE default-deny when lockdown is ON (same switch as network lockdown).
+    /// Pause / lockdown:false / no DeviceAuth clears the policy.
+    /// </summary>
+    private async Task ApplyAppLockdownAsync(PolicyBundle bundle, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var want = hasCreds && !paused && bundle.LockdownEnabled;
+
+        if (!want)
+        {
+            var clear = await Task.Run(AppAllowEnforcer.Clear, ct);
+            var state = paused ? "paused" : "off";
+            if (clear.Changed || _lastAppLockdownState is not (null or "off" or "paused"))
+            {
+                await _store.AuditAsync("app_lockdown_clear", $"state={state} detail={clear.Detail}", ct);
+                _logger.LogInformation("AppLocker CLEARED (state={State}, detail={Detail})", state, clear.Detail);
+            }
+            if (clear.Applied)
+                _lastAppLockdownState = state;
+            return;
+        }
+
+        var apps = bundle.AllowApps;
+        var result = await Task.Run(() => AppAllowEnforcer.Apply(apps), ct);
+        if (result.Applied)
+        {
+            if (result.Changed || _lastAppLockdownState != "on")
+            {
+                await _store.AuditAsync(
+                    "app_lockdown_apply",
+                    $"apps={apps.Count} detail={result.Detail}",
+                    ct);
+                _logger.LogInformation(
+                    "AppLocker ENFORCED (allowApps={Count}, detail={Detail}) — blocked apps show Windows dialog; kill sweeper is backup only",
+                    apps.Count, result.Detail);
+                if (result.Detail.Contains("NOT_ENFORCING", StringComparison.OrdinalIgnoreCase)
+                    || result.Detail.Contains("verify_failed", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "AppLocker policy set but verify says not enforcing — check AppIDSvc and Windows edition/updates");
+                }
+            }
+            _lastAppLockdownState = "on";
+        }
+        else if (result.Detail != "stale_generation" &&
+                 DateTimeOffset.UtcNow - _lastAppLockdownWarn > TimeSpan.FromMinutes(2))
+        {
+            _lastAppLockdownWarn = DateTimeOffset.UtcNow;
+            _logger.LogWarning("AppLocker not applied: {Detail}", result.Detail);
+            await _store.AuditAsync("app_lockdown_apply_failed", result.Detail, ct);
+            // Still mark "on" for process-guard path — fail-closed via kill even if AppLocker fails.
+            _lastAppLockdownState = "on";
+        }
+
+        // AppLocker does not kill already-running apps. Sweep every tick while lockdown is ON.
+        var sweep = await Task.Run(() => AppProcessGuard.Sweep(apps), ct);
+        if (sweep.Killed > 0)
+        {
+            await _store.AuditAsync("app_process_kill", sweep.Detail, ct);
+            _logger.LogWarning("App allowlist killed {Count} process(es): {Detail}", sweep.Killed, sweep.Detail);
+        }
     }
 
     /// <summary>

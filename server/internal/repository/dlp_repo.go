@@ -615,9 +615,9 @@ func (r *DlpRepo) PublishSnapshot(
 	}
 	for i, app := range allowApps {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO dlp_policy_allow_apps (policy_version, seq, publisher, product, sha256)
-			VALUES ($1, $2, $3, $4, $5)`,
-			version, i+1, app.Publisher, app.Product, app.Sha256); err != nil {
+			INSERT INTO dlp_policy_allow_apps (policy_version, seq, publisher, product, sha256, install_path)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			version, i+1, app.Publisher, app.Product, app.Sha256, app.Path); err != nil {
 			return err
 		}
 	}
@@ -813,7 +813,7 @@ func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int
 
 func (r *DlpRepo) listPolicyAllowApps(ctx context.Context, version int64) ([]map[string]any, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT publisher, product, sha256
+		SELECT publisher, product, sha256, COALESCE(install_path, '')
 		FROM dlp_policy_allow_apps
 		WHERE policy_version=$1
 		ORDER BY seq`, version)
@@ -823,8 +823,8 @@ func (r *DlpRepo) listPolicyAllowApps(ctx context.Context, version int64) ([]map
 	defer rows.Close()
 	out := make([]map[string]any, 0)
 	for rows.Next() {
-		var publisher, product, sha string
-		if err := rows.Scan(&publisher, &product, &sha); err != nil {
+		var publisher, product, sha, path string
+		if err := rows.Scan(&publisher, &product, &sha, &path); err != nil {
 			return nil, err
 		}
 		m := map[string]any{}
@@ -836,6 +836,9 @@ func (r *DlpRepo) listPolicyAllowApps(ctx context.Context, version int64) ([]map
 		}
 		if sha != "" {
 			m["sha256"] = sha
+		}
+		if path != "" {
+			m["path"] = path
 		}
 		if len(m) > 0 {
 			out = append(out, m)
@@ -849,11 +852,12 @@ func (r *DlpRepo) listPolicyAllowApps(ctx context.Context, version int64) ([]map
 const MaxLockdownAllowHosts = 500
 const MaxLockdownAllowApps = 2000
 
-// LockdownAllowAppRow is a draft/snapshot app allow entry (publisher and/or sha256).
+// LockdownAllowAppRow is a concrete agent identity (path and/or publisher and/or sha256).
 type LockdownAllowAppRow struct {
 	Publisher string
 	Product   string
 	Sha256    string
+	Path      string
 }
 
 func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []string, apps []LockdownAllowAppRow, err error) {
@@ -884,8 +888,9 @@ func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []
 	if err := rows.Err(); err != nil {
 		return false, nil, nil, err
 	}
+	// Draft cached identities (not catalog-expanded). Publish uses ExpandEnabledAllowApps.
 	appRows, err := r.pool.Query(ctx, `
-		SELECT publisher, product, sha256
+		SELECT publisher, product, sha256, install_path
 		FROM dlp_lockdown_allow_apps
 		WHERE enabled = TRUE
 		ORDER BY id`)
@@ -896,12 +901,159 @@ func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []
 	apps = make([]LockdownAllowAppRow, 0)
 	for appRows.Next() {
 		var a LockdownAllowAppRow
-		if err := appRows.Scan(&a.Publisher, &a.Product, &a.Sha256); err != nil {
+		if err := appRows.Scan(&a.Publisher, &a.Product, &a.Sha256, &a.Path); err != nil {
 			return false, nil, nil, err
 		}
 		apps = append(apps, a)
 	}
 	return lockdown, hosts, apps, appRows.Err()
+}
+
+// CatalogAppResolve is the catalog row + aggregated inventory identities for one app.
+type CatalogAppResolve struct {
+	ID         string
+	AppName    string
+	BinaryName string
+	Publishers []string
+	Paths      []string
+}
+
+func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) (*CatalogAppResolve, error) {
+	id := strings.TrimSpace(installedAppID)
+	if id == "" {
+		return nil, fmt.Errorf("installedApplicationId is required")
+	}
+	var out CatalogAppResolve
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, COALESCE(app_name, ''), COALESCE(binary_name, '')
+		FROM installed_applications
+		WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&out.ID, &out.AppName, &out.BinaryName)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT COALESCE(publisher, ''), COALESCE(install_path, '')
+		FROM employee_installed_applications
+		WHERE installed_application_id = $1 AND is_active = TRUE`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	pubSet := map[string]struct{}{}
+	pathSet := map[string]struct{}{}
+	for rows.Next() {
+		var pub, path string
+		if err := rows.Scan(&pub, &path); err != nil {
+			return nil, err
+		}
+		pub = strings.TrimSpace(pub)
+		path = strings.TrimSpace(path)
+		if pub != "" {
+			if _, ok := pubSet[strings.ToLower(pub)]; !ok {
+				pubSet[strings.ToLower(pub)] = struct{}{}
+				out.Publishers = append(out.Publishers, pub)
+			}
+		}
+		if path != "" {
+			resolved := resolveInstallIdentity(path, out.BinaryName)
+			key := strings.ToLower(resolved)
+			if _, ok := pathSet[key]; !ok {
+				pathSet[key] = struct{}{}
+				out.Paths = append(out.Paths, resolved)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func resolveInstallIdentity(installPath, binaryName string) string {
+	p := strings.TrimSpace(installPath)
+	bin := strings.TrimSpace(binaryName)
+	lower := strings.ToLower(p)
+	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".com") || strings.HasSuffix(lower, ".bin") {
+		return p
+	}
+	if bin != "" {
+		if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
+			return p + bin
+		}
+		return p + `\` + bin
+	}
+	if p == "" {
+		return ""
+	}
+	// Directory allow for AppLocker path rules.
+	if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
+		return p + `*`
+	}
+	return p + `\*`
+}
+
+// ExpandEnabledAllowApps flattens enabled draft rows into concrete agent identities.
+// Catalog-backed rows re-resolve from live inventory so new machine paths are included.
+func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAppRow, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, COALESCE(installed_application_id, ''), COALESCE(app_name, ''),
+		       publisher, product, sha256, install_path
+		FROM dlp_lockdown_allow_apps
+		WHERE enabled = TRUE
+		ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]LockdownAllowAppRow, 0)
+	seen := map[string]struct{}{}
+	add := func(a LockdownAllowAppRow) {
+		a.Publisher = strings.TrimSpace(a.Publisher)
+		a.Product = strings.TrimSpace(a.Product)
+		a.Sha256 = strings.ToLower(strings.TrimSpace(a.Sha256))
+		a.Sha256 = strings.TrimPrefix(a.Sha256, "sha256:")
+		a.Path = strings.TrimSpace(a.Path)
+		if a.Publisher == "" && a.Path == "" && len(a.Sha256) != 64 {
+			return
+		}
+		key := strings.ToLower(a.Publisher) + "|" + strings.ToLower(a.Product) + "|" + a.Sha256 + "|" + strings.ToLower(a.Path)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, a)
+	}
+
+	for rows.Next() {
+		var id int64
+		var catalogID, appName, publisher, product, sha, path string
+		if err := rows.Scan(&id, &catalogID, &appName, &publisher, &product, &sha, &path); err != nil {
+			return nil, err
+		}
+		if catalogID != "" {
+			resolved, err := r.ResolveCatalogApp(ctx, catalogID)
+			if err != nil && err != pgx.ErrNoRows {
+				return nil, err
+			}
+			if resolved != nil {
+				for _, p := range resolved.Paths {
+					add(LockdownAllowAppRow{Path: p, Product: resolved.AppName})
+				}
+				// Path-first: only emit publisher when no paths (unsigned/missing inventory path).
+				if len(resolved.Paths) == 0 {
+					for _, pub := range resolved.Publishers {
+						add(LockdownAllowAppRow{Publisher: pub, Product: resolved.AppName})
+					}
+				}
+			}
+		}
+		add(LockdownAllowAppRow{Publisher: publisher, Product: product, Sha256: sha, Path: path})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ReplaceLockdownDraft upserts the singleton settings row and replaces allow hosts/apps.
@@ -940,8 +1092,8 @@ func (r *DlpRepo) ReplaceLockdownDraft(ctx context.Context, lockdown bool, hosts
 	}
 	for _, app := range apps {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256)
-			VALUES ($1, $2, $3)`, app.Publisher, app.Product, app.Sha256); err != nil {
+			INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256, install_path)
+			VALUES ($1, $2, $3, $4)`, app.Publisher, app.Product, app.Sha256, app.Path); err != nil {
 			return err
 		}
 	}
@@ -964,18 +1116,21 @@ type AllowHostListRow struct {
 
 // AllowAppListRow is a draft app allow entry with optional creator names.
 type AllowAppListRow struct {
-	ID            int64
-	Publisher     string
-	Product       string
-	Sha256        string
-	Note          string
-	Enabled       bool
-	CreatedBy     *string
-	CreatedByName string
-	UpdatedBy     *string
-	UpdatedByName string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                     int64
+	InstalledApplicationID string
+	AppName                string
+	Publisher              string
+	Product                string
+	Sha256                 string
+	InstallPath            string
+	Note                   string
+	Enabled                bool
+	CreatedBy              *string
+	CreatedByName          string
+	UpdatedBy              *string
+	UpdatedByName          string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 func allowEnabledClause(enabled string) string {
@@ -1085,8 +1240,10 @@ func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, enable
 func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, error) {
 	var row AllowAppListRow
 	var createdByNS, updatedByNS *string
+	var catalogNS *string
 	err := r.pool.QueryRow(ctx, `
-		SELECT a.id, a.publisher, a.product, a.sha256, a.note, a.enabled,
+		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
+		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
 		       a.updated_by::text, COALESCE(uu.name, ''),
 		       a.created_at, a.updated_at
@@ -1094,13 +1251,17 @@ func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, 
 		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
 		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
 		WHERE a.id = $1`, id).Scan(
-		&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
+		&row.ID, &catalogNS, &row.AppName,
+		&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 		&createdByNS, &row.CreatedByName,
 		&updatedByNS, &row.UpdatedByName,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if catalogNS != nil {
+		row.InstalledApplicationID = *catalogNS
 	}
 	row.CreatedBy = createdByNS
 	row.UpdatedBy = updatedByNS
@@ -1152,6 +1313,7 @@ func (r *DlpRepo) CountAllowApps(ctx context.Context, q, createdBy, enabled stri
 	err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM dlp_lockdown_allow_apps a
 		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
+		       OR a.app_name ILIKE '%' || $1 || '%' OR a.install_path ILIKE '%' || $1 || '%'
 		       OR a.sha256 ILIKE '%' || $1 || '%' OR a.note ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR a.created_by::text = $2)
 		  `+enClause,
@@ -1163,7 +1325,8 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy, enabled strin
 	page, perPage, offset := clampAllowListPage(page, perPage)
 	enClause := allowAppEnabledClause(enabled)
 	rows, err := r.pool.Query(ctx, `
-		SELECT a.id, a.publisher, a.product, a.sha256, a.note, a.enabled,
+		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
+		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
 		       a.updated_by::text, COALESCE(uu.name, ''),
 		       a.created_at, a.updated_at
@@ -1171,6 +1334,7 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy, enabled strin
 		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
 		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
 		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
+		       OR a.app_name ILIKE '%' || $1 || '%' OR a.install_path ILIKE '%' || $1 || '%'
 		       OR a.sha256 ILIKE '%' || $1 || '%' OR a.note ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR a.created_by::text = $2)
 		  `+enClause+`
@@ -1184,14 +1348,18 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy, enabled strin
 	out := make([]AllowAppListRow, 0)
 	for rows.Next() {
 		var row AllowAppListRow
-		var createdByNS, updatedByNS *string
+		var createdByNS, updatedByNS, catalogNS *string
 		if err := rows.Scan(
-			&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
+			&row.ID, &catalogNS, &row.AppName,
+			&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 			&createdByNS, &row.CreatedByName,
 			&updatedByNS, &row.UpdatedByName,
 			&row.CreatedAt, &row.UpdatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if catalogNS != nil {
+			row.InstalledApplicationID = *catalogNS
 		}
 		row.CreatedBy = createdByNS
 		row.UpdatedBy = updatedByNS
@@ -1200,44 +1368,68 @@ func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy, enabled strin
 	return out, rows.Err()
 }
 
-func (r *DlpRepo) InsertAllowApp(ctx context.Context, publisher, product, sha, note string, enabled bool, userID *string) (*AllowAppListRow, error) {
+func (r *DlpRepo) InsertAllowApp(
+	ctx context.Context,
+	catalogID, appName, publisher, product, sha, installPath, note string,
+	enabled bool,
+	userID *string,
+) (*AllowAppListRow, error) {
 	var row AllowAppListRow
-	var createdByNS, updatedByNS *string
+	var createdByNS, updatedByNS, catalogNS *string
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO dlp_lockdown_allow_apps (publisher, product, sha256, note, enabled, created_by, updated_by)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::uuid, NULLIF($6, '')::uuid)
-		RETURNING id, publisher, product, sha256, note, enabled, created_by::text, updated_by::text, created_at, updated_at`,
-		publisher, product, sha, note, enabled, nullStr(userID),
-	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
+		INSERT INTO dlp_lockdown_allow_apps
+			(installed_application_id, app_name, publisher, product, sha256, install_path, note, enabled, created_by, updated_by)
+		VALUES (NULLIF($1, ''), $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, NULLIF($9, '')::uuid)
+		RETURNING id, installed_application_id::text, COALESCE(app_name, ''),
+		          publisher, product, sha256, COALESCE(install_path, ''), note, enabled,
+		          created_by::text, updated_by::text, created_at, updated_at`,
+		strings.TrimSpace(catalogID), strings.TrimSpace(appName), publisher, product, sha, installPath, note, enabled, nullStr(userID),
+	).Scan(&row.ID, &catalogNS, &row.AppName,
+		&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 		&createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if catalogNS != nil {
+		row.InstalledApplicationID = *catalogNS
 	}
 	row.CreatedBy = createdByNS
 	row.UpdatedBy = updatedByNS
 	return &row, nil
 }
 
-func (r *DlpRepo) UpdateAllowApp(ctx context.Context, id int64, publisher, product, sha, note *string, enabled *bool, userID *string) (*AllowAppListRow, error) {
+func (r *DlpRepo) UpdateAllowApp(
+	ctx context.Context,
+	id int64,
+	publisher, product, sha, installPath, note *string,
+	enabled *bool,
+	userID *string,
+) (*AllowAppListRow, error) {
 	var row AllowAppListRow
-	var createdByNS, updatedByNS *string
+	var createdByNS, updatedByNS, catalogNS *string
 	err := r.pool.QueryRow(ctx, `
 		UPDATE dlp_lockdown_allow_apps a
 		SET publisher = COALESCE($2, a.publisher),
 		    product = COALESCE($3, a.product),
 		    sha256 = COALESCE($4, a.sha256),
-		    note = COALESCE($5, a.note),
-		    enabled = COALESCE($6, a.enabled),
-		    updated_by = NULLIF($7, '')::uuid,
+		    install_path = COALESCE($5, a.install_path),
+		    note = COALESCE($6, a.note),
+		    enabled = COALESCE($7, a.enabled),
+		    updated_by = NULLIF($8, '')::uuid,
 		    updated_at = NOW()
 		WHERE a.id = $1
-		RETURNING a.id, a.publisher, a.product, a.sha256, a.note, a.enabled,
+		RETURNING a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
+		          a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
 		          a.created_by::text, a.updated_by::text, a.created_at, a.updated_at`,
-		id, publisher, product, sha, note, enabled, nullStr(userID),
-	).Scan(&row.ID, &row.Publisher, &row.Product, &row.Sha256, &row.Note, &row.Enabled,
+		id, publisher, product, sha, installPath, note, enabled, nullStr(userID),
+	).Scan(&row.ID, &catalogNS, &row.AppName,
+		&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 		&createdByNS, &updatedByNS, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if catalogNS != nil {
+		row.InstalledApplicationID = *catalogNS
 	}
 	row.CreatedBy = createdByNS
 	row.UpdatedBy = updatedByNS
