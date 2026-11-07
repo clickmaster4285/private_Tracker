@@ -340,6 +340,7 @@ public sealed class NamedPipeHost : BackgroundService
             webBlock = _cfg.WebBlock,
             networkLockdown = _cfg.NetworkLockdown,
             appBlock = _cfg.AppBlock,
+            loginReboot = _cfg.LoginReboot,
             update = _updateState.Snapshot(),
         });
     }

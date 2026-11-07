@@ -26,6 +26,11 @@ public sealed class DlpConfig
     /// <summary>App lockdown (<c>/allowlists/apps</c>): AppLocker default-deny + running-app kill sweep.</summary>
     public bool AppBlock { get; init; } = true;
     /// <summary>
+    /// After tracker login (credentials appear mid-run): pre-kill non-allowlisted apps,
+    /// force-apply blockers, then reboot once. Off = no reboot (still polls policy).
+    /// </summary>
+    public bool LoginReboot { get; init; } = true;
+    /// <summary>
     /// Parsed so an existing <c>ALPHA_DLP_MAX_LOCAL_ALERTS</c> still loads.
     /// Unsynced alerts are not deleted when this count is passed.
     /// </summary>
@@ -65,6 +70,7 @@ public sealed class DlpConfig
             WebBlock = GetBool("ALPHA_DLP_WEB_BLOCK", true),
             NetworkLockdown = GetBool("ALPHA_DLP_NETWORK_LOCKDOWN", true),
             AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true),
+            LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
             DedupSec = GetInt("ALPHA_DLP_DEDUP_SEC", 300),
             PipeName = Environment.GetEnvironmentVariable("ALPHA_DLP_PIPE_NAME") is { Length: > 0 } p

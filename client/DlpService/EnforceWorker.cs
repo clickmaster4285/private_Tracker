@@ -100,6 +100,12 @@ public sealed class EnforceWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Immediate full enforce pass (USB / network lockdown / AppLocker / web).
+    /// Used after tracker login before the one-shot reboot.
+    /// </summary>
+    public Task ForceApplyOnceAsync(CancellationToken ct) => ApplyAsync(ct);
+
     private async Task ApplyAsync(CancellationToken ct)
     {
         var (version, hash, bundleJson) = await _store.GetAppliedAsync(ct);
