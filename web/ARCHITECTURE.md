@@ -2,6 +2,12 @@
 
 > **Last audited:** 2026-11-05 (Allowlists module)
 > **Changelog:**
+> - 2026-11-05: **P3 App Allow List catalog picker.** `/allowlists/apps` selects from
+>   `monitoringApi.apps.list` (same catalog as Configuration → Applications); create
+>   posts `installedApplicationId` and auto-publishes. Table shows app name + resolved
+>   identity. Fail-closed apps under lockdown (Calculator / Task Manager blocked until
+>   allowed).
+>
 > - 2026-11-05: **Allowlists auto-publish.** Host/app create/update/status/delete and
 >   default-deny switch auto-call Publish; no separate Publish button.
 >
@@ -566,7 +572,7 @@ in the `updateMutation`).
 | `/dlp-rules` | DLP Rules | `/dlp/rules` CRUD + get/history + publish; edit/detail dialogs; Active Switch auto-publish | ✅ |
 | `/web-blocker` | Web Blocker | `/web-blocker/rules` CRUD + expand/history; Switch status + auto-publish; schedule + `TimezoneCombobox` (deny-list only; default-deny lives under Allowlists) | ✅ |
 | `/allowlists/web` | Web Allow Lists | Hosts CRUD + `enabled`; auto-publish after each change; platformAllow read-only | ✅ |
-| `/allowlists/apps` | App Allow List | Apps CRUD + `enabled`; auto-publish into `allow.apps` (enforce = P3) | ✅ |
+| `/allowlists/apps` | App Allow List | Catalog picker → `installedApplicationId`; auto-publish; AppLocker enforce on agent | ✅ |
 | `/shadow-it` | Shadow IT | Server (`GET/PATCH /shadow-it/apps`; Approve/Block/Flag) | ✅ |
 | `/emails` | Emails & Alerts | Hardcoded demo data (scaffolding) | ❌ |
 | `/projects` | Projects | Hardcoded demo data (scaffolding) | ❌ |

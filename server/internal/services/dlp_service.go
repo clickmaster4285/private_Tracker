@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/alpha-ai-tracker/server/internal/dto"
 	"github.com/alpha-ai-tracker/server/internal/models"
 	"github.com/alpha-ai-tracker/server/internal/repository"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var allowedTriggers = map[string]bool{
@@ -376,7 +379,11 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	if err != nil {
 		return nil, err
 	}
-	lockdown, allowHosts, allowApps, err := s.repo.GetLockdownDraft(ctx)
+	lockdown, allowHosts, _, err := s.repo.GetLockdownDraft(ctx)
+	if err != nil {
+		return nil, err
+	}
+	allowApps, err := s.repo.ExpandEnabledAllowApps(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +436,7 @@ func (s *DlpService) GetLockdownDraft(ctx context.Context) (*dto.LockdownDraftRe
 	outApps := make([]dto.LockdownAllowApp, 0, len(apps))
 	for _, a := range apps {
 		outApps = append(outApps, dto.LockdownAllowApp{
-			Publisher: a.Publisher, Product: a.Product, Sha256: a.Sha256,
+			Publisher: a.Publisher, Product: a.Product, Sha256: a.Sha256, Path: a.Path,
 		})
 	}
 	platform := s.platformHosts
@@ -469,7 +476,9 @@ func mapAllowHost(row repository.AllowHostListRow) dto.AllowHostRow {
 
 func mapAllowApp(row repository.AllowAppListRow) dto.AllowAppRow {
 	return dto.AllowAppRow{
-		ID: row.ID, Publisher: row.Publisher, Product: row.Product, Sha256: row.Sha256, Note: row.Note, Enabled: row.Enabled,
+		ID: row.ID, InstalledApplicationID: row.InstalledApplicationID, AppName: row.AppName,
+		Publisher: row.Publisher, Product: row.Product, Sha256: row.Sha256, InstallPath: row.InstallPath,
+		Note: row.Note, Enabled: row.Enabled,
 		CreatedBy: row.CreatedBy, CreatedByName: row.CreatedByName,
 		UpdatedBy: row.UpdatedBy, UpdatedByName: row.UpdatedByName,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
@@ -582,12 +591,6 @@ func (s *DlpService) ListAllowApps(ctx context.Context, q dto.AllowListQuery) (*
 }
 
 func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppRequest, userID string) (*dto.AllowAppRow, error) {
-	rowIn, ok := normalizeAllowApp(dto.LockdownAllowApp{
-		Publisher: req.Publisher, Product: req.Product, Sha256: req.Sha256,
-	})
-	if !ok {
-		return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
-	}
 	count, err := s.repo.CountAllowApps(ctx, "", "", "")
 	if err != nil {
 		return nil, err
@@ -603,7 +606,43 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	row, err := s.repo.InsertAllowApp(ctx, rowIn.Publisher, rowIn.Product, rowIn.Sha256, strings.TrimSpace(req.Note), enabled, uid)
+	note := strings.TrimSpace(req.Note)
+
+	if catID := strings.TrimSpace(req.InstalledApplicationID); catID != "" {
+		resolved, err := s.repo.ResolveCatalogApp(ctx, catID)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				return nil, fmt.Errorf("catalog application not found")
+			}
+			return nil, err
+		}
+		publisher, product, sha, path := "", resolved.AppName, "", ""
+		if len(resolved.Publishers) > 0 {
+			publisher = resolved.Publishers[0]
+		}
+		if len(resolved.Paths) > 0 {
+			path = resolved.Paths[0]
+		}
+		if publisher == "" && path == "" {
+			return nil, fmt.Errorf("catalog app has no publisher or install path from inventory yet")
+		}
+		row, err := s.repo.InsertAllowApp(ctx, resolved.ID, resolved.AppName, publisher, product, sha, path, note, enabled, uid)
+		if err != nil {
+			if isUniqueViolation(err) {
+				return nil, fmt.Errorf("application already on the allow list")
+			}
+			return nil, err
+		}
+		return ptrAllowApp(mapAllowApp(*row)), nil
+	}
+
+	rowIn, ok := normalizeAllowApp(dto.LockdownAllowApp{
+		Publisher: req.Publisher, Product: req.Product, Sha256: req.Sha256, Path: req.Path,
+	})
+	if !ok {
+		return nil, fmt.Errorf("each allow app needs installedApplicationId, path, publisher, and/or sha256 (64 hex)")
+	}
+	row, err := s.repo.InsertAllowApp(ctx, "", rowIn.Product, rowIn.Publisher, rowIn.Product, rowIn.Sha256, rowIn.Path, note, enabled, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -617,8 +656,25 @@ func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.Updat
 	if err != nil {
 		return nil, err
 	}
+	// Catalog-backed rows: only note/enabled are editable (identity re-expands at Publish).
+	if strings.TrimSpace(cur.InstalledApplicationID) != "" {
+		var notePtr *string
+		if req.Note != nil {
+			n := strings.TrimSpace(*req.Note)
+			notePtr = &n
+		}
+		var uid *string
+		if strings.TrimSpace(userID) != "" {
+			uid = &userID
+		}
+		row, err := s.repo.UpdateAllowApp(ctx, id, nil, nil, nil, nil, notePtr, req.Enabled, uid)
+		if err != nil {
+			return nil, err
+		}
+		return ptrAllowApp(mapAllowApp(*row)), nil
+	}
 	merged := dto.LockdownAllowApp{
-		Publisher: cur.Publisher, Product: cur.Product, Sha256: cur.Sha256,
+		Publisher: cur.Publisher, Product: cur.Product, Sha256: cur.Sha256, Path: cur.InstallPath,
 	}
 	if req.Publisher != nil {
 		merged.Publisher = *req.Publisher
@@ -629,11 +685,14 @@ func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.Updat
 	if req.Sha256 != nil {
 		merged.Sha256 = *req.Sha256
 	}
+	if req.Path != nil {
+		merged.Path = *req.Path
+	}
 	rowIn, ok := normalizeAllowApp(merged)
 	if !ok {
-		return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
+		return nil, fmt.Errorf("each allow app needs path, publisher, and/or sha256 (64 hex)")
 	}
-	pub, prod, sha := rowIn.Publisher, rowIn.Product, rowIn.Sha256
+	pub, prod, sha, path := rowIn.Publisher, rowIn.Product, rowIn.Sha256, rowIn.Path
 	var notePtr *string
 	if req.Note != nil {
 		n := strings.TrimSpace(*req.Note)
@@ -643,7 +702,7 @@ func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.Updat
 	if strings.TrimSpace(userID) != "" {
 		uid = &userID
 	}
-	row, err := s.repo.UpdateAllowApp(ctx, id, &pub, &prod, &sha, notePtr, req.Enabled, uid)
+	row, err := s.repo.UpdateAllowApp(ctx, id, &pub, &prod, &sha, &path, notePtr, req.Enabled, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -690,7 +749,7 @@ func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLock
 		for _, a := range *req.AllowApps {
 			row, ok := normalizeAllowApp(a)
 			if !ok {
-				return nil, fmt.Errorf("each allow app needs publisher and/or sha256 (64 hex)")
+				return nil, fmt.Errorf("each allow app needs path, publisher, and/or sha256 (64 hex)")
 			}
 			normalized = append(normalized, row)
 		}
@@ -711,9 +770,10 @@ func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLock
 func normalizeAllowApp(a dto.LockdownAllowApp) (repository.LockdownAllowAppRow, bool) {
 	pub := strings.TrimSpace(a.Publisher)
 	prod := strings.TrimSpace(a.Product)
+	path := strings.TrimSpace(a.Path)
 	sha := strings.ToLower(strings.TrimSpace(a.Sha256))
 	sha = strings.TrimPrefix(sha, "sha256:")
-	if pub == "" && len(sha) != 64 {
+	if pub == "" && path == "" && len(sha) != 64 {
 		return repository.LockdownAllowAppRow{}, false
 	}
 	if sha != "" && len(sha) != 64 {
@@ -724,7 +784,12 @@ func normalizeAllowApp(a dto.LockdownAllowApp) (repository.LockdownAllowAppRow, 
 			return repository.LockdownAllowAppRow{}, false
 		}
 	}
-	return repository.LockdownAllowAppRow{Publisher: pub, Product: prod, Sha256: sha}, true
+	return repository.LockdownAllowAppRow{Publisher: pub, Product: prod, Sha256: sha, Path: path}, true
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 const maxLockdownPauseMinutes = 240

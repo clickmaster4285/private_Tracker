@@ -1803,6 +1803,7 @@ export interface DlpLockdownAllowApp {
   publisher?: string;
   product?: string;
   sha256?: string;
+  path?: string;
 }
 
 export interface DlpLockdownConfig {
@@ -1839,9 +1840,12 @@ export interface AllowHostListResponse {
 
 export interface AllowAppRow {
   id: number;
+  installedApplicationId?: string;
+  appName?: string;
   publisher?: string;
   product?: string;
   sha256?: string;
+  installPath?: string;
   note?: string;
   enabled: boolean;
   createdBy?: string;
@@ -1910,9 +1914,11 @@ export const dlpApi = {
         return request<AllowAppListResponse>('/dlp/lockdown/apps' + (qs ? `?${qs}` : ''));
       },
       create: (data: {
+        installedApplicationId?: string;
         publisher?: string;
         product?: string;
         sha256?: string;
+        path?: string;
         note?: string;
         enabled?: boolean;
       }) => request<AllowAppRow>('/dlp/lockdown/apps', { method: 'POST', body: data }),
@@ -1922,6 +1928,7 @@ export const dlpApi = {
           publisher?: string;
           product?: string;
           sha256?: string;
+          path?: string;
           note?: string;
           enabled?: boolean;
         },

@@ -1,7 +1,30 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-05
+> **Last audited:** 2026-11-06
 > **Changelog:**
+>
+> - 2026-11-06: **P3 AppLocker launch block (Exe + Appx).** Blocked apps get the Windows
+>   “blocked by your organization” dialog on double-click — not open-then-kill.
+>   `AppAllowEnforcer` enforces **Exe + Appx** (Store Calculator / Photos / etc.), MSI
+>   empty-deny, UTF-16 policy XML, AppIDSvc start+restart after apply, and
+>   `Test-AppLockerPolicy` verify that Taskmgr is Denied. Bootstrap A keeps Explorer /
+>   Start / shell + product; kill sweeper remains backup for already-running EXEs.
+>   Verified: `dotnet build` DlpService. Installer **2.10.2+**.
+>
+> - 2026-11-05: **P3 app kill sweeper.** AppLocker only blocks *new* launches (and can
+>   sit inert without AppIDSvc). `AppProcessGuard` kills running EXEs outside bootstrap A
+>   + published `allow.apps` paths every Enforce tick while lockdown is ON. AppIDSvc
+>   started before `Set-AppLockerPolicy`. Verified: `dotnet build` DlpService. Installer
+>   **2.10.1+**.
+>
+> - 2026-11-05: **P3 Application allowlist (fail-closed + catalog).** Migration **064**
+>   catalog-backed draft apps (`installed_application_id` / `app_name` / `install_path`);
+>   Publish expands to path/publisher/sha. `/allowlists/apps` picks from the same
+>   inventory catalog as Configuration → Applications. DlpService `AppAllowEnforcer`
+>   AppLocker EXE default-deny (bootstrap A: product + Explorer/Start/shell; Calculator /
+>   Task Manager blocked until allowed). Same `lockdown` switch as network. Verified:
+>   `go build`/`go vet`, `dotnet build` DlpService, `npx tsc --noEmit`. Restart API for
+>   **064**. Installer-Parity: next Windows installer for AppLocker.
 >
 > - 2026-11-05: **Allowlists auto-publish.** Create/update/status/delete (and web
 >   default-deny switch) call `POST /dlp/rules/publish` immediately; Publish buttons

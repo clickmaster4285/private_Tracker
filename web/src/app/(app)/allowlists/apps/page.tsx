@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { AppWindow, Loader2, Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { AppWindow, Check, Loader2, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -16,11 +16,25 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { dlpApi, type AllowAppRow } from '@/lib/api';
+import {
+  dlpApi,
+  monitoringApi,
+  type AllowAppRow,
+  type MonitoredApp,
+} from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { useUrlQueryState } from '@/hooks/use-url-query-state';
 
 const PER_PAGE = 30;
+const CATALOG_PER_PAGE = 20;
+
+function identitySummary(row: AllowAppRow): string {
+  const parts: string[] = [];
+  if (row.installPath) parts.push(row.installPath);
+  if (row.publisher) parts.push(row.publisher);
+  if (row.sha256) parts.push(row.sha256.slice(0, 12) + '…');
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
 
 function AppAllowListInner() {
   const qc = useQueryClient();
@@ -31,10 +45,9 @@ function AppAllowListInner() {
   );
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<AllowAppRow | null>(null);
-  const [publisher, setPublisher] = useState('');
-  const [product, setProduct] = useState('');
-  const [sha256, setSha256] = useState('');
   const [note, setNote] = useState('');
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [selectedCatalog, setSelectedCatalog] = useState<MonitoredApp | null>(null);
 
   const settings = useQuery({
     queryKey: ['dlp-lockdown'],
@@ -57,6 +70,21 @@ function AppAllowListInner() {
     placeholderData: keepPreviousData,
   });
 
+  const catalogQuery = useInfiniteQuery({
+    queryKey: ['allowlist-catalog-apps', catalogSearch],
+    queryFn: ({ pageParam }) =>
+      monitoringApi.apps.list({
+        search: catalogSearch || undefined,
+        page: pageParam,
+        perPage: CATALOG_PER_PAGE,
+      }),
+    initialPageParam: 1,
+    getNextPageParam: (last) =>
+      last.page < last.totalPages ? last.page + 1 : undefined,
+    enabled: dialogOpen && !editing,
+    placeholderData: keepPreviousData,
+  });
+
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = sentinelRef.current;
@@ -73,11 +101,50 @@ function AppAllowListInner() {
     return () => obs.disconnect();
   }, [listQuery.hasNextPage, listQuery.isFetchingNextPage, listQuery.fetchNextPage]);
 
+  const catalogSentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = catalogSentinelRef.current;
+    if (!el || !dialogOpen || editing) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (
+          entries[0]?.isIntersecting &&
+          catalogQuery.hasNextPage &&
+          !catalogQuery.isFetchingNextPage
+        ) {
+          catalogQuery.fetchNextPage();
+        }
+      },
+      { rootMargin: '120px' },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [
+    dialogOpen,
+    editing,
+    catalogQuery.hasNextPage,
+    catalogQuery.isFetchingNextPage,
+    catalogQuery.fetchNextPage,
+  ]);
+
   const apps = useMemo(
     () => (listQuery.data?.pages ?? []).flatMap((p) => p.apps),
     [listQuery.data],
   );
   const total = listQuery.data?.pages[0]?.total ?? 0;
+
+  const catalogApps = useMemo(
+    () => (catalogQuery.data?.pages ?? []).flatMap((p) => p.data),
+    [catalogQuery.data],
+  );
+
+  const alreadyAllowed = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of apps) {
+      if (a.installedApplicationId) set.add(a.installedApplicationId);
+    }
+    return set;
+  }, [apps]);
 
   const creators = useMemo(() => {
     const map = new Map<string, string>();
@@ -89,28 +156,31 @@ function AppAllowListInner() {
 
   const openCreate = () => {
     setEditing(null);
-    setPublisher('');
-    setProduct('');
-    setSha256('');
     setNote('');
+    setCatalogSearch('');
+    setSelectedCatalog(null);
     setDialogOpen(true);
   };
 
   const openEdit = (row: AllowAppRow) => {
     setEditing(row);
-    setPublisher(row.publisher ?? '');
-    setProduct(row.product ?? '');
-    setSha256(row.sha256 ?? '');
     setNote(row.note ?? '');
+    setSelectedCatalog(null);
     setDialogOpen(true);
   };
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const wasEdit = !!editing;
-      const body = { publisher, product, sha256, note };
-      if (editing) await dlpApi.lockdown.apps.update(editing.id, body);
-      else await dlpApi.lockdown.apps.create(body);
+      if (editing) {
+        await dlpApi.lockdown.apps.update(editing.id, { note });
+      } else {
+        if (!selectedCatalog) throw new Error('Select an application');
+        await dlpApi.lockdown.apps.create({
+          installedApplicationId: selectedCatalog.id,
+          note: note || undefined,
+        });
+      }
       const pub = await dlpApi.rules.publish();
       return { wasEdit, pub };
     },
@@ -120,8 +190,9 @@ function AppAllowListInner() {
       setDialogOpen(false);
       toast.success(
         wasEdit
-          ? `App entry updated · policy v${pub.policyVersion}`
-          : `App entry added · policy v${pub.policyVersion}`,
+          ? `App updated · policy v${pub.policyVersion}`
+          : `App allowed · policy v${pub.policyVersion}`,
+        { description: 'Employee PCs will refresh on the next policy poll.' },
       );
     },
     onError: (err: Error) => toast.error('Save failed', { description: err.message }),
@@ -135,7 +206,7 @@ function AppAllowListInner() {
     onSuccess: (pub) => {
       qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
-      toast.success(`App entry removed · policy v${pub.policyVersion}`);
+      toast.success(`App removed · policy v${pub.policyVersion}`);
     },
     onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
   });
@@ -159,7 +230,7 @@ function AppAllowListInner() {
   });
 
   return (
-    <div className="space-y-4  animate-fade-in">
+    <div className="space-y-4 animate-fade-in">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-display font-bold text-foreground flex items-center gap-2">
@@ -167,17 +238,19 @@ function AppAllowListInner() {
             App Allow List
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Allow programs by code-signing publisher and/or file SHA-256 — never by display name
-            alone. Each change publishes into the policy bundle; Windows enforce mode ships later.
+            Under lockdown, Windows PCs cannot start applications except this product, the
+            desktop shell, and apps you allow here. Pick from the same catalog as Configuration
+            → Applications — each change publishes automatically.
           </p>
           {settings.data && !settings.data.lockdown && (
             <p className="text-xs text-warning mt-1">
-              Web default-deny is off — turn it on under Web Allow Lists for network lockdown.
+              Default-deny is off — turn it on under Web Allow Lists to enforce app and web
+              lockdown.
             </p>
           )}
         </div>
         <Button onClick={openCreate} className="gradient-primary text-primary-foreground">
-          <Plus className="w-4 h-4 mr-1" /> Add app
+          <Plus className="w-4 h-4 mr-1" /> Allow app
         </Button>
       </div>
 
@@ -187,7 +260,7 @@ function AppAllowListInner() {
           <input
             value={filters.q}
             onChange={(e) => setFilters({ q: e.target.value })}
-            placeholder="Search publisher, product, hash…"
+            placeholder="Search application, path, publisher…"
             className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
           />
         </div>
@@ -239,7 +312,7 @@ function AppAllowListInner() {
           <table className="w-full min-w-[800px]">
             <thead>
               <tr className="border-b border-border">
-                {['Publisher', 'Product', 'SHA-256', 'Created by', ''].map((h) => (
+                {['Application', 'Allow identity', 'Created by', 'Created', ''].map((h) => (
                   <th
                     key={h || 'actions'}
                     className="text-left px-4 py-3 text-sm font-semibold text-muted-foreground"
@@ -253,7 +326,8 @@ function AppAllowListInner() {
               {apps.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                    No allowed apps yet.
+                    No allowed apps yet. Calculator, Task Manager, and other programs stay
+                    blocked until you allow them.
                   </td>
                 </tr>
               )}
@@ -265,18 +339,22 @@ function AppAllowListInner() {
                   transition={{ delay: Math.min(i, 20) * 0.02 }}
                   className="border-b border-border last:border-0 hover:bg-muted/30"
                 >
-                  <td className="px-4 py-3 text-xs font-mono break-all max-w-[14rem]">
-                    {row.publisher || '—'}
+                  <td className="px-4 py-3 text-sm font-medium">
+                    {row.appName || row.product || '—'}
                     {row.note ? (
-                      <div className="text-muted-foreground font-sans mt-0.5 truncate">{row.note}</div>
+                      <div className="text-xs text-muted-foreground font-normal mt-0.5 truncate max-w-[16rem]">
+                        {row.note}
+                      </div>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 text-sm">{row.product || '—'}</td>
-                  <td className="px-4 py-3 text-[11px] font-mono break-all max-w-[12rem]">
-                    {row.sha256 || '—'}
+                  <td className="px-4 py-3 text-[11px] font-mono break-all max-w-[18rem] text-muted-foreground">
+                    {identitySummary(row)}
                   </td>
                   <td className="px-4 py-3 text-sm">
                     {row.createdByName || <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                    {formatDateTime(row.createdAt)}
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     <label className="inline-flex items-center gap-2 cursor-pointer mr-2 align-middle">
@@ -301,7 +379,7 @@ function AppAllowListInner() {
                       variant="ghost"
                       className="h-8 w-8"
                       onClick={() => openEdit(row)}
-                      aria-label="Edit"
+                      aria-label="Edit note"
                     >
                       <Pencil className="w-4 h-4" />
                     </Button>
@@ -311,7 +389,7 @@ function AppAllowListInner() {
                       className="h-8 w-8 text-destructive"
                       disabled={deleteMutation.isPending}
                       onClick={() => {
-                        if (confirm('Remove this app allow entry?')) {
+                        if (confirm(`Remove ${row.appName || 'this app'} from the allow list?`)) {
                           deleteMutation.mutate(row.id);
                         }
                       }}
@@ -336,43 +414,87 @@ function AppAllowListInner() {
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="font-display">
-              {editing ? 'Edit app entry' : 'Add app entry'}
+              {editing ? 'Edit allow note' : 'Allow application'}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 mt-2">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Publisher (subject)</label>
-              <Input
-                value={publisher}
-                onChange={(e) => setPublisher(e.target.value)}
-                placeholder="CN=Microsoft Corporation, …"
-                className="mt-1 font-mono text-xs"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Product (optional)</label>
-              <Input
-                value={product}
-                onChange={(e) => setProduct(e.target.value)}
-                placeholder="Microsoft Office"
-                className="mt-1"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">SHA-256 (64 hex)</label>
-              <Input
-                value={sha256}
-                onChange={(e) => setSha256(e.target.value)}
-                placeholder="abcdef…"
-                className="mt-1 font-mono text-xs"
-              />
-            </div>
+            {!editing && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Application (from inventory catalog)
+                </label>
+                <div className="mt-1 flex items-center border border-border rounded-lg px-3 py-2 gap-2">
+                  <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+                  <input
+                    value={catalogSearch}
+                    onChange={(e) => setCatalogSearch(e.target.value)}
+                    placeholder="Search app name…"
+                    className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
+                  />
+                </div>
+                <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+                  {catalogQuery.isLoading && (
+                    <div className="flex justify-center py-6">
+                      <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                    </div>
+                  )}
+                  {!catalogQuery.isLoading && catalogApps.length === 0 && (
+                    <p className="px-3 py-4 text-xs text-muted-foreground text-center">
+                      No applications found. Sync inventory from employee PCs first.
+                    </p>
+                  )}
+                  {catalogApps.map((app) => {
+                    const taken = alreadyAllowed.has(app.id);
+                    const selected = selectedCatalog?.id === app.id;
+                    return (
+                      <button
+                        key={app.id}
+                        type="button"
+                        disabled={taken}
+                        onClick={() => setSelectedCatalog(app)}
+                        className={`w-full text-left px-3 py-2 text-sm flex items-start gap-2 transition-colors ${
+                          taken
+                            ? 'opacity-40 cursor-not-allowed'
+                            : selected
+                              ? 'bg-primary/10'
+                              : 'hover:bg-muted/40'
+                        }`}
+                      >
+                        <span className="mt-0.5 w-4 shrink-0">
+                          {selected ? <Check className="w-4 h-4 text-primary" /> : null}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="font-medium block truncate">{app.appName}</span>
+                          <span className="text-[11px] text-muted-foreground font-mono truncate block">
+                            {app.binaryName || app.id}
+                            {taken ? ' · already allowed' : ''}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                  <div ref={catalogSentinelRef} className="h-6 flex items-center justify-center">
+                    {catalogQuery.isFetchingNextPage && (
+                      <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            {editing && (
+              <p className="text-sm text-foreground">
+                <span className="font-medium">{editing.appName || editing.product || 'App'}</span>
+                <span className="block text-xs text-muted-foreground font-mono mt-1 break-all">
+                  {identitySummary(editing)}
+                </span>
+              </p>
+            )}
             <div>
               <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>
               <Input
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="Why this binary is allowed"
+                placeholder="Why this app is allowed"
                 className="mt-1"
               />
             </div>
@@ -381,11 +503,11 @@ function AppAllowListInner() {
                 Cancel
               </Button>
               <Button
-                disabled={(!publisher.trim() && !sha256.trim()) || saveMutation.isPending}
+                disabled={(!editing && !selectedCatalog) || saveMutation.isPending}
                 onClick={() => saveMutation.mutate()}
               >
                 {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
-                Save
+                {editing ? 'Save' : 'Allow & publish'}
               </Button>
             </div>
           </div>

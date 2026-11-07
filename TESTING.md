@@ -4,35 +4,37 @@ Procedures that need a running server (and for DLP, an installed Windows agent).
 
 Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
 
-*Last audited: 2026-11-05*
+*Last audited: 2026-11-06*
 
 ---
 
-## H. Windows network lockdown (P1) + Allowlists
+## H. Windows network lockdown (P1) + Allowlists + AppLocker (P3)
 
-**Prereqs:** migrations **059** + **060**; Windows PC with next installer (service half); DeviceAuth credentials; web admin with `allowlists/web` (and `web-blocker` for deny rules).
+**Prereqs:** migrations **059–064**; Windows PC with installer **2.10.2+** (service half); DeviceAuth credentials; web admin with `allowlists/web` and `allowlists/apps` (and `web-blocker` for deny rules). AppLocker requires a SKU that supports `Set-AppLockerPolicy` (typically Enterprise/Education; some Pro builds) and a running **Application Identity** service (`AppIDSvc`).
 
-1. Fresh install + login, **no Publish**: browser cannot open a public site; tracker sync / policy / presence still work (bootstrap). Service log: `Lockdown ENFORCED`.
-2. Default-deny **Off** + Publish → lab PC opens general web (`AlphaAI-DLP-LOCK-*` cleared).
-3. Default-deny **On** again + Publish (or reinstall) → blocked again.
-4. Add one allow host → Save → Publish → only that host loads (plus platformAllow / API).
+1. Fresh install + login: browser cannot open a public site; tracker sync / policy / presence still work (bootstrap). Service log: `Lockdown ENFORCED`.
+2. Default-deny **Off** (auto-publishes) → lab PC opens general web (`AlphaAI-DLP-LOCK-*` cleared) and AppLocker cleared.
+3. Default-deny **On** again → blocked again.
+4. Add one allow host (auto-publish) → only that host loads (plus platformAllow / API).
 5. Add an explicit Web Blocker **block** rule for that same host → Publish → host stays blocked (deny-list still applies).
-6. Employees → **Pause lockdown…** (30–240 min) → general web works until deadline; then relocks without waiting for a new publish.
-7. Protected uninstall / teardown → no leftover `AlphaAI-DLP-LOCK-*` (`netsh advfirewall firewall show rule name=all` filtered).
-8. Flap: publish add/remove 20 allow hosts → no orphan LOCK rules (same bar as §F.2).
+6. Employees → **Pause lockdown…** (30–240 min) → general web + apps work until deadline; then relocks.
+7. Protected uninstall / teardown → no leftover `AlphaAI-DLP-LOCK-*` and AppLocker NotConfigured.
+8. Flap: add/remove 20 allow hosts → no orphan LOCK rules (same bar as §F.2).
 9. Role without `allowlists/web` does not see the sidebar entry; `/allowlists/web` → `/unauthorized`.
-10. App Allow List: add a publisher/SHA draft → Publish → pulled bundle has `allow.apps` (enforce still P3).
+10. **Apps (P3) — launch block:** employee **logged in** (DeviceAuth), lockdown ON, empty allow list. Double-click **Task Manager**, **Calculator** (Win32 or Store), **Notepad**, Chrome/Edge → Windows “blocked by your organization” **immediately** (must **not** flash open then close). Explorer / This PC / Start stay usable. Service log: `AppLocker ENFORCED` with `verify=enforcing` (not `NOT_ENFORCING`).
+11. Already-open forbidden apps (pre-lockdown) may still be killed by the sweeper — backup only.
+12. `/allowlists/apps` → pick Calculator from the inventory catalog → auto-publish → Calculator launches; Task Manager still blocked.
+13. Deactivate / delete Calculator → Calculator blocked again on next launch.
+14. If AppLocker apply fails / `verify=NOT_ENFORCING`: expect apply failure or ENFORCED warning; kill sweeper should still run. Check AppIDSvc, SKU, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml`, Event Log.
 
 **Network + hosts only (no HKLM URL policy):** lockdown and web-blocker deny use
 hosts DNS sink + AdvFirewall (`AlphaAI-DLP-*` / `AlphaAI-DLP-LOCK-*`). The service
 does **not** write Chrome/Edge `URLBlocklist` / `URLAllowlist` / DoH / Quic — it only
-clears leftovers from older builds. After Publish, newly allowed hosts apply to
-every browser/app without a browser restart. Lab PCs that still show “blocked by
-administrator” need **one** Chrome/Edge quit after upgrade so the old interstitial
-drops.
+clears leftovers from older builds.
 
-Honest limit: P3 AppLocker/WDAC is not built. AdvFirewall uses a complement deny
-(block wins over allow on Windows), not a literal allow-after-deny stack.
+**Apps:** AppLocker **Exe + Appx** Enforce (Store + Win32 default-deny), MSI empty-deny,
+bootstrap A (product + Explorer/Start/shell Appx families). Catalog picks expand to
+**path** at Publish. Broad Microsoft publisher alone is never used for inbox apps.
 
 ---
 

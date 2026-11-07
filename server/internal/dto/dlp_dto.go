@@ -105,11 +105,12 @@ type PublishDlpPolicyResponse struct {
 
 // ── Admin: Lockdown draft ───────────────────────────────────────────────────
 
-// LockdownAllowApp is publisher and/or SHA-256 (never display-name-only).
+// LockdownAllowApp is path and/or publisher and/or SHA-256 (never display-name-only).
 type LockdownAllowApp struct {
 	Publisher string `json:"publisher,omitempty"`
 	Product   string `json:"product,omitempty"`
 	Sha256    string `json:"sha256,omitempty"`
+	Path      string `json:"path,omitempty"`
 }
 
 type LockdownDraftResponse struct {
@@ -165,18 +166,21 @@ type UpdateAllowHostRequest struct {
 
 // AllowAppRow is one draft app allow-list entry (GET /dlp/lockdown/apps).
 type AllowAppRow struct {
-	ID            int64     `json:"id"`
-	Publisher     string    `json:"publisher,omitempty"`
-	Product       string    `json:"product,omitempty"`
-	Sha256        string    `json:"sha256,omitempty"`
-	Note          string    `json:"note,omitempty"`
-	Enabled       bool      `json:"enabled"`
-	CreatedBy     *string   `json:"createdBy,omitempty"`
-	CreatedByName string    `json:"createdByName,omitempty"`
-	UpdatedBy     *string   `json:"updatedBy,omitempty"`
-	UpdatedByName string    `json:"updatedByName,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID                       int64     `json:"id"`
+	InstalledApplicationID   string    `json:"installedApplicationId,omitempty"`
+	AppName                  string    `json:"appName,omitempty"`
+	Publisher                string    `json:"publisher,omitempty"`
+	Product                  string    `json:"product,omitempty"`
+	Sha256                   string    `json:"sha256,omitempty"`
+	InstallPath              string    `json:"installPath,omitempty"`
+	Note                     string    `json:"note,omitempty"`
+	Enabled                  bool      `json:"enabled"`
+	CreatedBy                *string   `json:"createdBy,omitempty"`
+	CreatedByName            string    `json:"createdByName,omitempty"`
+	UpdatedBy                *string   `json:"updatedBy,omitempty"`
+	UpdatedByName            string    `json:"updatedByName,omitempty"`
+	CreatedAt                time.Time `json:"createdAt"`
+	UpdatedAt                time.Time `json:"updatedAt"`
 }
 
 type AllowAppListResponse struct {
@@ -188,9 +192,13 @@ type AllowAppListResponse struct {
 }
 
 type CreateAllowAppRequest struct {
+	// Preferred: pick from installed_applications catalog (same as /configuration/apps).
+	InstalledApplicationID string `json:"installedApplicationId,omitempty"`
+	// Legacy / lab: publisher and/or sha256 when no catalog id.
 	Publisher string `json:"publisher,omitempty"`
 	Product   string `json:"product,omitempty"`
 	Sha256    string `json:"sha256,omitempty"`
+	Path      string `json:"path,omitempty"`
 	Note      string `json:"note,omitempty"`
 	Enabled   *bool  `json:"enabled,omitempty"`
 }
@@ -199,6 +207,7 @@ type UpdateAllowAppRequest struct {
 	Publisher *string `json:"publisher,omitempty"`
 	Product   *string `json:"product,omitempty"`
 	Sha256    *string `json:"sha256,omitempty"`
+	Path      *string `json:"path,omitempty"`
 	Note      *string `json:"note,omitempty"`
 	Enabled   *bool   `json:"enabled,omitempty"`
 }

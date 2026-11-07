@@ -17,7 +17,7 @@ internal sealed class PolicyBundle
     public bool? Lockdown { get; init; }
     public IReadOnlyList<string> PlatformAllowHosts { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> AllowHosts { get; init; } = Array.Empty<string>();
-    /// <summary>Published app allow entries (publisher / product / sha256). Enforce is P3.</summary>
+    /// <summary>Published app allow entries (path / publisher / product / sha256).</summary>
     public IReadOnlyList<AllowAppEntry> AllowApps { get; init; } = Array.Empty<AllowAppEntry>();
 
     /// <summary>True unless the published bundle explicitly sets <c>lockdown: false</c>.</summary>
@@ -29,6 +29,7 @@ internal sealed class AllowAppEntry
     public string Publisher { get; init; } = "";
     public string Product { get; init; } = "";
     public string Sha256 { get; init; } = "";
+    public string Path { get; init; } = "";
 }
 
 internal sealed class PolicyRule
@@ -139,11 +140,19 @@ internal static class PolicyBundleParser
             var publisher = el.TryGetProperty("publisher", out var p) ? p.GetString() ?? "" : "";
             var product = el.TryGetProperty("product", out var pr) ? pr.GetString() ?? "" : "";
             var sha = el.TryGetProperty("sha256", out var s) ? s.GetString() ?? "" : "";
+            var path = el.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "";
             publisher = publisher.Trim();
             product = product.Trim();
+            path = path.Trim();
             sha = sha.Trim().ToLowerInvariant().Replace("sha256:", "", StringComparison.OrdinalIgnoreCase);
-            if (publisher.Length == 0 && sha.Length != 64) continue;
-            list.Add(new AllowAppEntry { Publisher = publisher, Product = product, Sha256 = sha });
+            if (publisher.Length == 0 && path.Length == 0 && sha.Length != 64) continue;
+            list.Add(new AllowAppEntry
+            {
+                Publisher = publisher,
+                Product = product,
+                Sha256 = sha,
+                Path = path,
+            });
         }
         return list;
     }

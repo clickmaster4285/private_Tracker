@@ -1,7 +1,16 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-05 (P2 URLAllowlist)
+> **Last audited:** 2026-11-06 (P3 AppLocker Exe+Appx)
 > **Changelog:**
+> - 2026-11-06: **P3 AppLocker launch dialog.** Exe + Appx Enforce, MSI empty-deny,
+>   UTF-16 XML, AppIDSvc restart, Taskmgr Denied verify. Blocked apps show the Windows
+>   organization dialog on launch; `AppProcessGuard` remains backup. Installer **2.10.2+**.
+>
+> - 2026-11-05: **P3 AppLocker enforce.** `AppAllowEnforcer` applies local AppLocker EXE
+>   default-deny when `lockdown` is ON (same pause/teardown/park clear as network).
+>   Bootstrap A = service/tracker dirs + Explorer/Start/shell paths (not Taskmgr/calc).
+>   Bundle `allow.apps` may include `path` / publisher / sha256. Clear on teardown.
+>
 > - 2026-11-05: **P2 Chrome/Edge URLAllowlist.** Lockdown on → `URLBlocklist=*` +
 >   `URLAllowlist` for allow hosts (minus explicit denies) under the same HKLM policy
 >   keys already used for deny-list. Lockdown off clears allowlist.
