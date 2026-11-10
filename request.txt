@@ -1,5 +1,7 @@
-i want to acheive the functionalitiy of capturing the screenshot and then convert to webp and push to server and save on server/media/{empID}/{year}/{month}/{day}/ ... 
+i want to acheive the functionalitiy of capturing the screenshot and then convert to webp and push to server and save on server/media/screenshots/{empID}/{year}/{month}/{day}/ ... 
 
 i want to capture the screenshot every 30sec 
+
+and on the web "/screenshots" i want shown as streaming the screenshots not fully load on the browser
 
 first make a plan for scalability and then implement the code.

@@ -1,7 +1,13 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-10 (live-stream bounded employee poll)
+> **Last audited:** 2026-11-10 (theater LIVE vs Offline badge)
 > **Changelog:**
+> - 2026-11-10: **Theater false LIVE on offline tiles.** Watch SFU `ontrack` could stick
+>   `status=live` with no frames; status ticks kept LIVE even when `clientConnected=false`.
+>   `useLiveStreamSocket` now clears to `offline` + drops the MediaStream when the publisher
+>   is gone; `LiveStreamWatchTile` shows Offline overlay/badge and only paints LIVE when
+>   decoded FPS is measured. Verified: `npx tsc --noEmit`.
+
 > - 2026-11-10: **Live-stream employee list bounded.** `/live-stream` and theater poll
 >   `liveStreamApi.employees({ onlineOnly, limit: 200 })` instead of unbounded `ListAll` every 2s.
 >   Verified: `npx tsc --noEmit`.

@@ -3,6 +3,12 @@
 > **Last audited:** 2026-11-10
 > **Changelog:**
 >
+> - 2026-11-10: **Live theater false LIVE on offline tiles (web).** SFU `ontrack` stuck
+>   `status=live` (black + `— FPS`) while sidebar correctly said Offline; status ticks kept
+>   LIVE when `clientConnected=false`. Fix: watch socket clears to `offline` + drops the
+>   MediaStream when the publisher is gone; tile Offline overlay/badge; LIVE only when
+>   decoded FPS exists. Verified: `npx tsc --noEmit`.
+>
 > - 2026-11-10: **Live-stream VP8 — ship VCRUNTIME140 with Windows client (vpxmd load).** Root cause
 >   of `LIVE` + SFU `withTrack=false` / `stream_encode_error` `DllNotFoundException: Unable to load
 >   DLL 'vpxmd'` on machines without VC++ 2015-2022 x64: `vpxmd.dll` was already in the install dir

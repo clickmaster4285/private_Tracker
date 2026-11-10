@@ -325,21 +325,49 @@ export function useLiveStreamSocket(
           }
 
           if (msg.type === 'status') {
+            const clientConnected = !!msg.clientConnected;
+            // SFU ontrack can fire with an empty/muted track (LIVE + — FPS). When
+            // the desktop client is gone, never keep the sticky 'live' badge.
+            if (!clientConnected) {
+              liveRef.current = false;
+              const video = videoHolder.current.current;
+              if (video?.srcObject) {
+                try {
+                  video.pause();
+                } catch {
+                  /* ignored */
+                }
+                stopVideoStream(video.srcObject as MediaStream);
+                video.srcObject = null;
+              }
+              setState((s) => ({
+                ...s,
+                streaming: false,
+                streamAvailable: !!msg.streamAvailable,
+                clientConnected: false,
+                monitors: Array.isArray(msg.monitors) ? msg.monitors : s.monitors,
+                selectedMonitor:
+                  typeof msg.selectedMonitor === 'number'
+                    ? msg.selectedMonitor
+                    : s.selectedMonitor,
+                status: 'offline',
+                error: null,
+              }));
+              return;
+            }
             setState((s) => ({
               ...s,
               streaming: liveRef.current || !!msg.streaming,
               streamAvailable: !!msg.streamAvailable,
-              clientConnected: !!msg.clientConnected,
+              clientConnected: true,
               monitors: Array.isArray(msg.monitors) ? msg.monitors : s.monitors,
               selectedMonitor:
                 typeof msg.selectedMonitor === 'number' ? msg.selectedMonitor : s.selectedMonitor,
               status: liveRef.current
                 ? 'live'
-                : !msg.clientConnected
-                  ? 'connecting'
-                  : msg.streamAvailable === false
-                    ? 'unavailable'
-                    : 'connecting',
+                : msg.streamAvailable === false
+                  ? 'unavailable'
+                  : 'connecting',
             }));
             // Do NOT renegotiate on status — that used to fire every 2s and
             // tore down working PeerConnections (blank / pixelated / stuck).
