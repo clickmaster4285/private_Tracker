@@ -818,6 +818,10 @@ func (r *DlpRepo) SnapshotDeviceControl(ctx context.Context, version int64) erro
 		if err := rows.Scan(&x.kind, &x.value, &x.class, &x.action); err != nil {
 			return err
 		}
+		// Never publish Net adapter disables — that takes the PC offline.
+		if isNetAdapterDeviceControl(x.class, x.value, x.action) {
+			continue
+		}
 		list = append(list, x)
 	}
 	if err := rows.Err(); err != nil {
@@ -863,11 +867,28 @@ func (r *DlpRepo) ResolveScopedDeviceControl(ctx context.Context, employeeID, ma
 		if err := rows.Scan(&kind, &value, &class, &action); err != nil {
 			return nil, err
 		}
+		if isNetAdapterDeviceControl(class, value, action) {
+			continue
+		}
 		out = append(out, map[string]any{
 			"kind": kind, "value": value, "pnpClass": class, "action": action,
 		})
 	}
 	return out, rows.Err()
+}
+
+// Net setup-class GUID — disabling NICs cuts the management channel.
+const netClassGUID = "{4d36e972-e325-11ce-bfc1-08002be10318}"
+
+func isNetAdapterDeviceControl(pnpClass, value, action string) bool {
+	if !strings.EqualFold(strings.TrimSpace(action), "block") {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(pnpClass), "Net") {
+		return true
+	}
+	v := strings.TrimSpace(value)
+	return strings.EqualFold(v, "Net") || strings.EqualFold(v, netClassGUID)
 }
 
 func (r *DlpRepo) listPolicyDeviceControl(ctx context.Context, version int64) ([]map[string]any, error) {

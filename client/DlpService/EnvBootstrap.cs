@@ -40,35 +40,18 @@ internal static class EnvBootstrap
     }
 
     /// <summary>
-    /// Blocker / feature keys re-synced into <c>service.env</c> when a new policy arrives,
-    /// preferring values from a nearby bake <c>.env</c> (same source as the installer).
-    /// </summary>
-    private static readonly string[] PolicySyncEnvKeys =
-    [
-        "ALPHA_DLP_ENABLED",
-        "ALPHA_DLP_USB_BLOCK",
-        "ALPHA_DLP_WEB_BLOCK",
-        "ALPHA_DLP_NETWORK_LOCKDOWN",
-        "ALPHA_DLP_APP_BLOCK",
-        "ALPHA_DLP_PORT_BLOCK",
-        "ALPHA_DLP_POLICY_POLL_SEC",
-        "ALPHA_DLP_ALERT_SYNC_SEC",
-    ];
-
-    /// <summary>
     /// After a new policy version is saved: merge missing ship defaults into
-    /// <c>service.env</c>, upsert blocker knobs from the bake <c>.env</c> when present
-    /// (so <c>ALPHA_DLP_PORT_BLOCK=true</c> in client/.env reaches installed PCs), then
-    /// reload into the process so EnforceWorker picks them up without a restart.
+    /// <c>service.env</c> and reload. Does <b>not</b> overwrite local kill-switches from a
+    /// nearby bake <c>.env</c> — that used to force <c>ALPHA_DLP_NETWORK_LOCKDOWN=false</c>
+    /// onto installed PCs and clear firewall lockdown even when the web turned internet block on.
     /// </summary>
     public static IReadOnlyList<string> SyncServiceEnvAfterPolicyApply()
     {
         var changed = new List<string>();
         changed.AddRange(EnsureShippedServiceEnvDefaults());
-        changed.AddRange(UpsertKeysFromNearbyDotEnv(PolicySyncEnvKeys));
-        // Older installs omitted PORT_BLOCK from Inno/service.env; heal to true on every
-        // new policy so PortDeviceEnforcer actually runs (matches ship default + client .env).
+        // Older installs omitted these keys; heal to ship defaults so published policy can apply.
         changed.AddRange(EnsureKey("ALPHA_DLP_PORT_BLOCK", "true", overwrite: true));
+        changed.AddRange(EnsureKey("ALPHA_DLP_NETWORK_LOCKDOWN", "true", overwrite: true));
         LoadServiceEnv(overwrite: true);
         return changed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }

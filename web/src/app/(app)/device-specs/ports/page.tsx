@@ -1,16 +1,17 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
   Usb, HardDrive, Wifi, Loader2, ShieldOff, ShieldAlert, ShieldCheck, Ban, Search,
   CircleCheck, CircleSlash, Info, Monitor, Keyboard, Mouse, Camera, Printer, Speaker,
   Bluetooth, Network, Smartphone, Cpu, Disc, Fingerprint, CreditCard, Cable, Clock,
-  User, Building2, ChevronDown, AlertTriangle, Plug, Eye,
+  User, Building2, ChevronDown, AlertTriangle, Plug, Eye, ExternalLink,
 } from 'lucide-react';
 import EmployeePage from '@/components/employees/EmployeePage';
-import { portControlApi, type Employee, type MachinePort, type DeviceControlRule } from '@/lib/api';
+import { portControlApi, dlpApi, type Employee, type MachinePort, type DeviceControlRule } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -67,13 +68,18 @@ const CLASS_INFO: Record<string, ClassInfo> = {
   SCSIAdapter: { label: 'Storage controllers', desc: 'NVMe, SCSI and RAID controllers.', icon: HardDrive },
   HDC: { label: 'Disk controllers', desc: 'SATA / AHCI controllers.', icon: HardDrive },
   CDROM: { label: 'Optical drives', desc: 'CD, DVD and Blu-ray drives.', icon: Disc },
-  Net: { label: 'Network adapters', desc: 'Ethernet, Wi-Fi and VPN adapters. Blocking cuts the network on that adapter.', icon: Network, risky: 'If this is the adapter the computer uses to reach the server, the PC will go offline and cannot receive an Unblock.' },
+  Net: {
+    label: 'Network adapters',
+    desc: 'Ethernet, Wi-Fi and VPN adapters. Shown for visibility — never disabled here (that would take the PC offline).',
+    icon: Network,
+    risky: 'To block internet while keeping the management server reachable, use Allowlists → Web (Network Lockdown).',
+  },
   Bluetooth: { label: 'Bluetooth', desc: 'Bluetooth radios and paired devices.', icon: Bluetooth, risky: 'Bluetooth keyboards, mice and headsets will stop working.' },
   Modem: { label: 'Mobile broadband', desc: 'Modems and 4G / 5G adapters.', icon: Network },
 };
 
 /** Classes Windows cannot safely hard-block (detect / alert only). */
-const ALERT_ONLY_CLASSES = new Set(['Display', 'Monitor']);
+const ALERT_ONLY_CLASSES = new Set(['Display', 'Monitor', 'Net']);
 
 function classInfo(pnpClass: string): ClassInfo {
   return CLASS_INFO[pnpClass] ?? { label: pnpClass || 'Other devices', desc: 'Hardware detected on this computer.', icon: Plug };
@@ -163,6 +169,32 @@ function PortsBody({
   const rulesQ = useQuery({
     queryKey: ['device-control-rules'],
     queryFn: () => portControlApi.listRules(),
+  });
+  // Same Network Lockdown switch as Allowlists → Web (blocks internet, keeps server/LAN).
+  const lockdownQ = useQuery({
+    queryKey: ['dlp-lockdown'],
+    queryFn: () => dlpApi.lockdown.get(),
+  });
+  const internetMutation = useMutation({
+    mutationFn: async (lockdown: boolean) => {
+      const res = await dlpApi.lockdown.update({ lockdown });
+      const pub = await dlpApi.rules.publish();
+      return { res, pub };
+    },
+    onSuccess: ({ res, pub }) => {
+      qc.setQueryData(['dlp-lockdown'], res);
+      toast.success(
+        res.lockdown
+          ? `Internet blocked · policy v${pub.policyVersion}`
+          : `Internet allowed · policy v${pub.policyVersion}`,
+        {
+          description: res.lockdown
+            ? 'Outbound web is default-deny. The management server and LAN stay reachable.'
+            : 'Browsing is open again (unless Web Blocker rules still apply).',
+        },
+      );
+    },
+    onError: (err: Error) => toast.error('Could not update internet lock', { description: err.message }),
   });
 
   const rules = useMemo(() => rulesQ.data?.rules ?? [], [rulesQ.data]);
@@ -261,7 +293,9 @@ function PortsBody({
     onError: (err: Error) => toast.error('Could not remove the rule', { description: err.message }),
   });
 
-  const busy = createInstanceRule.isPending || createClassRule.isPending || removeRule.isPending;
+  const busy = createInstanceRule.isPending || createClassRule.isPending || removeRule.isPending
+    || internetMutation.isPending;
+  const internetBlocked = lockdownQ.data?.lockdown === true;
 
   if (portsQ.isLoading || rulesQ.isLoading) {
     return <div className="flex items-center justify-center min-h-[300px]"><Loader2 className="w-7 h-7 animate-spin text-primary" /></div>;
@@ -465,6 +499,8 @@ function PortsBody({
                       classRule={classRuleFor(groupPorts[0])}
                       ruleFor={ruleFor}
                       busy={busy}
+                      internetBlocked={internetBlocked}
+                      onToggleInternet={(on) => internetMutation.mutate(on)}
                       onBlockAll={(p) => setConfirm({ kind: 'class', port: p, title: classInfo(p.pnpClass).label, count: groupPorts.length })}
                       onBlock={(p) => setConfirm({ kind: 'instance', port: p, title: p.friendlyName || p.instanceId, count: 1 })}
                       onAlert={(p) => createInstanceRule.mutate({ port: p, action: 'alert' })}
@@ -561,12 +597,14 @@ function Legend({ icon: Icon, tone, title, text }: { icon: React.ElementType; to
 }
 
 function ClassGroup({
-  ports, classRule, ruleFor, busy, onBlockAll, onBlock, onAlert, onRemove,
+  ports, classRule, ruleFor, busy, internetBlocked, onToggleInternet, onBlockAll, onBlock, onAlert, onRemove,
 }: {
   ports: MachinePort[];
   classRule?: DeviceControlRule;
   ruleFor: (p: MachinePort) => DeviceControlRule | undefined;
   busy: boolean;
+  internetBlocked?: boolean;
+  onToggleInternet?: (on: boolean) => void;
   onBlockAll: (p: MachinePort) => void;
   onBlock: (p: MachinePort) => void;
   onAlert: (p: MachinePort) => void;
@@ -575,6 +613,7 @@ function ClassGroup({
   const sample = ports[0];
   const info = classInfo(sample.pnpClass);
   const Icon = info.icon;
+  const isNet = sample.pnpClass === 'Net';
   const alertOnly = ALERT_ONLY_CLASSES.has(sample.pnpClass) || !sample.blockable;
   const canClassBlock = !alertOnly && !!(sample.classGuid || sample.pnpClass);
 
@@ -589,13 +628,28 @@ function ClassGroup({
             <h3 className="text-sm font-semibold">{info.label}</h3>
             <span className="text-xs text-muted-foreground">{ports.length} device{ports.length === 1 ? '' : 's'}</span>
             {classRule && <PolicyBadge rule={classRule} />}
-            {alertOnly && (
+            {isNet && internetBlocked ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-red-500/10 text-red-600">
+                <ShieldOff className="w-3 h-3" /> Internet blocked
+              </span>
+            ) : alertOnly ? (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
                 <Eye className="w-3 h-3" /> Monitor only
               </span>
-            )}
+            ) : null}
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">{info.desc}</p>
+          {isNet && (
+            <p className="text-xs text-amber-700 dark:text-amber-400 mt-1.5 flex flex-wrap items-center gap-x-1 gap-y-0.5">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+              Adapters stay enabled. Internet lock uses Network Lockdown (same as{' '}
+              <Link href="/allowlists/web" className="underline font-medium inline-flex items-center gap-0.5">
+                Allowlists → Web
+                <ExternalLink className="w-3 h-3" />
+              </Link>
+              ) — company-wide; server and LAN stay reachable.
+            </p>
+          )}
         </div>
         {classRule ? (
           <Button variant="outline" size="sm" disabled={busy} onClick={() => onRemove(classRule.id)}>
@@ -611,6 +665,21 @@ function ClassGroup({
           >
             <ShieldOff className="w-3.5 h-3.5 mr-1.5" /> Block all of this type
           </Button>
+        ) : isNet && onToggleInternet ? (
+          internetBlocked ? (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => onToggleInternet(false)}>
+              <CircleCheck className="w-3.5 h-3.5 mr-1.5" /> Allow internet
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => onToggleInternet(true)}
+              className="bg-red-600 text-white hover:bg-red-700"
+            >
+              <ShieldOff className="w-3.5 h-3.5 mr-1.5" /> Block internet
+            </Button>
+          )
         ) : null}
       </header>
 

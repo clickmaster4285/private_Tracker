@@ -127,7 +127,12 @@ internal static class PortDeviceEnforcer
     {
         "{4d36e968-e325-11ce-bfc1-08002be10318}", // Display (GPU)
         "{4d36e96e-e325-11ce-bfc1-08002be10318}", // Monitor
+        // Net adapters: disabling them takes the PC fully offline so Unblock/policy
+        // cannot arrive. Block internet via LockdownNetworkEnforcer instead.
+        "{4d36e972-e325-11ce-bfc1-08002be10318}", // Net
     };
+
+    internal const string NetClassGuid = "{4d36e972-e325-11ce-bfc1-08002be10318}";
 
     public static Result Apply(
         IReadOnlyList<string> blockInstances,
@@ -147,6 +152,15 @@ internal static class PortDeviceEnforcer
             .Where(id => !string.IsNullOrWhiteSpace(id) && !allow.Contains(id))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        // Never hard-disable a present NIC — even if a stale instance rule slipped through.
+        if (instances.Count > 0)
+        {
+            var netPresent = new HashSet<string>(
+                ListPresentInstanceIdsByClassGuids(new[] { NetClassGuid }),
+                StringComparer.OrdinalIgnoreCase);
+            if (netPresent.Count > 0)
+                instances = instances.Where(id => !netPresent.Contains(id)).ToList();
+        }
 
         var changed = false;
         var pending = false;

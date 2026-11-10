@@ -164,12 +164,14 @@ internal static class PolicyBundleParser
     /// <summary>
     /// Instance ids the policy wants hard-blocked right now.
     /// Instance <c>allow</c> entries win over instance <c>block</c>.
+    /// Net adapters are never hard-blocked (use Network Lockdown for internet).
     /// </summary>
     public static IReadOnlyList<string> BlockedInstances(PolicyBundle bundle)
     {
         var allowed = AllowedInstances(bundle);
         return bundle.DeviceControl
             .Where(e => e.Kind == "instance" && e.Action == "block" && !allowed.Contains(e.Value))
+            .Where(e => !IsNetAdapterEntry(e))
             .Select(e => e.Value)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -178,6 +180,7 @@ internal static class PolicyBundleParser
     /// <summary>
     /// PnP class names / setup-class GUIDs to hard-block.
     /// Class <c>allow</c> removes that class from the deny set; instance allows are handled separately.
+    /// Net class is never hard-blocked (use Network Lockdown for internet).
     /// </summary>
     public static IReadOnlyList<string> BlockedClasses(PolicyBundle bundle)
     {
@@ -188,9 +191,23 @@ internal static class PolicyBundleParser
             StringComparer.OrdinalIgnoreCase);
         return bundle.DeviceControl
             .Where(e => e.Kind == "class" && e.Action == "block" && !allowedClasses.Contains(e.Value))
+            .Where(e => !IsNetAdapterEntry(e))
             .Select(e => e.Value)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>
+    /// True when a deviceControl entry targets a network adapter (class Net / Net GUID).
+    /// Those must not be Disable-PnpDevice'd — that cuts the path to the management server.
+    /// </summary>
+    public static bool IsNetAdapterEntry(DeviceControlEntry e)
+    {
+        if (e.PnpClass.Equals("Net", StringComparison.OrdinalIgnoreCase)) return true;
+        var v = (e.Value ?? "").Trim();
+        if (v.Equals("Net", StringComparison.OrdinalIgnoreCase)) return true;
+        if (v.Equals(PortDeviceEnforcer.NetClassGuid, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     /// <summary>Instance ids exempt from class/instance blocks (allow beats block).</summary>

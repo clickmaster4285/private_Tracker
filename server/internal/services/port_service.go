@@ -50,6 +50,7 @@ func (s *PortService) CreateRule(ctx context.Context, req dto.CreateDeviceContro
 	req.Action = strings.TrimSpace(strings.ToLower(req.Action))
 	req.Scope = strings.TrimSpace(strings.ToLower(req.Scope))
 	req.ScopeValue = strings.TrimSpace(req.ScopeValue)
+	req.PnpClass = strings.TrimSpace(req.PnpClass)
 	if req.TargetKind != "class" && req.TargetKind != "instance" {
 		return nil, fmt.Errorf("targetKind must be 'class' or 'instance'")
 	}
@@ -72,6 +73,11 @@ func (s *PortService) CreateRule(ctx context.Context, req dto.CreateDeviceContro
 	default:
 		return nil, fmt.Errorf("scope must be global, department, employee or machine")
 	}
+	if req.Action == "block" && isNetAdapterTarget(req.TargetKind, req.TargetValue, req.PnpClass) {
+		return nil, fmt.Errorf(
+			"network adapters cannot be disabled — that takes the PC offline. " +
+				"Use Allowlists → Web (Network Lockdown) to block internet while keeping the management server reachable")
+	}
 	row, err := s.repo.InsertDeviceControlRule(ctx, req, nilIfEmpty(userID))
 	if err != nil {
 		return nil, err
@@ -88,12 +94,42 @@ func (s *PortService) UpdateRule(ctx context.Context, id int64, req dto.UpdateDe
 		}
 		req.Action = &a
 	}
+	existing, err := s.repo.GetDeviceControlRule(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	action := existing.Action
+	if req.Action != nil {
+		action = *req.Action
+	}
+	if action == "block" && isNetAdapterTarget(existing.TargetKind, existing.TargetValue, existing.PnpClass) {
+		return nil, fmt.Errorf(
+			"network adapters cannot be disabled — that takes the PC offline. " +
+				"Use Allowlists → Web (Network Lockdown) to block internet while keeping the management server reachable")
+	}
 	row, err := s.repo.UpdateDeviceControlRule(ctx, id, req, nilIfEmpty(userID))
 	if err != nil {
 		return nil, err
 	}
 	s.autoPublish(ctx, userID)
 	return row, nil
+}
+
+// Net setup-class GUID (Windows). Disabling NICs cuts the management channel.
+const netClassGUID = "{4d36e972-e325-11ce-bfc1-08002be10318}"
+
+func isNetAdapterTarget(kind, value, pnpClass string) bool {
+	if strings.EqualFold(strings.TrimSpace(pnpClass), "Net") {
+		return true
+	}
+	v := strings.TrimSpace(value)
+	if strings.EqualFold(v, "Net") {
+		return true
+	}
+	if strings.EqualFold(v, netClassGUID) {
+		return true
+	}
+	return false
 }
 
 func (s *PortService) DeleteRule(ctx context.Context, id int64, userID string) error {

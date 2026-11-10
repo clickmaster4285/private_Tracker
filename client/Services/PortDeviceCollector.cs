@@ -90,10 +90,12 @@ public class PortDeviceCollector : BackgroundService
         ["Net"] = 3, ["Bluetooth"] = 3, ["Modem"] = 3,
     };
 
-    // Not individually blockable: video outputs + internal disks are alert-only.
+    // Not individually blockable: video outputs, NICs (use Network Lockdown for
+    // internet), + internal disks are alert-only.
     private static readonly HashSet<string> AlertOnlyClasses = new(StringComparer.OrdinalIgnoreCase)
     {
         "Display", "Monitor",
+        "Net", // never Disable-PnpDevice — kills path to the management server
     };
 
     private async Task<IReadOnlyList<MachinePort>> ScanWindowsAsync(CancellationToken ct)

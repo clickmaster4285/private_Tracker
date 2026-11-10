@@ -129,6 +129,15 @@ func (r *PortRepo) ListDeviceControlRules(ctx context.Context) ([]dto.DeviceCont
 	return out, rows.Err()
 }
 
+func (r *PortRepo) GetDeviceControlRule(ctx context.Context, id int64) (*dto.DeviceControlRuleRow, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+dcSelectCols+` FROM device_control_rules WHERE id=$1`, id)
+	x, err := scanDeviceControlRule(row)
+	if err != nil {
+		return nil, err
+	}
+	return &x, nil
+}
+
 func (r *PortRepo) InsertDeviceControlRule(ctx context.Context, req dto.CreateDeviceControlRuleRequest, userID *string) (*dto.DeviceControlRuleRow, error) {
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO device_control_rules
