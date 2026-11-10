@@ -1,8 +1,8 @@
 # Always-on Windows tracker + default-deny lockdown
 
-> **Status:** P0–P3 source complete. **Active:** installed Lab 3 (AppLocker Exe+Appx launch block) on Windows installer **2.10.2+**.
+> **Status:** P0–P3 source complete. **Active:** installed Lab 3 (AppLocker + delete-block ACL) on Windows installer **1.0.6+**.
 > **Written:** 2026-11-05
-> **Updated:** 2026-11-06 — AppLocker Exe+Appx enforce + AppIDSvc restart + Taskmgr verify; kill sweeper is backup only. Rebuild installer **2.10.2**.
+> **Updated:** 2026-11-10 — delete-block ACL (`ALPHA_DLP_DELETE_BLOCK`); AppLocker bootstrap SYSTEM-only PowerShell + Settings out of bootstrap A; `/allowlists/apps` Windows Settings preset + path override. Prior 2026-11-06: AppLocker Exe+Appx enforce + AppIDSvc restart + Taskmgr verify.
 > **Owns:** delete the tracking-mode feature from server, client, and web, a Windows default-deny allowlist (network, web, applications), and the Terms & Conditions feature.
 > **Does not own:** Linux or macOS enforcement, or moving collectors, login, browser reading, or live capture into `AlphaAITracker.Service`.
 
@@ -19,7 +19,7 @@ Execute with `@prompt.md`. Read `AGENTS.md` before each phase. Ship one phase at
 5. **Upgrade also flips to fail-closed.** Agents treat missing/`true` lockdown as ON; only published `lockdown: false` opts out. Migration **061** marks historical snapshots lockdown ON so a re-pull does not re-open the fleet. The same `lockdown: true` flag turns on **both** network deny and AppLocker EXE enforce.
 6. **One published bundle for the fleet.** Allowlists are compiled at Publish into the existing immutable `dlp_policy_versions` snapshot (`DLP Policy Version Rule`). Clients keep `GET /dlp/policy?sinceVersion=`. Do not mint a bundle per PC.
 7. **Agent identity is publisher, path, or hash — never a display name.** Admin UX may pick catalog `app_name` from `installed_applications`; Publish expands that row into concrete path / publisher / SHA rules. The service never matches on display name. No new hardcoded software-name allow lists beyond the baked survival bootstrap (§4 bootstrap A).
-8. **Uninstall clears enforcement.** Protected uninstall and teardown must remove firewall, DNS, browser policy, and AppLocker artifacts. A removed product must not leave the PC locked.
+8. **Uninstall clears enforcement.** Protected uninstall and teardown must remove firewall, DNS, browser policy, AppLocker, and delete-block ACL artifacts. A removed product must not leave the PC locked.
 9. **Alerts are aggregated.** A default-deny filter must not write one unsynced alert per blocked connection. Unsynced alerts are still deleted only when `acceptedIds` lists them.
 10. **Terms & Conditions is gone.** No settings page, no client acceptance window, no consent check on live stream or any other page. Migration **057** drops `terms_consent` and `terms_content`. Tracking-mode deletion uses migration **058**.
 11. **App survival bootstrap A.** Always allow only this product (service + tracker install dir) + Windows sign-in / Explorer / Start / minimal shell binaries needed to stay logged in. Calculator, Task Manager, Notepad, Settings, browsers, Office, etc. stay **blocked until** allowed on `/allowlists/apps`.
@@ -181,7 +181,8 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 
 **Web `/allowlists/apps`**
 
-- Form: searchable infinite-scroll catalog picker (`monitoringApi.apps.list` — same catalog as Configuration → Applications). Select `app_name` → create by `installedApplicationId` (+ optional note) → auto-publish.
+- Form: searchable infinite-scroll catalog picker (`monitoringApi.apps.list` — same catalog as Configuration → Applications). Select `app_name` → create by `installedApplicationId` (+ optional note / path override) → auto-publish.
+- **Windows Settings (Win10/11)** preset posts the ImmersiveControlPanel EXE + Appx product (Linux cinnamon/gnome catalog rows are not Windows Settings).
 - Table: Application, identity summary, creator, Active|Inactive + Edit/Delete.
 - Copy: under lockdown, only listed apps (plus bootstrap) can start.
 
@@ -189,10 +190,11 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 
 - `AppAllowEnforcer`: when `lockdown == true` and not paused, apply local AppLocker policy:
   - **Exe + Appx** EnforcementMode=Enabled (Win32 + Store default-deny). MSI Enabled empty = no installs. Script/Dll stay NotConfigured.
-  - Bootstrap A path + shell Appx product allows (baked). Published path / publisher from `policy_allow_apps` (+ Appx family when path is under WindowsApps).
+  - Bootstrap A path + shell Appx product allows (baked). PowerShell is **SYSTEM-only**; Settings stays default-deny until published. Published path / publisher from `policy_allow_apps` (+ Appx family when path is under WindowsApps).
   - UTF-16 policy XML; AppIDSvc Automatic + restart after apply; `Test-AppLockerPolicy` verify Taskmgr Denied.
-  - Blocked launches show the Windows organization dialog (not open-then-kill). `AppProcessGuard` remains backup for already-running EXEs.
-- Fingerprint + generation lock. Teardown / `ALPHA_DLP_ENABLED=false` / `lockdown: false` / pause **removes** AppLocker policy.
+  - Blocked launches show the Windows organization dialog (not open-then-kill). `AppProcessGuard` remains backup for already-running EXEs (and force-kills interactive shells/Settings when path is unknown).
+- `DeleteBlockAclEnforcer`: same lockdown gate — NTFS Deny Delete on Fixed/Removable roots (`ALPHA_DLP_DELETE_BLOCK`); clear on pause/teardown/park/local off.
+- Fingerprint + generation lock. Teardown / `ALPHA_DLP_ENABLED=false` / `lockdown: false` / pause **removes** AppLocker policy **and** delete-block ACEs.
 - Apply failure → `enforcement_audit` (do not claim enforce if verify says NOT_ENFORCING).
 
 **Done when**
@@ -200,11 +202,13 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 - [x] Migration **064** + catalog create/list/publish expand.
 - [x] `/allowlists/apps` catalog picker (no free-text publisher/SHA as the primary path).
 - [x] Source: AppLocker enforcer + bootstrap A + teardown/pause/park clear.
+- [x] Windows Settings allow path (web preset + server well-known resolve) + delete-block ACL source.
 - [ ] Lab: Calculator / Task Manager blocked until allowed; Explorer + tracker + service still run.
 - [ ] Lab: Allowed catalog app starts; rename of hashed binary denied when hash no longer matches.
-- [ ] Lab: Teardown / lockdown off clears AppLocker.
+- [ ] Lab: Teardown / lockdown off clears AppLocker **and** delete-block ACEs.
 - [ ] Lab: Reboot + sign-in while enforce is on (ship gate).
-- [x] `go build` / `go vet`, `dotnet build` DlpService, `npx tsc --noEmit`. Docs + Installer-Parity note.
+- [ ] Lab: Delete-block create OK / delete Denied; local `ALPHA_DLP_DELETE_BLOCK=false` clears (`TESTING.md` §H 15–17).
+- [x] Docs + Installer-Parity note (ship **1.0.6+**).
 
 ## 8. Feature test labs
 
@@ -224,14 +228,15 @@ Network + hosts only; no Chromium HKLM URLAllowlist claim.
 
 ### Lab 3 — Applications (P3)
 
-1. Fresh login under `lockdown: true`, empty app allow list. Expect: Explorer + tracker OK; Calculator / Task Manager / Notepad / browsers get the Windows block dialog on launch (no flash-open).
+1. Fresh login under `lockdown: true`, empty app allow list. Expect: Explorer + tracker OK; Calculator / Task Manager / Notepad / browsers / **PowerShell (interactive)** / **Settings** get the Windows block dialog on launch (no flash-open).
 2. On `/allowlists/apps`, pick "Calculator" (or lab catalog app) from the inventory list. Expect auto-publish; within a policy poll, Calculator starts; Task Manager still blocked.
-3. Allow Task Manager the same way. Expect it starts.
+3. Allow Task Manager the same way. Expect it starts. For Settings use the **Windows Settings (Win10/11)** preset (not a Linux cinnamon/gnome catalog row).
 4. Deactivate (or delete) Calculator. Expect auto-publish; Calculator blocked again.
 5. If an entry has SHA-256: copy/rename the binary → expect deny when hash no longer matches.
 6. Reboot. Expect sign-in, tracker relaunch, AppLocker still on.
-7. Protected uninstall / teardown. Expect AppLocker policy gone; Calculator able to start.
+7. Protected uninstall / teardown. Expect AppLocker policy gone **and** delete-block ACEs cleared; Calculator able to start; file delete works again.
 8. Pause lockdown. Expect apps open for the pause window; after timestamp, relock.
+9. Delete-block (`TESTING.md` §H 15–17): create/edit OK, Delete → Access Denied on Fixed/Removable; `ALPHA_DLP_DELETE_BLOCK=false` clears.
 
 ### Lab 4 — Scale and abuse (P1–P3)
 

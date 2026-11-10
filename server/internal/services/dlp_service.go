@@ -623,13 +623,34 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 		if len(resolved.Paths) > 0 {
 			path = resolved.Paths[0]
 		}
+		// Admin path override (e.g. Windows Settings when catalog only has Linux cinnamon entries).
+		if override := strings.TrimSpace(req.Path); override != "" {
+			path = override
+		}
+		if path == "" {
+			path = wellKnownWindowsAllowPath(resolved.BinaryName, resolved.AppName)
+		}
+		if product == "" || product == resolved.AppName {
+			if pkg := wellKnownWindowsAppxProduct(resolved.BinaryName, resolved.AppName, path); pkg != "" {
+				product = pkg
+			}
+		}
 		if publisher == "" && path == "" {
-			return nil, fmt.Errorf("catalog app has no publisher or install path from inventory yet")
+			return nil, fmt.Errorf(
+				"catalog app has no publisher or install path from inventory yet — "+
+					"pick a Windows EXE with a synced path, or enter an install path "+
+					"(Windows Settings: C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe). "+
+					"Linux entries like cinnamon-settings / gnome-control-center will not unlock Windows Settings")
 		}
 		row, err := s.repo.InsertAllowApp(ctx, resolved.ID, resolved.AppName, publisher, product, sha, path, note, enabled, uid)
 		if err != nil {
 			if isUniqueViolation(err) {
-				return nil, fmt.Errorf("application already on the allow list")
+				// Idempotent: already allowed — return existing so auto-publish still runs.
+				existing, getErr := s.repo.GetAllowAppByCatalogID(ctx, resolved.ID)
+				if getErr != nil {
+					return nil, fmt.Errorf("application already on the allow list")
+				}
+				return ptrAllowApp(mapAllowApp(*existing)), nil
 			}
 			return nil, err
 		}
@@ -642,11 +663,44 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if !ok {
 		return nil, fmt.Errorf("each allow app needs installedApplicationId, path, publisher, and/or sha256 (64 hex)")
 	}
-	row, err := s.repo.InsertAllowApp(ctx, "", rowIn.Product, rowIn.Publisher, rowIn.Product, rowIn.Sha256, rowIn.Path, note, enabled, uid)
+	appName := rowIn.Product
+	if appName == "" {
+		appName = rowIn.Path
+	}
+	if pkg := wellKnownWindowsAppxProduct("", appName, rowIn.Path); pkg != "" && rowIn.Product == "" {
+		rowIn.Product = pkg
+	}
+	row, err := s.repo.InsertAllowApp(ctx, "", appName, rowIn.Publisher, rowIn.Product, rowIn.Sha256, rowIn.Path, note, enabled, uid)
 	if err != nil {
 		return nil, err
 	}
 	return ptrAllowApp(mapAllowApp(*row)), nil
+}
+
+// wellKnownWindowsAllowPath maps common Windows Settings identities when inventory is missing.
+func wellKnownWindowsAllowPath(binaryName, appName string) string {
+	key := strings.ToLower(strings.TrimSpace(binaryName) + " " + strings.TrimSpace(appName))
+	switch {
+	case strings.Contains(key, "systemsettings"),
+		strings.Contains(key, "immersivecontrolpanel"),
+		strings.TrimSpace(strings.ToLower(appName)) == "settings" && strings.Contains(key, "systemsettings"):
+		return `C:\Windows\ImmersiveControlPanel\SystemSettings.exe`
+	}
+	bin := strings.ToLower(strings.TrimSpace(binaryName))
+	if bin == "systemsettings.exe" || bin == "systemsettings" {
+		return `C:\Windows\ImmersiveControlPanel\SystemSettings.exe`
+	}
+	return ""
+}
+
+func wellKnownWindowsAppxProduct(binaryName, appName, path string) string {
+	key := strings.ToLower(binaryName + " " + appName + " " + path)
+	if strings.Contains(key, "systemsettings") ||
+		strings.Contains(key, "immersivecontrolpanel") ||
+		strings.Contains(key, `\systemsettings.exe`) {
+		return "windows.immersivecontrolpanel_cw5n1h2txyewy"
+	}
+	return ""
 }
 
 func ptrAllowApp(r dto.AllowAppRow) *dto.AllowAppRow { return &r }

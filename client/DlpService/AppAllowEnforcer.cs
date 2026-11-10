@@ -11,7 +11,9 @@ namespace AlphaAITracker.Service;
 /// When lockdown is ON:
 /// - <b>Exe</b> collection Enforce = default-deny Win32 (Calculator Win32, Taskmgr, Chrome, …)
 /// - <b>Appx</b> collection Enforce = default-deny Store/UWP (modern Calculator, Photos, …)
-/// - Allow only bootstrap A (Explorer / Start / shell / this product) + published allow.apps
+/// - Allow only bootstrap A (minimal Start/shell / this product) + published allow.apps
+/// - PowerShell is <b>SYSTEM-only</b> (S-1-5-18) so this service can still Set-AppLockerPolicy;
+///   interactive users cannot launch powershell / ISE / pwsh until published on allow.apps
 ///
 /// Launch is blocked by the OS (Windows blocked-by-organization dialog). Process kill is a
 /// separate sweeper for anything already running.
@@ -23,7 +25,15 @@ internal static class AppAllowEnforcer
     private static string _lastFingerprint = "";
     private static bool _policyMaybePresent = true;
 
-    /// <summary>Microsoft Store / Appx package family names required for desktop survival.</summary>
+    /// <summary>LOCAL SYSTEM — service Set-AppLockerPolicy / AppID helpers.</summary>
+    private const string LocalSystemSid = "S-1-5-18";
+    private const string EveryoneSid = "S-1-1-0";
+
+    /// <summary>
+    /// Microsoft Store / Appx package family names required for lock screen / Start chrome.
+    /// Intentionally omits Settings / ImmersiveControlPanel — those stay default-deny until
+    /// published on allow.apps.
+    /// </summary>
     private static readonly string[] BootstrapAppxProducts =
     [
         "Microsoft.Windows.StartMenuExperienceHost",
@@ -38,7 +48,6 @@ internal static class AppAllowEnforcer
         "Microsoft.Windows.CallingShellApp",
         "Microsoft.Win32WebViewHost",
         "Microsoft.UI.Xaml.CBS",
-        "MicrosoftWindows.Client.WebExperience",
     ];
 
     public sealed record Result(bool Changed, bool Applied, string Detail);
@@ -79,7 +88,11 @@ internal static class AppAllowEnforcer
                 appxProducts.Add(a.Product.Trim());
         }
 
-        var fp = Fingerprint(paths, publishers, appxProducts);
+        var systemOnly = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in SystemOnlyBootstrapPaths())
+            systemOnly.Add(NormalizeAppLockerPath(p));
+
+        var fp = Fingerprint(paths, publishers, appxProducts, systemOnly);
         lock (Gate)
         {
             if (gen != Interlocked.Read(ref _generation))
@@ -90,7 +103,7 @@ internal static class AppAllowEnforcer
 
             EnsureAppIdService(restart: false);
 
-            var xml = BuildPolicyXml(paths, publishers, appxProducts);
+            var xml = BuildPolicyXml(paths, publishers, appxProducts, systemOnly);
             var apply = SetAppLockerPolicy(xml);
             if (!apply.Ok)
                 return new Result(false, false, apply.Detail);
@@ -135,8 +148,9 @@ internal static class AppAllowEnforcer
     }
 
     /// <summary>
-    /// Bootstrap A — product + Explorer / Start / minimal shell. Omits Taskmgr, calc,
-    /// notepad, Settings, browsers, Office.
+    /// Bootstrap A (Everyone) — product + Explorer / Start / minimal shell.
+    /// Omits Settings, Control Panel, PowerShell/pwsh/ISE, Taskmgr, browsers, Office.
+    /// Publish paths on /allowlists/apps to reopen anything else.
     /// </summary>
     internal static IEnumerable<string> BootstrapPaths()
     {
@@ -166,27 +180,18 @@ internal static class AppAllowEnforcer
             @"%SYSTEM32%\SearchHost.exe",
             @"%SYSTEM32%\ShellHost.exe",
             @"%SYSTEM32%\TextInputHost.exe",
-            @"%SYSTEM32%\WidgetService.exe",
-            @"%SYSTEM32%\SystemSettingsBroker.exe",
             @"%SYSTEM32%\consent.exe",
             @"%SYSTEM32%\smartscreen.exe",
             @"%SYSTEM32%\SecurityHealthService.exe",
             @"%SYSTEM32%\SecurityHealthSystray.exe",
-            // Service must keep applying policy under Everyone SID rules.
-            @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell.exe",
-            @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell_ise.exe",
-            @"%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe",
             @"%SYSTEM32%\wbem\WmiPrvSE.exe",
             @"%SYSTEM32%\msiexec.exe",
         ];
         foreach (var p in shell)
             yield return p;
 
-        // Packaged shell hosts (Exe path fallback; Appx rules are primary for Store packages).
-        yield return @"%PROGRAMFILES%\WindowsApps\Microsoft.Windows.StartMenuExperienceHost*\*";
-        yield return @"%PROGRAMFILES%\WindowsApps\Microsoft.Windows.ShellExperienceHost*\*";
-        yield return @"%PROGRAMFILES%\WindowsApps\Microsoft.Windows.Search*\*";
-        yield return @"%PROGRAMFILES%\WindowsApps\MicrosoftWindows.Client.CBS*\*";
+        // Appx product rules are primary for Start/Search; avoid broad WindowsApps\* path
+        // wildcards (they can re-allow Settings binaries under Client.CBS).
 
         var serviceDir = AppContext.BaseDirectory.TrimEnd(
             Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -206,6 +211,16 @@ internal static class AppAllowEnforcer
             yield return Path.Combine(root, folder, "*");
             yield return Path.Combine(root, ServiceIdentity.AppMutex, "*");
         }
+    }
+
+    /// <summary>
+    /// PowerShell for LOCAL SYSTEM only — required to call Set-AppLockerPolicy.
+    /// Interactive users (Everyone) stay default-deny until allow.apps publishes a path.
+    /// </summary>
+    internal static IEnumerable<string> SystemOnlyBootstrapPaths()
+    {
+        yield return @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell.exe";
+        yield return @"%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe";
     }
 
     private static bool IsBroadMicrosoftPublisher(string publisher)
@@ -260,11 +275,13 @@ internal static class AppAllowEnforcer
     private static string Fingerprint(
         SortedSet<string> paths,
         List<(string Publisher, string Product)> publishers,
-        SortedSet<string> appxProducts)
+        SortedSet<string> appxProducts,
+        SortedSet<string> systemOnlyPaths)
     {
         var sb = new StringBuilder();
-        sb.Append("v2;");
+        sb.Append("v3;");
         foreach (var p in paths) sb.Append("P:").Append(p).Append(';');
+        foreach (var p in systemOnlyPaths) sb.Append("S:").Append(p).Append(';');
         foreach (var (pub, prod) in publishers.OrderBy(x => x.Publisher + "|" + x.Product, StringComparer.OrdinalIgnoreCase))
             sb.Append("U:").Append(pub).Append('|').Append(prod).Append(';');
         foreach (var a in appxProducts) sb.Append("X:").Append(a).Append(';');
@@ -275,11 +292,14 @@ internal static class AppAllowEnforcer
     private static string BuildPolicyXml(
         SortedSet<string> paths,
         List<(string Publisher, string Product)> publishers,
-        SortedSet<string> appxProducts)
+        SortedSet<string> appxProducts,
+        SortedSet<string> systemOnlyPaths)
     {
         var exeRules = new List<XElement>();
         foreach (var path in paths)
-            exeRules.Add(PathRule(path));
+            exeRules.Add(PathRule(path, EveryoneSid));
+        foreach (var path in systemOnlyPaths)
+            exeRules.Add(PathRule(path, LocalSystemSid));
         foreach (var (pub, prod) in publishers)
             exeRules.Add(PublisherRule(pub, prod));
 
@@ -335,14 +355,15 @@ internal static class AppAllowEnforcer
         return doc.ToString(SaveOptions.DisableFormatting);
     }
 
-    private static XElement PathRule(string path)
+    private static XElement PathRule(string path, string userOrGroupSid)
     {
         var id = Guid.NewGuid().ToString();
+        var sidTag = userOrGroupSid == LocalSystemSid ? "sys " : "";
         return new XElement("FilePathRule",
             new XAttribute("Id", id),
-            new XAttribute("Name", "AlphaAI path " + Truncate(path, 80)),
+            new XAttribute("Name", "AlphaAI " + sidTag + "path " + Truncate(path, 80)),
             new XAttribute("Description", "AlphaAI-DLP-APP"),
-            new XAttribute("UserOrGroupSid", "S-1-1-0"),
+            new XAttribute("UserOrGroupSid", userOrGroupSid),
             new XAttribute("Action", "Allow"),
             new XElement("Conditions",
                 new XElement("FilePathCondition",

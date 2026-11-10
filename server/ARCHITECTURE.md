@@ -1,7 +1,15 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-07 (releases from setup folder)
+> **Last audited:** 2026-11-10 (allow-app path resolve + Windows Settings)
 > **Changelog:**
+> - 2026-11-10: **Allow-app create resolves usable Windows paths.** `CreateAllowApp` accepts an
+>   optional path override; maps well-known Windows Settings to
+>   `C:\Windows\ImmersiveControlPanel\SystemSettings.exe` + Appx product
+>   `windows.immersivecontrolpanel_cw5n1h2txyewy` when inventory only has Linux
+>   cinnamon/gnome entries. `ResolveCatalogApp` prefers active inventory paths, falls back to
+>   inactive, and drops bare shell tokens AppLocker cannot use (`isUsableAllowPath`). Duplicate
+>   catalog allow is idempotent (`GetAllowAppByCatalogID` → return existing). Handler maps
+>   catalog/path client errors to HTTP 400 via `isAllowAppClientErr`.
 > - 2026-11-07: **Releases from local `setup/` folder; GitHub bridge removed.** `GitHubReleaseService`
 >   + `GITHUB_*` env deleted. `LocalReleaseService` scans `RELEASES_DIR` (default `setup`) and keeps the
 >   same `/releases` + `/downloads/:assetId` contract (web + clients unchanged on the wire). Downloads via

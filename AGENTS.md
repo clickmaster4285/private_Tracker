@@ -1,7 +1,26 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-07
+> **Last audited:** 2026-11-10
 > **Changelog:**
+>
+> - 2026-11-10: **Delete-block ACL + stricter AppLocker bootstrap + Windows Settings allow path
+>   (client / server / web).** DlpService: new `DeleteBlockAclEnforcer` — under published
+>   `lockdown: true` (same pause/park/teardown clear as network/apps), Deny Delete +
+>   DeleteSubdirectoriesAndFiles for Authenticated Users on every Fixed/Removable volume root
+>   (create/edit stay allowed; SYSTEM/Administrators not denied). Local switch
+>   `ALPHA_DLP_DELETE_BLOCK` (default `true`; `false` → `disabled_local` clear); marker
+>   `%ProgramData%\<APP_MUTEX>\dlp\delete_block_roots.json`; pipe `Health.deleteBlock`; audits
+>   `delete_block_apply` / `delete_block_clear`. AppLocker: PowerShell is **SYSTEM-only**
+>   (S-1-5-18) so `Set-AppLockerPolicy` still works; interactive users stay default-deny until
+>   `/allowlists/apps`; Settings / ImmersiveControlPanel / broad WindowsApps wildcards removed
+>   from bootstrap A; fingerprint `v3`. `AppProcessGuard` force-kills interactive
+>   PowerShell/Settings/cmd/terminal (session > 0) even when path lookup fails. Server: catalog
+>   allow create accepts optional path override + well-known Windows Settings EXE/Appx product;
+>   rejects bare Linux shell tokens (`cinnamon-settings` / …); inactive inventory paths used as
+>   fallback; duplicate catalog allow is idempotent (return existing + auto-publish). Web
+>   `/allowlists/apps`: **Windows Settings (Win10/11)** preset + install-path override + Linux
+>   catalog warning. Client **VERSION 1.0.6**. Lab: `TESTING.md` §H steps 15–17. Installer-Parity:
+>   re-bake + rebuild Windows installer so `service.env` carries `ALPHA_DLP_DELETE_BLOCK`.
 >
 > - 2026-11-07: **Local blocker switches in client `.env` (DlpService).** Four `true|false` keys decide
 >   whether this PC applies each blocker at all: `ALPHA_DLP_USB_BLOCK` (USB storage),

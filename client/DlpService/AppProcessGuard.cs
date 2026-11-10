@@ -38,6 +38,11 @@ internal static class AppProcessGuard
                     if (IsNeverKillName(name))
                         continue;
 
+                    // Interactive shells / Settings — force-kill in user sessions (session > 0)
+                    // when path is unknown. Session 0 (services) PowerShell is left alone so
+                    // Set-AppLockerPolicy can run. Published allow.apps paths still win.
+                    var interactiveDenied = IsDeniedInteractiveName(name) && SafeSessionId(proc) > 0;
+
                     string? path = null;
                     try
                     {
@@ -45,15 +50,14 @@ internal static class AppProcessGuard
                     }
                     catch
                     {
-                        // Access denied / protected — leave alone.
-                        continue;
+                        if (!interactiveDenied)
+                            continue; // Access denied / protected — leave alone.
                     }
 
-                    if (string.IsNullOrWhiteSpace(path))
-                        continue;
-
                     examined++;
-                    if (IsPathAllowed(path, allow))
+                    if (!string.IsNullOrWhiteSpace(path) && IsPathAllowed(path, allow))
+                        continue;
+                    if (string.IsNullOrWhiteSpace(path) && !interactiveDenied)
                         continue;
 
                     try
@@ -61,7 +65,7 @@ internal static class AppProcessGuard
                         proc.Kill(entireProcessTree: true);
                         killed++;
                         if (examples.Count < 8)
-                            examples.Add($"{name}:{path}");
+                            examples.Add($"{name}:{path ?? "?"}");
                     }
                     catch
                     {
@@ -110,8 +114,9 @@ internal static class AppProcessGuard
     }
 
     /// <summary>
-    /// Process names we never kill (desktop survival + SCM). Path-based allow still
-    /// gates Calculator / Taskmgr because those names are NOT listed here.
+    /// Process names we never kill (SCM + desktop shell). Settings / PowerShell are NOT
+    /// listed — under lockdown the sweeper kills them unless published on allow.apps
+    /// (interactive shells are force-killed even when path lookup fails).
     /// </summary>
     private static bool IsNeverKillName(string processName)
     {
@@ -125,14 +130,14 @@ internal static class AppProcessGuard
         if (n.Equals("client", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // Critical OS / shell — must stay up even if MainModule is unreadable.
+        // Critical OS + Explorer shell — must stay up even if MainModule is unreadable.
         string[] forever =
         [
             "System", "Registry", "smss", "csrss", "wininit", "winlogon", "services", "lsass",
             "svchost", "dwm", "fontdrvhost", "conhost", "explorer", "userinit", "LogonUI",
             "sihost", "taskhostw", "RuntimeBroker", "ApplicationFrameHost", "ShellExperienceHost",
             "StartMenuExperienceHost", "SearchHost", "SearchApp", "ShellHost", "TextInputHost",
-            "ctfmon", "dllhost", "backgroundTaskHost", "SystemSettingsBroker", "WidgetService",
+            "ctfmon", "dllhost", "backgroundTaskHost",
             "SecurityHealthService", "MsMpEng", "NisSrv", "SgrmBroker", "Memory Compression",
         ];
         foreach (var f in forever)
@@ -141,6 +146,33 @@ internal static class AppProcessGuard
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Shells / Settings / Control Panel that must not stay open for interactive users
+    /// until published on the server allow list. Explorer is never listed (desktop survival).
+    /// </summary>
+    private static bool IsDeniedInteractiveName(string processName)
+    {
+        string[] denied =
+        [
+            "powershell", "powershell_ise", "pwsh",
+            "SystemSettings", "SystemSettingsAdminFlows", "SystemSettingsBroker",
+            "control", "mmc", "cmd",
+            "WindowsTerminal", "wt",
+        ];
+        foreach (var d in denied)
+        {
+            if (processName.Equals(d, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static int SafeSessionId(Process proc)
+    {
+        try { return proc.SessionId; }
+        catch { return -1; }
     }
 
     private static string ExpandMacros(string path)

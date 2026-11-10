@@ -25,6 +25,7 @@ public sealed class EnforceWorker : BackgroundService
     private DateTimeOffset _lastLockdownWarn = DateTimeOffset.MinValue;
     private string? _lastAppLockdownState;
     private DateTimeOffset _lastAppLockdownWarn = DateTimeOffset.MinValue;
+    private string? _lastDeleteBlockState;
 
     public EnforceWorker(
         DlpConfig cfg,
@@ -66,13 +67,23 @@ public sealed class EnforceWorker : BackgroundService
             {
                 _logger.LogWarning(ex, "AppLocker clear on park failed");
             }
+            try
+            {
+                var delClear = await Task.Run(DeleteBlockAclEnforcer.Clear, stoppingToken);
+                if (delClear.Changed)
+                    _logger.LogWarning("Parked: cleared delete-block ACLs ({Detail})", delClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Delete-block ACL clear on park failed");
+            }
             return;
         }
 
         await _store.InitializeAsync(stoppingToken);
         _logger.LogInformation(
-            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App})",
-            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock);
+            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App}, deleteBlock={Del})",
+            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock, _cfg.DeleteBlock);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -142,7 +153,56 @@ public sealed class EnforceWorker : BackgroundService
         // Lockdown (allow-world) first; explicit web-block domains below still apply inside it.
         await ApplyLockdownAsync(bundle, ct);
         await ApplyAppLockdownAsync(bundle, ct);
+        await ApplyDeleteBlockAsync(bundle, ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
+    }
+
+    /// <summary>
+    /// NTFS Deny Delete on Fixed/Removable roots when lockdown is ON (create/edit stay allowed).
+    /// </summary>
+    private async Task ApplyDeleteBlockAsync(PolicyBundle bundle, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var want = _cfg.DeleteBlock && hasCreds && !paused && bundle.LockdownEnabled;
+
+        if (!want)
+        {
+            var clear = await Task.Run(DeleteBlockAclEnforcer.Clear, ct);
+            var state = !_cfg.DeleteBlock ? "disabled_local" : paused ? "paused" : "off";
+            if (clear.Changed || _lastDeleteBlockState is not (null or "off" or "paused" or "disabled_local"))
+            {
+                await _store.AuditAsync("delete_block_clear", $"state={state} detail={clear.Detail}", ct);
+                _logger.LogInformation("Delete-block ACLs CLEARED (state={State}, detail={Detail})", state, clear.Detail);
+            }
+            if (clear.Applied)
+                _lastDeleteBlockState = state;
+            return;
+        }
+
+        var result = await Task.Run(DeleteBlockAclEnforcer.Apply, ct);
+        if (result.Applied)
+        {
+            if (result.Changed || _lastDeleteBlockState != "on")
+            {
+                await _store.AuditAsync("delete_block_apply", result.Detail, ct);
+                _logger.LogInformation(
+                    "Delete-block ACLs ENFORCED ({Detail}) — Authenticated Users cannot delete on Fixed/Removable volumes",
+                    result.Detail);
+            }
+            _lastDeleteBlockState = "on";
+        }
+        else
+        {
+            await _store.AuditAsync("delete_block_apply_failed", result.Detail, ct);
+            _logger.LogWarning("Delete-block ACL apply failed: {Detail}", result.Detail);
+        }
     }
 
     /// <summary>

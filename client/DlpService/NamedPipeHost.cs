@@ -340,6 +340,7 @@ public sealed class NamedPipeHost : BackgroundService
             webBlock = _cfg.WebBlock,
             networkLockdown = _cfg.NetworkLockdown,
             appBlock = _cfg.AppBlock,
+            deleteBlock = _cfg.DeleteBlock,
             loginReboot = _cfg.LoginReboot,
             update = _updateState.Snapshot(),
         });
@@ -488,6 +489,10 @@ public sealed class NamedPipeHost : BackgroundService
                         _logger.LogWarning(
                             "Teardown cleared AppLocker (changed={Changed}, detail={Detail})",
                             apps.Changed, apps.Detail);
+                        var del = DeleteBlockAclEnforcer.Clear();
+                        _logger.LogWarning(
+                            "Teardown cleared delete-block ACLs (changed={Changed}, detail={Detail})",
+                            del.Changed, del.Detail);
                         ServiceAclHardener.TryApplyOpen(_logger);
                     }
                 }

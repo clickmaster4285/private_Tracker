@@ -122,7 +122,7 @@ public sealed class PolicyPullWorker : BackgroundService
 
     /// <summary>
     /// Kill running EXEs outside Bootstrap A before the allowset arrives (fail-closed).
-    /// Does not touch Explorer / critical OS (see <see cref="AppProcessGuard"/>).
+    /// Explorer is killable under lockdown; critical OS names are not (see <see cref="AppProcessGuard"/>).
     /// </summary>
     private async Task PreKillOutsideBootstrapAsync(CancellationToken ct)
     {

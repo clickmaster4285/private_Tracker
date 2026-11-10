@@ -1,7 +1,13 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-07 (releases copy)
+> **Last audited:** 2026-11-10 (Windows Settings allow preset)
 > **Changelog:**
+> - 2026-11-10: **`/allowlists/apps` Windows Settings preset + path override.** Add dialog offers
+>   **Windows Settings (Win10/11)** (posts
+>   `C:\Windows\ImmersiveControlPanel\SystemSettings.exe` + ImmersiveControlPanel Appx product)
+>   alongside the inventory catalog picker; optional install-path override; Linux
+>   cinnamon/gnome/WSL Settings catalog rows are labeled and blocked unless a Windows path is
+>   supplied. Auto-publish unchanged.
 > - 2026-11-07: `/releases` copy no longer mentions GitHub — installers come from the API server's
 >   `setup/` folder (same `/api/v1/releases` contract). Verified: `npx tsc --noEmit`.
 > - 2026-11-05: **P3 App Allow List catalog picker.** `/allowlists/apps` selects from

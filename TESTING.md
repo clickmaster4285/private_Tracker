@@ -26,6 +26,9 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./
 12. `/allowlists/apps` → pick Calculator from the inventory catalog → auto-publish → Calculator launches; Task Manager still blocked.
 13. Deactivate / delete Calculator → Calculator blocked again on next launch.
 14. If AppLocker apply fails / `verify=NOT_ENFORCING`: expect apply failure or ENFORCED warning; kill sweeper should still run. Check AppIDSvc, SKU, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml`, Event Log.
+15. **Delete-block (ACL):** lockdown ON + `ALPHA_DLP_DELETE_BLOCK=true` → create/edit a file on Desktop OK; Delete → Access Denied. Same on a second Fixed partition and a USB Removable volume. Explorer desktop stays stable (no ~15s blank flicker). Service log: `Delete-block ACLs ENFORCED`. Marker: `%ProgramData%\<APP_MUTEX>\dlp\delete_block_roots.json`.
+16. Lockdown Off / pause / `ALPHA_DLP_DELETE_BLOCK=false` / protected teardown → Deny Delete ACE removed; delete works again.
+17. Caveat: apps that Save via temp→delete→rename (some Office paths) may fail while delete-block is ON — expected for NTFS Deny Delete (not a minifilter).
 
 **Network + hosts only (no HKLM URL policy):** lockdown and web-blocker deny use
 hosts DNS sink + AdvFirewall (`AlphaAI-DLP-*` / `AlphaAI-DLP-LOCK-*`). The service
@@ -35,6 +38,9 @@ clears leftovers from older builds.
 **Apps:** AppLocker **Exe + Appx** Enforce (Store + Win32 default-deny), MSI empty-deny,
 bootstrap A (product + Explorer/Start/shell Appx families). Catalog picks expand to
 **path** at Publish. Broad Microsoft publisher alone is never used for inbox apps.
+
+**Delete-block:** NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated Users
+on every Fixed/Removable volume root (create/write allowed). SYSTEM/Administrators not denied.
 
 ---
 
@@ -82,7 +88,7 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 
 ### B. USBSTOR coarse block + alert
 
-1. With a published `usb_storage` **block** rule and `ALPHA_DLP_USB_BLOCK=true`, plug a USB mass-storage stick. (Local switches: set `ALPHA_DLP_USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK=false` in `service.env`, restart the service → that blocker clears within ~15s and `dlp.db` `enforcement_audit` shows `state=disabled_local` for lockdown/AppLocker.)
+1. With a published `usb_storage` **block** rule and `ALPHA_DLP_USB_BLOCK=true`, plug a USB mass-storage stick. (Local switches: set `ALPHA_DLP_USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK` / `DELETE_BLOCK=false` in `service.env`, restart the service → that blocker clears within ~15s and `dlp.db` `enforcement_audit` shows `state=disabled_local` for lockdown/AppLocker/delete-block.)
 2. Expect: Removable volumes unavailable / USBSTOR disabled (coarse — whole class, not per-file).
 3. Web `/dlp-alerts` within ≤ `ALPHA_DLP_ALERT_SYNC_SEC`: new row (`actionTaken` `blocked` or `alerted`), `policyVersion` matches.
 4. Open the row → detail dialog → change status/notes → **Save** → History shows `dlp_alert_events` entries. Status must **not** update on dropdown change alone.

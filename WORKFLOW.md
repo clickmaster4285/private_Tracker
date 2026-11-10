@@ -4,7 +4,7 @@ How work actually moves through this repo — the loops you run daily, and the g
 
 Rules live in [AGENTS.md](./AGENTS.md) §6; this file is the *procedure* for obeying them. File locations: [FILE_HIERARCHY.md](./FILE_HIERARCHY.md).
 
-*Last audited: 2026-11-07 — client auto-update from the server `setup/` folder (GitHub release bridge + `gh` release flow removed; clients check every 60s). Prior 2026-10-31: Device Configuration (`/configuration/device-configuration`) + tracking-events client queue/UUID fix. Prior: public `/releases` + private GitHub download bridge (`GITHUB_*` on server); Security & DLP P0+P1 (`ALPHA_DLP_*`, Windows service + Inno gate). Commands verified against `client/publish/*.sh`, `client/DlpService/install-service.ps1`, `server/Makefile`, `web/package.json`.*
+*Last audited: 2026-11-10 — `ALPHA_DLP_DELETE_BLOCK` local switch (NTFS Deny Delete under lockdown) joins the other `ALPHA_DLP_*` blocker keys in `.env` → `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` / `EnvBootstrap`. Prior 2026-11-07: client auto-update from the server `setup/` folder (GitHub release bridge removed; 60s check). Prior 2026-10-31: Device Configuration + tracking-events client queue/UUID fix. Prior: Security & DLP P0+P1 (`ALPHA_DLP_*`, Windows service + Inno gate). Commands verified against `client/publish/*.sh`, `client/DlpService/install-service.ps1`, `server/Makefile`, `web/package.json`.*
 
 ---
 
@@ -40,8 +40,8 @@ DLP enforcement is a **separate LocalSystem service** (`client/DlpService`). Shi
 
 | Side | Keys |
 |---|---|
-| Client / service.env | `ALPHA_DLP_*` as before; **`ALPHA_CONTROL_POLL_SEC`** (default 3600); optional `ALPHA_DLP_DATA_DIR` / `ALPHA_DLP_PIPE_NAME` |
-| Server | `DLP_REMOVAL_CODE_TTL_MIN`; tracking mode via JWT + DeviceAuth control poll (migration **056**) |
+| Client / service.env | `ALPHA_DLP_*` as before — local blocker switches `USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK` / **`DELETE_BLOCK`** (default `true`); optional `ALPHA_DLP_DATA_DIR` / `ALPHA_DLP_PIPE_NAME` |
+| Server | `DLP_REMOVAL_CODE_TTL_MIN` |
 
 **Publish → pull:** editing `/dlp-rules` alone does nothing on the PC until **Publish** (`POST /dlp/rules/publish`); the service polls `GET /dlp/policy`. Lab playbook: [TESTING.md](./TESTING.md) §DLP.
 

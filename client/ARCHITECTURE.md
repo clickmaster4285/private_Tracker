@@ -1,7 +1,19 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-07 (local blocker switches)
+> **Last audited:** 2026-11-10 (delete-block ACL + AppLocker bootstrap)
 > **Changelog:**
+> - 2026-11-10: **Delete-block ACL + tighter AppLocker bootstrap (DlpService).** New
+>   `DeleteBlockAclEnforcer` — NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated
+>   Users on Fixed/Removable volume roots when lockdown is ON; `ALPHA_DLP_DELETE_BLOCK` (default
+>   `true`) gates apply and clears leftovers (`disabled_local` / pause / park / teardown). Marker
+>   `delete_block_roots.json` under the DLP data root; pipe `Health.deleteBlock`; audits
+>   `delete_block_apply` / `delete_block_clear`. Caveat: temp→delete→rename Save paths may fail
+>   while ON. `AppAllowEnforcer`: PowerShell path rules are SYSTEM-only (S-1-5-18); Settings /
+>   ImmersiveControlPanel / broad WindowsApps wildcards dropped from Everyone bootstrap; fingerprint
+>   `v3`. `AppProcessGuard` kills interactive PowerShell/Settings/cmd/terminal (session > 0) even
+>   when MainModule path is unreadable. `EnvBootstrap` / `generate-windows-vars.sh` /
+>   `installer-windows.iss` / `install-service.ps1` seed the new key. Client **VERSION 1.0.6**.
+>   Installer-Parity: next Windows installer.
 > - 2026-11-07: **Local blocker switches.** `DlpConfig` gains `NetworkLockdown`
 >   (`ALPHA_DLP_NETWORK_LOCKDOWN`) and `AppBlock` (`ALPHA_DLP_APP_BLOCK`) next to `UsbBlock` / `WebBlock`.
 >   `EnforceWorker` gates `ApplyLockdownAsync`, the lockdown browser allow-set in `ApplyWebAsync`, and

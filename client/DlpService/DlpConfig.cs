@@ -26,6 +26,11 @@ public sealed class DlpConfig
     /// <summary>App lockdown (<c>/allowlists/apps</c>): AppLocker default-deny + running-app kill sweep.</summary>
     public bool AppBlock { get; init; } = true;
     /// <summary>
+    /// NTFS Deny Delete on Fixed/Removable volume roots (create/edit allowed).
+    /// Same lockdown gate as app/network; false clears leftover ACEs.
+    /// </summary>
+    public bool DeleteBlock { get; init; } = true;
+    /// <summary>
     /// After tracker login (credentials appear mid-run): pre-kill non-allowlisted apps,
     /// force-apply blockers, then reboot once. Off = no reboot (still polls policy).
     /// </summary>
@@ -70,6 +75,7 @@ public sealed class DlpConfig
             WebBlock = GetBool("ALPHA_DLP_WEB_BLOCK", true),
             NetworkLockdown = GetBool("ALPHA_DLP_NETWORK_LOCKDOWN", true),
             AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true),
+            DeleteBlock = GetBool("ALPHA_DLP_DELETE_BLOCK", true),
             LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
             DedupSec = GetInt("ALPHA_DLP_DEDUP_SEC", 300),

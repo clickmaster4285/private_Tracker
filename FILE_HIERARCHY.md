@@ -105,9 +105,11 @@ client/
 │   ├── Program.cs · AlphaAITracker.Service.csproj · install-service.ps1 · uninstall-service.ps1
 │   ├── PolicyPullWorker · EnforceWorker · DnsBlockPinWorker · UsbStorEnforcer · RemovableDriveMonitor
 │   ├── LockdownNetworkEnforcer.cs   P1 default-deny 80/443 (AlphaAI-DLP-LOCK-*)
+│   ├── AppAllowEnforcer.cs · AppProcessGuard.cs   P3 AppLocker Exe+Appx + kill sweeper
+│   ├── DeleteBlockAclEnforcer.cs    NTFS Deny Delete on Fixed/Removable roots (ALPHA_DLP_DELETE_BLOCK)
 │   ├── DomainBlockEnforcer · TcpConnectionKiller · DnsCacheReader
 │   ├── AlertSyncWorker · PolicyStore · NamedPipeHost · ServiceAclHardener · TrackerWatchdogWorker
-│   └── DeviceCredentialStore · TeardownGate · UserSessionProcessLauncher · DlpConfig · WebBlockState
+│   └── DeviceCredentialStore · TeardownGate · UserSessionProcessLauncher · DlpConfig · WebBlockState · EnvBootstrap
 │
 ├── Platform/                        one ProcessCollector.cs per OS — the only place OS branching lives
 │   ├── Linux/  Windows/  MacOS/

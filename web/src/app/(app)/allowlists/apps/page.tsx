@@ -48,6 +48,21 @@ function AppAllowListInner() {
   const [note, setNote] = useState('');
   const [catalogSearch, setCatalogSearch] = useState('');
   const [selectedCatalog, setSelectedCatalog] = useState<MonitoredApp | null>(null);
+  const [pathOverride, setPathOverride] = useState('');
+  const [useWindowsSettingsPreset, setUseWindowsSettingsPreset] = useState(false);
+
+  const WIN10_SETTINGS_PATH =
+    'C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe';
+
+  const isLinuxSettingsBinary = (binaryName?: string) => {
+    const b = (binaryName || '').toLowerCase();
+    return (
+      b.includes('cinnamon-settings') ||
+      b.includes('gnome-control-center') ||
+      b === 'env' ||
+      b.includes('wslsettings')
+    );
+  };
 
   const settings = useQuery({
     queryKey: ['dlp-lockdown'],
@@ -159,6 +174,8 @@ function AppAllowListInner() {
     setNote('');
     setCatalogSearch('');
     setSelectedCatalog(null);
+    setPathOverride('');
+    setUseWindowsSettingsPreset(false);
     setDialogOpen(true);
   };
 
@@ -166,6 +183,8 @@ function AppAllowListInner() {
     setEditing(row);
     setNote(row.note ?? '');
     setSelectedCatalog(null);
+    setPathOverride('');
+    setUseWindowsSettingsPreset(false);
     setDialogOpen(true);
   };
 
@@ -174,10 +193,22 @@ function AppAllowListInner() {
       const wasEdit = !!editing;
       if (editing) {
         await dlpApi.lockdown.apps.update(editing.id, { note });
+      } else if (useWindowsSettingsPreset) {
+        await dlpApi.lockdown.apps.create({
+          path: WIN10_SETTINGS_PATH,
+          product: 'windows.immersivecontrolpanel_cw5n1h2txyewy',
+          note: note || 'Windows Settings (Win10/11)',
+        });
       } else {
-        if (!selectedCatalog) throw new Error('Select an application');
+        if (!selectedCatalog) throw new Error('Select an application or use Windows Settings');
+        if (isLinuxSettingsBinary(selectedCatalog.binaryName) && !pathOverride.trim()) {
+          throw new Error(
+            'That catalog entry is Linux (cinnamon/gnome), not Windows Settings. Use “Windows Settings (Win10/11)” or enter a path like C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe',
+          );
+        }
         await dlpApi.lockdown.apps.create({
           installedApplicationId: selectedCatalog.id,
+          path: pathOverride.trim() || undefined,
           note: note || undefined,
         });
       }
@@ -419,65 +450,105 @@ function AppAllowListInner() {
           </DialogHeader>
           <div className="space-y-3 mt-2">
             {!editing && (
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">
-                  Application (from inventory catalog)
-                </label>
-                <div className="mt-1 flex items-center border border-border rounded-lg px-3 py-2 gap-2">
-                  <Search className="w-4 h-4 text-muted-foreground shrink-0" />
-                  <input
-                    value={catalogSearch}
-                    onChange={(e) => setCatalogSearch(e.target.value)}
-                    placeholder="Search app name…"
-                    className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
-                  />
+              <div className="space-y-3">
+                <div>
+                  <Button
+                    type="button"
+                    variant={useWindowsSettingsPreset ? 'default' : 'outline'}
+                    className="w-full justify-start"
+                    onClick={() => {
+                      setUseWindowsSettingsPreset(true);
+                      setSelectedCatalog(null);
+                      setPathOverride(WIN10_SETTINGS_PATH);
+                    }}
+                  >
+                    <Check className={`w-4 h-4 mr-2 ${useWindowsSettingsPreset ? '' : 'opacity-0'}`} />
+                    Windows Settings (Win10/11)
+                  </Button>
+                  <p className="text-[11px] text-muted-foreground mt-1.5 leading-snug">
+                    Use this for Windows Settings. Catalog rows named Settings / Accessibility with{' '}
+                    <span className="font-mono">cinnamon-settings</span> or{' '}
+                    <span className="font-mono">gnome-control-center</span> are <strong>Linux</strong>, not
+                    Windows.
+                  </p>
                 </div>
-                <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border divide-y divide-border">
-                  {catalogQuery.isLoading && (
-                    <div className="flex justify-center py-6">
-                      <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                    </div>
-                  )}
-                  {!catalogQuery.isLoading && catalogApps.length === 0 && (
-                    <p className="px-3 py-4 text-xs text-muted-foreground text-center">
-                      No applications found. Sync inventory from employee PCs first.
-                    </p>
-                  )}
-                  {catalogApps.map((app) => {
-                    const taken = alreadyAllowed.has(app.id);
-                    const selected = selectedCatalog?.id === app.id;
-                    return (
-                      <button
-                        key={app.id}
-                        type="button"
-                        disabled={taken}
-                        onClick={() => setSelectedCatalog(app)}
-                        className={`w-full text-left px-3 py-2 text-sm flex items-start gap-2 transition-colors ${
-                          taken
-                            ? 'opacity-40 cursor-not-allowed'
-                            : selected
-                              ? 'bg-primary/10'
-                              : 'hover:bg-muted/40'
-                        }`}
-                      >
-                        <span className="mt-0.5 w-4 shrink-0">
-                          {selected ? <Check className="w-4 h-4 text-primary" /> : null}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="font-medium block truncate">{app.appName}</span>
-                          <span className="text-[11px] text-muted-foreground font-mono truncate block">
-                            {app.binaryName || app.id}
-                            {taken ? ' · already allowed' : ''}
-                          </span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                  <div ref={catalogSentinelRef} className="h-6 flex items-center justify-center">
-                    {catalogQuery.isFetchingNextPage && (
-                      <Loader2 className="w-3 h-3 animate-spin text-primary" />
-                    )}
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Or pick from inventory catalog
+                  </label>
+                  <div className="mt-1 flex items-center border border-border rounded-lg px-3 py-2 gap-2">
+                    <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <input
+                      value={catalogSearch}
+                      onChange={(e) => setCatalogSearch(e.target.value)}
+                      placeholder="Search app name…"
+                      className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
+                    />
                   </div>
+                  <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+                    {catalogQuery.isLoading && (
+                      <div className="flex justify-center py-6">
+                        <Loader2 className="w-4 h-4 animate-spin text-primary" />
+                      </div>
+                    )}
+                    {!catalogQuery.isLoading && catalogApps.length === 0 && (
+                      <p className="px-3 py-4 text-xs text-muted-foreground text-center">
+                        No applications found. Sync inventory from employee PCs first.
+                      </p>
+                    )}
+                    {catalogApps.map((app) => {
+                      const taken = alreadyAllowed.has(app.id);
+                      const selected = selectedCatalog?.id === app.id && !useWindowsSettingsPreset;
+                      const linux = isLinuxSettingsBinary(app.binaryName);
+                      return (
+                        <button
+                          key={app.id}
+                          type="button"
+                          disabled={taken}
+                          onClick={() => {
+                            setSelectedCatalog(app);
+                            setUseWindowsSettingsPreset(false);
+                            if (!pathOverride.trim()) setPathOverride('');
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm flex items-start gap-2 transition-colors ${
+                            taken
+                              ? 'opacity-40 cursor-not-allowed'
+                              : selected
+                                ? 'bg-primary/10'
+                                : 'hover:bg-muted/40'
+                          }`}
+                        >
+                          <span className="mt-0.5 w-4 shrink-0">
+                            {selected ? <Check className="w-4 h-4 text-primary" /> : null}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="font-medium block truncate">{app.appName}</span>
+                            <span className="text-[11px] text-muted-foreground font-mono truncate block">
+                              {app.binaryName || app.id}
+                              {taken ? ' · already allowed' : ''}
+                              {linux ? ' · Linux (not Win10 Settings)' : ''}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                    <div ref={catalogSentinelRef} className="h-6 flex items-center justify-center">
+                      {catalogQuery.isFetchingNextPage && (
+                        <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Install path override (optional)
+                  </label>
+                  <Input
+                    value={pathOverride}
+                    onChange={(e) => setPathOverride(e.target.value)}
+                    placeholder={WIN10_SETTINGS_PATH}
+                    className="mt-1 font-mono text-xs"
+                  />
                 </div>
               </div>
             )}
@@ -503,7 +574,10 @@ function AppAllowListInner() {
                 Cancel
               </Button>
               <Button
-                disabled={(!editing && !selectedCatalog) || saveMutation.isPending}
+                disabled={
+                  (!editing && !selectedCatalog && !useWindowsSettingsPreset) ||
+                  saveMutation.isPending
+                }
                 onClick={() => saveMutation.mutate()}
               >
                 {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}

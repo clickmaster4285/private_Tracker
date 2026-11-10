@@ -931,19 +931,23 @@ func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) 
 	if err != nil {
 		return nil, err
 	}
+	// Prefer active inventory; fall back to inactive so a retired PC's path still unlocks allow.
 	rows, err := r.pool.Query(ctx, `
-		SELECT DISTINCT COALESCE(publisher, ''), COALESCE(install_path, '')
+		SELECT DISTINCT COALESCE(publisher, ''), COALESCE(install_path, ''), COALESCE(is_active, FALSE)
 		FROM employee_installed_applications
-		WHERE installed_application_id = $1 AND is_active = TRUE`, id)
+		WHERE installed_application_id = $1
+		ORDER BY COALESCE(is_active, FALSE) DESC`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	pubSet := map[string]struct{}{}
 	pathSet := map[string]struct{}{}
+	var inactivePaths []string
 	for rows.Next() {
 		var pub, path string
-		if err := rows.Scan(&pub, &path); err != nil {
+		var active bool
+		if err := rows.Scan(&pub, &path, &active); err != nil {
 			return nil, err
 		}
 		pub = strings.TrimSpace(pub)
@@ -954,17 +958,29 @@ func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) 
 				out.Publishers = append(out.Publishers, pub)
 			}
 		}
-		if path != "" {
-			resolved := resolveInstallIdentity(path, out.BinaryName)
-			key := strings.ToLower(resolved)
-			if _, ok := pathSet[key]; !ok {
-				pathSet[key] = struct{}{}
-				out.Paths = append(out.Paths, resolved)
-			}
+		if path == "" {
+			continue
+		}
+		resolved := resolveInstallIdentity(path, out.BinaryName)
+		if !isUsableAllowPath(resolved) {
+			continue
+		}
+		key := strings.ToLower(resolved)
+		if _, ok := pathSet[key]; ok {
+			continue
+		}
+		pathSet[key] = struct{}{}
+		if active {
+			out.Paths = append(out.Paths, resolved)
+		} else {
+			inactivePaths = append(inactivePaths, resolved)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(out.Paths) == 0 {
+		out.Paths = append(out.Paths, inactivePaths...)
 	}
 	return &out, nil
 }
@@ -980,9 +996,16 @@ func resolveInstallIdentity(installPath, binaryName string) string {
 		if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
 			return p + bin
 		}
+		// Linux-style command tokens (e.g. "cinnamon-settings accessibility") are not paths.
+		if !strings.ContainsAny(p, `/\`) && !looksLikeWindowsDrivePath(p) {
+			return ""
+		}
 		return p + `\` + bin
 	}
 	if p == "" {
+		return ""
+	}
+	if !strings.ContainsAny(p, `/\`) && !looksLikeWindowsDrivePath(p) {
 		return ""
 	}
 	// Directory allow for AppLocker path rules.
@@ -990,6 +1013,29 @@ func resolveInstallIdentity(installPath, binaryName string) string {
 		return p + `*`
 	}
 	return p + `\*`
+}
+
+func looksLikeWindowsDrivePath(p string) bool {
+	return len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/')
+}
+
+// isUsableAllowPath rejects bare shell commands (Linux desktop entries) that AppLocker cannot use.
+func isUsableAllowPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	lower := strings.ToLower(p)
+	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".com") {
+		return true
+	}
+	if looksLikeWindowsDrivePath(p) {
+		return true
+	}
+	if strings.HasPrefix(p, `\`) || strings.HasPrefix(p, "/") || strings.Contains(p, `:\`) {
+		return true
+	}
+	return false
 }
 
 // ExpandEnabledAllowApps flattens enabled draft rows into concrete agent identities.
@@ -1238,10 +1284,7 @@ func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, enable
 }
 
 func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, error) {
-	var row AllowAppListRow
-	var createdByNS, updatedByNS *string
-	var catalogNS *string
-	err := r.pool.QueryRow(ctx, `
+	return r.scanAllowAppRow(ctx, `
 		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
 		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
@@ -1250,7 +1293,32 @@ func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, 
 		FROM dlp_lockdown_allow_apps a
 		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
 		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
-		WHERE a.id = $1`, id).Scan(
+		WHERE a.id = $1`, id)
+}
+
+// GetAllowAppByCatalogID returns the draft row for a catalog application, if any.
+func (r *DlpRepo) GetAllowAppByCatalogID(ctx context.Context, catalogID string) (*AllowAppListRow, error) {
+	id := strings.TrimSpace(catalogID)
+	if id == "" {
+		return nil, pgx.ErrNoRows
+	}
+	return r.scanAllowAppRow(ctx, `
+		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
+		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
+		       a.created_by::text, COALESCE(cu.name, ''),
+		       a.updated_by::text, COALESCE(uu.name, ''),
+		       a.created_at, a.updated_at
+		FROM dlp_lockdown_allow_apps a
+		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
+		WHERE a.installed_application_id = $1`, id)
+}
+
+func (r *DlpRepo) scanAllowAppRow(ctx context.Context, query string, arg any) (*AllowAppListRow, error) {
+	var row AllowAppListRow
+	var createdByNS, updatedByNS *string
+	var catalogNS *string
+	err := r.pool.QueryRow(ctx, query, arg).Scan(
 		&row.ID, &catalogNS, &row.AppName,
 		&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 		&createdByNS, &row.CreatedByName,
