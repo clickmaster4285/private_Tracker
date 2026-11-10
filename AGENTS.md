@@ -3,6 +3,14 @@
 > **Last audited:** 2026-11-10
 > **Changelog:**
 >
+> - 2026-11-10: **Clock/timezone warning subprocess (client).** `TimeDateWarningWorker` checks on
+>   tracker start then every hour: skew vs `GET /api/v1/server-time` + OS TZ vs IP IANA timezone
+>   (`LocationProbe` `timezone` field; shift schedule fallback). Unhealthy → writes
+>   `timedatewarning/state.json` and spawns `client --timedatewarning` (sibling mutex, Avalonia
+>   window: Open Date & Time settings / Dismiss with cooldown). Never auto-sets the OS clock.
+>   Env: `ALPHA_TA_TIMEDATE_*`. Client **VERSION 1.0.13**. Verified: `dotnet build` client.
+>   Installer-Parity: re-bake `config.enc` + Windows installer.
+>
 > - 2026-11-10: **Screenshot duplicate-upload flood (client).** Root cause: SyncWorker deleted
 >   pending while `File.OpenRead` still held the Windows lock → webp orphaned without JSON;
 >   `GuessMetaFromName` folded screenshotId into `machineId` and `ListPending` minted a new

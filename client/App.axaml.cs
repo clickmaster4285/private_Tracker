@@ -23,6 +23,12 @@ public partial class App : Application
     public static bool GuiAgentMode { get; set; }
 
     /// <summary>
+    /// Dedicated <c>--timedatewarning</c> subprocess: small Avalonia warning only,
+    /// no DI host / collectors. Set before <c>StartWithClassicDesktopLifetime</c>.
+    /// </summary>
+    public static bool TimeDateWarningMode { get; set; }
+
+    /// <summary>
     /// True when the UI is being created HIDDEN (auto-start / systemd boot instance
     /// launched with --background/--minimized — no window at boot). A manual user
     /// launch sends a SHOW signal and the lazy GUI path clears this before starting
@@ -50,6 +56,15 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            if (TimeDateWarningMode)
+            {
+                AllowShutdown = true;
+                desktop.ShutdownMode = Avalonia.Controls.ShutdownMode.OnMainWindowClose;
+                desktop.MainWindow = new TimeDateWarningWindow();
+                base.OnFrameworkInitializationCompleted();
+                return;
+            }
+
             if (ServiceProvider == null)
             {
                 throw new InvalidOperationException("ServiceProvider must be set before app starts");

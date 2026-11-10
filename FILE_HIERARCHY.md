@@ -85,6 +85,7 @@ client/
 │   ├── NetProbeService.cs           Uplink probe → POST /live-stream/uplink-probe; bitrate ladder
 │   ├── ScreenCaptureService.cs      Windows multi-path GDI BitBlt → BGRA (+ CaptureStill for screenshots)
 │   └── Screenshots/                 Offline capture + sync workers (WebP pending/ → DeviceAuth upload)
+│   ├── TimeDateWarning/             Hourly clock/TZ health → spawn `--timedatewarning` Avalonia window
 │   ├── ClientIdentityHeaders.cs     X-Client-Version / X-Client-Platform on DeviceAuth HTTP+WS
 │   ├── WsClient.cs                  presence WS → /api/v1/ws (Online/Offline; not media)
 │   ├── Streaming/
@@ -134,6 +135,7 @@ client/
 │
 ├── Views/
 │   ├── MainWindow.axaml(.cs)     ⭐ ROUTER: 4 exclusive states + 246px nav rail
+│   ├── TimeDateWarningWindow.axaml(.cs)  `--timedatewarning` sibling process (clock/TZ)
 │   └── Pages/                       one UserControl per screen, each with x:DataType
 │       ├── SplashPage           (1)  ├── DashboardPage      (4)
 │       ├── LoginPage            (2)  ├── SystemSpecsPage    (5)

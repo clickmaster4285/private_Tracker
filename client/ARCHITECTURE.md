@@ -1,7 +1,12 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-10 (screenshot orphan re-upload fix)
+> **Last audited:** 2026-11-10 (timedatewarning subprocess)
 > **Changelog:**
+> - 2026-11-10: **`--timedatewarning` subprocess.** `TimeDateWarningWorker` (start + hourly):
+>   server-time skew + IP/schedule IANA TZ vs OS; spawns sibling Avalonia process when wrong.
+>   State: `%LocalAppData%/<APP>/timedatewarning/state.json`. Open Date & Time settings; Dismiss
+>   cooldown. `ALPHA_TA_TIMEDATE_*`. **VERSION 1.0.13**. Verified: `dotnet build`. Installer-Parity:
+>   re-bake `config.enc`.
 > - 2026-11-10: **Screenshot orphan re-upload fix.** `UploadOneAsync` reads WebP bytes then
 >   closes before `DeleteAccepted` (Windows file-lock). `GuessMetaFromName` recovers trailing
 >   UUID as `ScreenshotId` (machine id no longer absorbs it). No Guid mint on list. **VERSION
@@ -1260,6 +1265,7 @@ Contract test: `test/contract-event-types.sh` (T5).
 | `IdleDetector` | hosted | 30 s poll | OS idle source (Mutter.IdleMonitor / X11 / GetLastInputInfo); emits `idle_start`/`idle_end` crossings |
 | `ScheduleCacheService` | hosted | login/resume + every 6 h | Mirrors the Phase 2 `GET /api/v1/schedules/me` response into local tables; login wakes it immediately and resume waits 10 s for network stabilization |
 | `LocalTimeSkewService` | hosted | startup/resume + every 15 min | Measures client↔server clock skew from `GET /api/v1/server-time`'s Date header; resume waits 10 s before measuring |
+| `TimeDateWarningWorker` | hosted | start + every `ALPHA_TA_TIMEDATE_CHECK_HOURS` (default 1h) | If `|skew|≥SKEW_SEC` or OS UTC offset ≠ IP/schedule IANA zone → write `timedatewarning/state.json` and spawn `client --timedatewarning` (sibling mutex). Never sets OS clock. Parked when `ALPHA_TA_ENABLED` or `ALPHA_TA_TIMEDATE_WARN_ENABLED` is false |
 | `AttendanceAggregator` | hosted | login + every 5 min | Rolls up arrival/last-seen, the union of idle+screen-lock time, active time, schedule overlap, holidays, lateness, absence, half-day, and off-shift time; legacy offset timestamps are normalized to UTC at the store boundary |
 
 DI order (finalplan §3): `ShutdownSentinel` is registered FIRST so .NET stops it LAST — guaranteeing
@@ -1291,7 +1297,11 @@ collection never blocks aggregation and vice versa.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `ALPHA_TA_ENABLED` | true | master switch; false parks SystemEventWatcher, IdleDetector, ScheduleCacheService, LocalTimeSkewService, AttendanceAggregator |
+| `ALPHA_TA_ENABLED` | true | master switch; false parks SystemEventWatcher, IdleDetector, ScheduleCacheService, LocalTimeSkewService, AttendanceAggregator, TimeDateWarningWorker |
+| `ALPHA_TA_TIMEDATE_WARN_ENABLED` | true | spawn `--timedatewarning` when clock/timezone unhealthy |
+| `ALPHA_TA_TIMEDATE_CHECK_HOURS` | 1 | hours between checks (first check is immediate at start) |
+| `ALPHA_TA_TIMEDATE_SKEW_SEC` | 60 | absolute skew vs server UTC that counts as unhealthy |
+| `ALPHA_TA_TIMEDATE_COOLDOWN_HOURS` | 4 | after Dismiss / window close, do not re-spawn for this long |
 | `ALPHA_IDLE_THRESHOLD_SEC` | 120 | seconds of no input before `idle_start` |
 | `ALPHA_IDLE_AWAY_THRESHOLD_SEC` | 600 | reserved for A.8 away classification |
 | `ALPHA_IDLE_POLL_SEC` | 30 | idle-source poll cadence |

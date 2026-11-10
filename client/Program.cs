@@ -64,6 +64,10 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"LockHysteresisSeconds={cfg.LockHysteresisSeconds}");
     Console.WriteLine($"EventAggregationWindowSec={cfg.EventAggregationWindowSec}");
     Console.WriteLine($"TaMaxLocalRows={cfg.TaMaxLocalRows}");
+    Console.WriteLine($"TimeDateWarnEnabled={cfg.TimeDateWarnEnabled}");
+    Console.WriteLine($"TimeDateCheckHours={cfg.TimeDateCheckHours}");
+    Console.WriteLine($"TimeDateSkewSec={cfg.TimeDateSkewSec}");
+    Console.WriteLine($"TimeDateCooldownHours={cfg.TimeDateCooldownHours}");
     Console.WriteLine($"LocationEnabled={cfg.LocationEnabled}");
     Console.WriteLine($"LocationIpFallback={cfg.LocationIpFallback}");
     Console.WriteLine($"LocationPollSec={cfg.LocationPollSec}");
@@ -244,6 +248,33 @@ if (isTeardownCleanupElevated)
 if (args.Contains("--celebrate-update") && !args.Contains("--background"))
     return;
 
+// Dedicated clock/timezone warning UI (spawned by TimeDateWarningWorker).
+// Sibling mutex; no tracker host / SQLite collectors.
+if (args.Contains("--timedatewarning") && !args.Contains("--background"))
+{
+    client.Services.CliConsole.DetachForGui();
+    var warnMutex = new Mutex(true, client.Services.TimeDateWarning.TimeDateWarningState.MutexName, out var warnCreated);
+    if (!warnCreated)
+    {
+        try { warnMutex.Dispose(); } catch { /* ignore */ }
+        return;
+    }
+
+    try
+    {
+        EnvLoader.Load();
+        App.TimeDateWarningMode = true;
+        App.AllowShutdown = true;
+        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+    finally
+    {
+        try { warnMutex.ReleaseMutex(); } catch { /* ignore */ }
+        try { warnMutex.Dispose(); } catch { /* ignore */ }
+    }
+    return;
+}
+
 var isBackground = args.Contains("--background");
 var isMinimized = args.Contains("--minimized");
 var isGuiAgent = args.Contains("--gui");
@@ -253,7 +284,8 @@ var isGuiAgent = args.Contains("--gui");
 // background/minimized relaunches (e.g. auto-start firing twice, or systemd
 // Restart=always racing) must exit quietly so they never disturb the user.
 var isUserLaunch = !isBackground && !isMinimized && !isGuiAgent
-    && !args.Contains("--celebrate-update");
+    && !args.Contains("--celebrate-update")
+    && !args.Contains("--timedatewarning");
 
 // L2: unsupervised `client --background` (autostart / menu / scripts) must hand
 // off to the user systemd unit BEFORE taking the mutex. Restart=always only
@@ -513,6 +545,11 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.Id
 // ────────────────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<client.Services.LocalTimeSkewService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.LocalTimeSkewService>());
+
+// Clock/timezone health: startup + hourly check → spawn --timedatewarning when wrong.
+builder.Services.AddSingleton<client.Services.TimeDateWarning.TimeDateWarningWorker>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<client.Services.TimeDateWarning.TimeDateWarningWorker>());
 
 // ────────────────────────────────────────────────────────────────────────────
 // Time & Attendance (Phase 1, A.6): ScheduleCacheService mirrors the employee's

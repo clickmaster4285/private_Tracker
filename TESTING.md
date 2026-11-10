@@ -8,6 +8,16 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./n
 
 ---
 
+## Clock / timezone warning (`--timedatewarning`)
+
+1. Tracker running with `ALPHA_TA_ENABLED=true` and `ALPHA_TA_TIMEDATE_WARN_ENABLED=true` (defaults).
+2. Set the PC clock **5+ minutes** wrong (or set a wrong timezone vs your public IP location).
+3. Restart the tracker (or wait up to `ALPHA_TA_TIMEDATE_CHECK_HOURS`, default 1h — first check is at start).
+4. Expect a separate Avalonia window titled “… — Date & time” showing skew / expected vs PC local time.
+5. **Open Date & Time settings** → Windows Settings Date & time; fix clock / turn on automatic time.
+6. **Dismiss** (or ×) → `timedatewarning/state.json` gets `dismissedAt`; window must not reappear until cooldown (`ALPHA_TA_TIMEDATE_COOLDOWN_HOURS`, default 4) even if still wrong.
+7. Optional: `client.exe --timedatewarning` alone after a worker wrote `state.json` (mutex single-flight).
+
 ## I. Scale admission (1000 agents) — smoke
 
 **Prereqs:** API with Redis; `ASYNQ_ENABLED=true`; client with `ALPHA_SYNC_LOGIN_JITTER_SEC`.

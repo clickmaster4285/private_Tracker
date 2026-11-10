@@ -1,1 +1,2 @@
-auto Or warning show of time & data , timezone etc... 
+i found a new bug 
+i think currently the client cann't get the old allowset | dlp rules why??

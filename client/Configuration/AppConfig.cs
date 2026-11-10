@@ -80,6 +80,14 @@ public class AppConfig
     public int LockHysteresisSeconds { get; init; } = 30;   // screen_lock dedup window
     public int EventAggregationWindowSec { get; init; } = 300; // 5-min sync buckets (S1)
     public int TaMaxLocalRows { get; init; } = 50_000;       // unsynced row ceiling (S6)
+    /// <summary>Spawn <c>--timedatewarning</c> when clock/timezone is wrong (default on with T&amp;A).</summary>
+    public bool TimeDateWarnEnabled { get; init; } = true;
+    /// <summary>Hours between clock/timezone health checks (default 1). First check runs at start.</summary>
+    public int TimeDateCheckHours { get; init; } = 1;
+    /// <summary>Absolute skew vs server UTC (seconds) that triggers the warning (default 60).</summary>
+    public int TimeDateSkewSec { get; init; } = 60;
+    /// <summary>After Dismiss, do not re-spawn the warning window for this many hours (default 4).</summary>
+    public int TimeDateCooldownHours { get; init; } = 4;
 
     // ─── GPS & Location (Phase 3, finalplan §16) ───
     // Default OFF — requires OS location permission + employee consent.
@@ -185,6 +193,10 @@ public class AppConfig
             LockHysteresisSeconds = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_LOCK_HYSTERESIS_SEC"), out var lockHys) ? lockHys : 30),
             EventAggregationWindowSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_EVENT_AGGREGATION_WINDOW_SEC"), out var aggWin) ? aggWin : 300),
             TaMaxLocalRows = Math.Max(1000, int.TryParse(GetEnv("ALPHA_TA_MAX_LOCAL_ROWS"), out var taMax) ? taMax : 50_000),
+            TimeDateWarnEnabled = GetEnv("ALPHA_TA_TIMEDATE_WARN_ENABLED") is not ("0" or "false" or "False"),
+            TimeDateCheckHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_CHECK_HOURS"), out var tdCheck) ? tdCheck : 1),
+            TimeDateSkewSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_SKEW_SEC"), out var tdSkew) ? tdSkew : 60),
+            TimeDateCooldownHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_COOLDOWN_HOURS"), out var tdCool) ? tdCool : 4),
             LocationEnabled = GetEnv("ALPHA_LOCATION_ENABLED") is ("1" or "true" or "True"),
             LocationPollSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_LOCATION_POLL_SEC"), out var locPoll) ? locPoll : 300),
             LocationIpFallback = GetEnv("ALPHA_LOCATION_IP_FALLBACK") is ("1" or "true" or "True"),

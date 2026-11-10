@@ -17,7 +17,8 @@ public static class LocationProbe
         double? AccuracyM,
         double? AltitudeM,
         string Source,
-        string? Address);
+        string? Address,
+        string? TimeZoneId = null);
 
     public static async Task<LocationFix?> TryGetFixAsync(HttpClient http, CancellationToken ct, bool allowIpFallback = true)
     {
@@ -133,12 +134,25 @@ public static class LocationProbe
 
     // ── IP geolocation fallback (all platforms) — coarse, often km off ──
 
+    /// <summary>
+    /// Clock-health helper: resolve IANA timezone from IP geolocation without
+    /// requiring <c>ALPHA_LOCATION_ENABLED</c>. Does not write location_samples.
+    /// </summary>
+    public static async Task<(string? TimeZoneId, string? Address)?> TryGetIpTimeZoneAsync(
+        HttpClient http, CancellationToken ct)
+    {
+        var fix = await TryIpGeolocationAsync(http, ct);
+        if (!fix.HasValue) return null;
+        if (string.IsNullOrWhiteSpace(fix.Value.TimeZoneId)) return null;
+        return (fix.Value.TimeZoneId, fix.Value.Address);
+    }
+
     private static async Task<LocationFix?> TryIpGeolocationAsync(HttpClient http, CancellationToken ct)
     {
         try
         {
             using var response = await http.GetAsync(
-                "http://ip-api.com/json/?fields=status,lat,lon,city,regionName,country",
+                "http://ip-api.com/json/?fields=status,lat,lon,city,regionName,country,timezone",
                 ct);
             if (!response.IsSuccessStatusCode) return null;
 
@@ -152,9 +166,13 @@ public static class LocationProbe
             var city = root.TryGetProperty("city", out var c) ? c.GetString() : "";
             var region = root.TryGetProperty("regionName", out var r) ? r.GetString() : "";
             var country = root.TryGetProperty("country", out var co) ? co.GetString() : "";
+            var timezone = root.TryGetProperty("timezone", out var tz) ? tz.GetString() : null;
             var address = string.Join(", ", new[] { city, region, country }.Where(s => !string.IsNullOrWhiteSpace(s)));
 
-            return new LocationFix(lat, lon, 5000, null, "ip", string.IsNullOrWhiteSpace(address) ? null : address);
+            return new LocationFix(
+                lat, lon, 5000, null, "ip",
+                string.IsNullOrWhiteSpace(address) ? null : address,
+                string.IsNullOrWhiteSpace(timezone) ? null : timezone);
         }
         catch
         {
