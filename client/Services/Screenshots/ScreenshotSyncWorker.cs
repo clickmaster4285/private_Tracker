@@ -120,13 +120,42 @@ public sealed class ScreenshotSyncWorker : BackgroundService
 
         try
         {
-            await using var fileStream = File.OpenRead(item.WebpPath);
-            using var content = new MultipartFormDataContent();
-            var fileContent = new StreamContent(fileStream);
-            fileContent.Headers.ContentType = new MediaTypeHeaderValue("image/webp");
+            // Read fully then close before DeleteAccepted — Windows locks OpenRead
+            // handles, so deleting while the stream is open silently leaves orphans
+            // (webp stays, json often goes) and GuessMetaFromName re-uploads forever.
+            byte[] webpBytes;
+            try
+            {
+                webpBytes = await File.ReadAllBytesAsync(item.WebpPath, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Screenshot upload: could not read {File}", item.WebpPath);
+                return false;
+            }
+
+            if (webpBytes.Length == 0)
+            {
+                _logger.LogWarning("Screenshot upload: empty file {File} — moving to rejected/", Path.GetFileName(item.WebpPath));
+                ScreenshotLocalStore.MoveToRejected(item);
+                return true;
+            }
+
             var screenshotId = string.IsNullOrWhiteSpace(item.Meta.ScreenshotId)
-                ? Guid.NewGuid().ToString("D")
+                ? null
                 : item.Meta.ScreenshotId.Trim();
+            if (string.IsNullOrWhiteSpace(screenshotId) || !Guid.TryParse(screenshotId, out _))
+            {
+                _logger.LogWarning(
+                    "Screenshot upload: missing/invalid screenshotId for {File} — moving to rejected/",
+                    Path.GetFileName(item.WebpPath));
+                ScreenshotLocalStore.MoveToRejected(item);
+                return true;
+            }
+
+            using var content = new MultipartFormDataContent();
+            var fileContent = new ByteArrayContent(webpBytes);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("image/webp");
             content.Add(fileContent, "file", Path.GetFileName(item.WebpPath));
             content.Add(new StringContent(screenshotId), "screenshotId");
             content.Add(new StringContent(item.Meta.CapturedAtUtc.ToString("o")), "capturedAt");
@@ -206,6 +235,7 @@ public sealed class ScreenshotSyncWorker : BackgroundService
                 return true;
             }
 
+            // Bytes already fully read — delete is safe on Windows (no open handle).
             ScreenshotLocalStore.DeleteAccepted(item);
             _failCounts.Remove(item.WebpPath);
             _logger.LogDebug("Screenshot uploaded + local deleted: {File}", Path.GetFileName(item.WebpPath));

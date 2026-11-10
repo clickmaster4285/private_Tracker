@@ -95,8 +95,18 @@ public static class ScreenshotLocalStore
 
             meta ??= GuessMetaFromName(Path.GetFileNameWithoutExtension(webp));
             if (meta is null) continue;
+
+            // Recover ScreenshotId from basename when the sidecar omitted it —
+            // never mint a fresh Guid here (that broke idempotency and flooded
+            // the server with byte-identical duplicates).
             if (string.IsNullOrWhiteSpace(meta.ScreenshotId))
-                meta.ScreenshotId = Guid.NewGuid().ToString("D");
+            {
+                var fromName = GuessMetaFromName(Path.GetFileNameWithoutExtension(webp));
+                if (fromName is not null && !string.IsNullOrWhiteSpace(fromName.ScreenshotId))
+                    meta.ScreenshotId = fromName.ScreenshotId;
+            }
+
+            // Missing/invalid id is left for SyncWorker to MoveToRejected (do not mint).
             list.Add(new PendingScreenshot(webp, json, meta));
         }
         return list;
@@ -143,9 +153,10 @@ public static class ScreenshotLocalStore
 
     private static ScreenshotMeta? GuessMetaFromName(string baseName)
     {
-        // {emp}_{yyyyMMdd}_{HHmmss}_{fff}_{machine}
+        // {emp}_{yyyyMMdd}_{HHmmss}_{fff}_{machine}_{screenshotId}
+        // machine may itself contain '_' — screenshotId is the trailing UUID.
         var parts = baseName.Split('_');
-        if (parts.Length < 5) return null;
+        if (parts.Length < 6) return null;
         var emp = parts[0];
         if (!DateTime.TryParseExact(
                 parts[1] + parts[2] + parts[3],
@@ -154,9 +165,18 @@ public static class ScreenshotLocalStore
                 System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
                 out var dt))
             return null;
-        var machine = string.Join('_', parts.Skip(4));
+
+        var last = parts[^1];
+        if (!Guid.TryParse(last, out _))
+            return null;
+
+        var machine = string.Join('_', parts.Skip(4).Take(parts.Length - 5));
+        if (string.IsNullOrWhiteSpace(machine))
+            machine = "unknown";
+
         return new ScreenshotMeta
         {
+            ScreenshotId = last,
             EmployeeId = emp,
             MachineId = machine,
             CapturedAtUtc = dt,

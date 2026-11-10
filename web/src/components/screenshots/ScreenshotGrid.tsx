@@ -1,11 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, Loader2, X } from 'lucide-react';
+import { Camera, Loader2 } from 'lucide-react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import EmptyState from '@/components/employees/EmptyState';
+import { ScreenshotLightbox } from '@/components/screenshots/ScreenshotLightbox';
 import { screenshotsApi, type ScreenshotRow } from '@/lib/api';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTimeSeconds } from '@/lib/format';
 
 const PAGE_SIZE = 40;
 
@@ -19,7 +20,8 @@ export function ScreenshotGrid({
   to?: string;
 }) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const [lightbox, setLightbox] = useState<ScreenshotRow | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const pendingAdvanceRef = useRef(false);
 
   const query = useInfiniteQuery({
     queryKey: ['screenshots', { employeeId, from, to }],
@@ -52,7 +54,26 @@ export function ScreenshotGrid({
     return () => obs.disconnect();
   }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
-  const closeLightbox = useCallback(() => setLightbox(null), []);
+  // After "next" at end triggers fetchMore, advance once new rows arrive.
+  useEffect(() => {
+    if (!pendingAdvanceRef.current) return;
+    if (lightboxIndex == null) return;
+    if (lightboxIndex < rows.length - 1) {
+      pendingAdvanceRef.current = false;
+      setLightboxIndex(lightboxIndex + 1);
+    }
+  }, [rows.length, lightboxIndex]);
+
+  const closeLightbox = useCallback(() => {
+    pendingAdvanceRef.current = false;
+    setLightboxIndex(null);
+  }, []);
+
+  const onNeedMore = useCallback(() => {
+    if (!query.hasNextPage || query.isFetchingNextPage) return;
+    pendingAdvanceRef.current = true;
+    void query.fetchNextPage();
+  }, [query]);
 
   if (query.isLoading) {
     return (
@@ -83,8 +104,8 @@ export function ScreenshotGrid({
   return (
     <>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-        {rows.map((row) => (
-          <ScreenshotCard key={row.id} row={row} onOpen={() => setLightbox(row)} />
+        {rows.map((row, i) => (
+          <ScreenshotCard key={row.id} row={row} onOpen={() => setLightboxIndex(i)} />
         ))}
       </div>
       <div ref={sentinelRef} className="h-8 flex items-center justify-center mt-3">
@@ -93,36 +114,16 @@ export function ScreenshotGrid({
         )}
       </div>
 
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          role="dialog"
-          aria-modal="true"
-          onClick={closeLightbox}
-        >
-          <button
-            type="button"
-            className="absolute top-4 right-4 h-9 w-9 rounded-full bg-black/60 text-white inline-flex items-center justify-center"
-            onClick={closeLightbox}
-            aria-label="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
-          <div
-            className="max-w-[95vw] max-h-[90vh] flex flex-col gap-2"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <img
-              src={screenshotsApi.imageSrc(lightbox.id)}
-              alt={`Screenshot ${lightbox.employeeId}`}
-              className="max-w-full max-h-[80vh] object-contain rounded-md bg-black"
-            />
-            <p className="text-sm text-white/90 text-center">
-              {lightbox.employeeName || lightbox.employeeId} · {formatDateTime(lightbox.capturedAt)}
-              {lightbox.width > 0 ? ` · ${lightbox.width}×${lightbox.height}` : ''}
-            </p>
-          </div>
-        </div>
+      {lightboxIndex != null && rows[lightboxIndex] && (
+        <ScreenshotLightbox
+          rows={rows}
+          index={lightboxIndex}
+          onIndexChange={setLightboxIndex}
+          onClose={closeLightbox}
+          hasMore={!!query.hasNextPage}
+          loadingMore={query.isFetchingNextPage}
+          onNeedMore={onNeedMore}
+        />
       )}
     </>
   );
@@ -170,7 +171,7 @@ function ScreenshotCard({ row, onOpen }: { row: ScreenshotRow; onOpen: () => voi
         <p className="text-[11px] text-white truncate font-medium">
           {row.employeeName || row.employeeId}
         </p>
-        <p className="text-[10px] text-white/70 truncate">{formatDateTime(row.capturedAt)}</p>
+        <p className="text-[10px] text-white/70 truncate">{formatDateTimeSeconds(row.capturedAt)}</p>
       </div>
     </button>
   );

@@ -1,7 +1,11 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-10 (offline-first screenshots)
+> **Last audited:** 2026-11-10 (screenshot orphan re-upload fix)
 > **Changelog:**
+> - 2026-11-10: **Screenshot orphan re-upload fix.** `UploadOneAsync` reads WebP bytes then
+>   closes before `DeleteAccepted` (Windows file-lock). `GuessMetaFromName` recovers trailing
+>   UUID as `ScreenshotId` (machine id no longer absorbs it). No Guid mint on list. **VERSION
+>   1.0.12**. Verified: `dotnet build`.
 > - 2026-11-10: **Offline-first screenshots.** `ScreenshotCaptureWorker` + `ScreenshotSyncWorker`
 >   under `Services/Screenshots/`. Capture: `ScreenCaptureService.CaptureStill` → SkiaSharp WebP →
 >   `%LocalAppData%/<APP>/screenshots/pending/` (+ JSON sidecar); skip on pending pressure (never

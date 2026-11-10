@@ -3,6 +3,14 @@
 > **Last audited:** 2026-11-10
 > **Changelog:**
 >
+> - 2026-11-10: **Screenshot duplicate-upload flood (client).** Root cause: SyncWorker deleted
+>   pending while `File.OpenRead` still held the Windows lock → webp orphaned without JSON;
+>   `GuessMetaFromName` folded screenshotId into `machineId` and `ListPending` minted a new
+>   Guid each poll → ~90 byte-identical server rows per real capture. Fix: read bytes then
+>   close before delete; parse trailing UUID from basename; never mint ids on list. Media path
+>   kept `media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`. Client **VERSION 1.0.12**. Verified:
+>   `dotnet build` client. Installer-Parity: next Windows installer.
+>
 > - 2026-11-10: **Screenshot upload idempotency.** Client mints `screenshotId` UUID at capture
 >   (sidecar + form field); server uses it as `screenshots.id` PK. Replay of a lost-200 returns
 >   `{accepted:true, idempotentReplay:true}` without a second file. Fast-path GetByID before
