@@ -39,6 +39,19 @@
 >   when MainModule path is unreadable. `EnvBootstrap` / `generate-windows-vars.sh` /
 >   `installer-windows.iss` / `install-service.ps1` seed the new key. Client **VERSION 1.0.6**.
 >   Installer-Parity: next Windows installer.
+> **Last audited:** 2026-11-07 (hardware & port control)
+> **Changelog:**
+> - 2026-11-07: **Hardware & Port Control (scan + enforce).** Tracker: `PortDeviceCollector`
+>   (BackgroundService) scans every PnP port/device via `Get-PnpDevice`, classifies into 3 categories,
+>   writes `machine_ports` (SQLite, `DatabaseSchema.UpsertMachinePortSql`; client owns present/removed),
+>   drained by `SyncService` to `POST /hardware-ports/sync`; gated by `ALPHA_PORT_SCAN_ENABLED`.
+>   DlpService: `PortDeviceEnforcer` disables blocked classes (Device Installation Restrictions,
+>   retroactive) + instances (`Disable-PnpDevice`), wired into `EnforceWorker` + park-clear, local
+>   switch `ALPHA_DLP_PORT_BLOCK` (`DlpConfig`/`EnvBootstrap`); `PolicyBundle` parses `deviceControl`.
+>   **Offline-first fix:** `PolicyStore` persists `deviceControl` in a new `policy_device_control`
+>   table (`dlp.db`) on apply and emits it on rebuild — previously the relational round-trip dropped it,
+>   so `EnforceWorker` always received an empty block set and nothing was ever enforced. Verified:
+>   `dotnet build` client + DlpService (0/0); live scan (52 devices). Ships in the next installer.
 > - 2026-11-07: **Local blocker switches.** `DlpConfig` gains `NetworkLockdown`
 >   (`ALPHA_DLP_NETWORK_LOCKDOWN`) and `AppBlock` (`ALPHA_DLP_APP_BLOCK`) next to `UsbBlock` / `WebBlock`.
 >   `EnforceWorker` gates `ApplyLockdownAsync`, the lockdown browser allow-set in `ApplyWebAsync`, and

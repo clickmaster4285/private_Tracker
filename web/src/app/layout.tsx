@@ -28,7 +28,8 @@ export default function RootLayout({
         <link rel="icon" type="image/png" href="/app-logo.png" />
         <link rel="apple-touch-icon" href="/app-logo.png" />
       </head>
-      <body>
+      {/* Browser extensions (e.g. ColorZilla `cz-shortcut-listen`) add attributes to <body>. */}
+      <body suppressHydrationWarning>
         <ReactScan />
         <Providers>{children}</Providers>
       </body>

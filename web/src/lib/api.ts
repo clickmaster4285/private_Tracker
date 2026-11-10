@@ -2069,6 +2069,63 @@ export const dlpApi = {
   },
 };
 
+// ── Hardware & Port Control ──────────────────────────────────────────────────
+
+export interface MachinePort {
+  id: number;
+  machineId: string;
+  instanceId: string;
+  category: number; // 1=external 2=internal 3=wireless/virtual
+  pnpClass: string;
+  classGuid: string;
+  busType: string;
+  friendlyName: string;
+  manufacturer: string;
+  present: boolean;
+  status: string;
+  blockable: boolean;
+  lastSeenAt: string;
+}
+
+export type DeviceControlScope = 'global' | 'department' | 'employee' | 'machine';
+
+export interface DeviceControlRule {
+  id: number;
+  targetKind: 'class' | 'instance';
+  targetValue: string;
+  label: string;
+  pnpClass: string;
+  action: 'block' | 'allow' | 'alert';
+  scope: DeviceControlScope;
+  scopeValue: string;
+  enabled: boolean;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const portControlApi = {
+  listPorts: (employeeId: string, machineId?: string) =>
+    request<{ ports: MachinePort[] }>('/hardware-ports', {
+      params: { employeeId, machineId },
+    }),
+  listRules: () => request<{ rules: DeviceControlRule[] }>('/device-control/rules'),
+  createRule: (data: {
+    targetKind: 'class' | 'instance';
+    targetValue: string;
+    label?: string;
+    pnpClass?: string;
+    action?: 'block' | 'allow' | 'alert';
+    scope?: DeviceControlScope;
+    scopeValue?: string;
+    note?: string;
+  }) => request<DeviceControlRule>('/device-control/rules', { method: 'POST', body: data }),
+  updateRule: (id: number, data: { action?: string; enabled?: boolean; note?: string }) =>
+    request<DeviceControlRule>(`/device-control/rules/${id}`, { method: 'PATCH', body: data }),
+  removeRule: (id: number) =>
+    request<void>(`/device-control/rules/${id}`, { method: 'DELETE' }),
+};
+
 export const shadowItApi = {
   list: (params?: {
     q?: string; authStatus?: string; page?: number; perPage?: number;

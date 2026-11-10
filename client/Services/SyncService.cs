@@ -597,6 +597,27 @@ public class SyncService : BackgroundService
             e => e.Id,
             sw, budget, ct));
 
+        // Hardware & Port Control — full scanned port/device inventory.
+        tasks.Add((sw, budget, ct) => DrainTableAsync<MachinePort>(
+            "/api/v1/hardware-ports/sync",
+            (limit, token) => _store.GetUnsentMachinePortsAsync(limit, token),
+            e => new
+            {
+                instanceId = e.InstanceId,
+                category = e.Category,
+                pnpClass = e.PnpClass,
+                classGuid = e.ClassGuid,
+                busType = e.BusType,
+                friendlyName = e.FriendlyName,
+                manufacturer = e.Manufacturer,
+                present = e.Present,
+                status = e.Status,
+                blockable = e.Blockable,
+            },
+            (ids, token) => _store.MarkMachinePortsSentAsync(ids, token),
+            e => e.InstanceId,
+            sw, budget, ct));
+
         tasks.Add((sw, budget, ct) => DrainSessionEventsAsync(sw, budget, ct));
 
         // App status (key/value) — drain EARLY so last_heartbeat_at (stamped every

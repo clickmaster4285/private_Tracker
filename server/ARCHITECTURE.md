@@ -20,6 +20,16 @@
 >   inactive, and drops bare shell tokens AppLocker cannot use (`isUsableAllowPath`). Duplicate
 >   catalog allow is idempotent (`GetAllowAppByCatalogID` → return existing). Handler maps
 >   catalog/path client errors to HTTP 400 via `isAllowAppClientErr`.
+> **Last audited:** 2026-11-07 (hardware & port control)
+> **Changelog:**
+> - 2026-11-07: **Hardware & Port Control.** Migration **066** (`machine_ports` inventory;
+>   `device_control_rules` with `scope`/`scope_value`; `dlp_policy_device_control` snapshot) + **067**
+>   (idempotent re-create; renumbered after screenshots **065**). New `PortRepo`/`PortService`/`PortHandler`:
+>   DeviceAuth `POST /hardware-ports/sync` (machine-scoped), JWT `GET /hardware-ports` +
+>   `/device-control/rules` CRUD (auto-publish via `DlpService.Publish`). `DlpRepo.AssembleBundleJSON`
+>   emits `deviceControl`; `Publish` calls `SnapshotDeviceControl` (global rules); `PullPolicy` overlays
+>   employee/machine/department rules per device (`ResolveScopedDeviceControl` + `mergeDeviceControl`).
+>   Verified: `go build`, `go vet`. Restart API for 066/067.
 > - 2026-11-07: **Releases from local `setup/` folder; GitHub bridge removed.** `GitHubReleaseService`
 >   + `GITHUB_*` env deleted. `LocalReleaseService` scans `RELEASES_DIR` (default `setup`) and keeps the
 >   same `/releases` + `/downloads/:assetId` contract (web + clients unchanged on the wire). Downloads via

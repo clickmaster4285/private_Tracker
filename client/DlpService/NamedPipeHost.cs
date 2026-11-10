@@ -13,7 +13,7 @@ namespace AlphaAITracker.Service;
 /// IPC host: Windows named pipe (\\.\pipe\&lt;WINDOWS_DLP_PIPE_NAME&gt;) or Linux
 /// Unix socket (<c>/var/lib/&lt;pkg&gt;/dlp/dlp.sock</c>).
 /// Ops: GetPolicyVersion, Health, AuthorizeTeardown, ApplyTeardownGate,
-/// GetUpdateStatus, RequestUpdateCheck.
+/// GetUpdateStatus, RequestUpdateCheck, RequestPolicyPull.
 /// Always listens so update/teardown IPC works even when
 /// <c>ALPHA_DLP_ENABLED=false</c> (DLP-only ops then return <c>dlp_disabled</c>).
 /// </summary>
@@ -276,6 +276,7 @@ public sealed class NamedPipeHost : BackgroundService
             {
                 "GetUpdateStatus" => JsonSerializer.Serialize(_updateState.Snapshot()),
                 "RequestUpdateCheck" => RequestUpdateCheckJson(),
+                "RequestPolicyPull" => RequireDlpSync(RequestPolicyPullJson),
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
@@ -288,6 +289,13 @@ public sealed class NamedPipeHost : BackgroundService
         {
             return JsonSerializer.Serialize(new { ok = false, error = ex.Message });
         }
+    }
+
+    /// <summary>Server pushed "policy_changed" (via the tracker's WebSocket) — pull now.</summary>
+    private static string RequestPolicyPullJson()
+    {
+        DlpSignals.RequestPull();
+        return JsonSerializer.Serialize(new { ok = true, queued = true });
     }
 
     private string RequestUpdateCheckJson()

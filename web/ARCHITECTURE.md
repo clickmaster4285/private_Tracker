@@ -21,6 +21,23 @@
 >   alongside the inventory catalog picker; optional install-path override; Linux
 >   cinnamon/gnome/WSL Settings catalog rows are labeled and blocked unless a Windows path is
 >   supplied. Auto-publish unchanged.
+> **Last audited:** 2026-11-10 (same-site API proxy)
+> **Changelog:**
+> - 2026-11-10: **Auth 401 on `/auth/refresh` fixed — same-site API proxy restored.** `web/.env` pointed
+>   `NEXT_PUBLIC_API_URL` at `http://192.168.88.44:8000/api/v1`, so a page on `localhost:3000` called the
+>   API cross-site; the server's `SameSite=Lax` httpOnly cookies were never sent (no `Cookie` header) and
+>   `/auth/check` / `/auth/refresh` always failed → bounce to `/login`. `next.config.ts` had no rewrites
+>   despite the docs. Added `rewrites()` `/api/v1/:path*` → `API_PROXY_TARGET` (server-side env, default
+>   `http://localhost:8080`); `.env` now leaves `NEXT_PUBLIC_API_URL` unset (client uses relative
+>   `/api/v1`). `<body suppressHydrationWarning>` for extension-injected attributes (ColorZilla).
+>   WebSockets still use `NEXT_PUBLIC_WS_URL` (ticket auth, not cookies). Verified via `localhost:3000`:
+>   login 200 → check authenticated → refresh 200 → logout 200; `npx tsc --noEmit`.
+> - 2026-11-07: **Ports Control page.** New route `/device-specs/ports` (Monitoring → Device Specs →
+>   Ports Control, module `device-specs`) — per-employee port/device inventory grouped by category with
+>   plain-language per-device descriptions, overview stats, a scope selector (this employee / this
+>   computer / everyone) and Block / Alert / Unblock. `portControlApi` (listPorts, listRules, create/
+>   remove rule) + `MachinePort` / `DeviceControlRule` types in `lib/api.ts`. Video outputs + system
+>   disks render as alert-only. Verified: `npx tsc --noEmit`.
 > - 2026-11-07: `/releases` copy no longer mentions GitHub — installers come from the API server's
 >   `setup/` folder (same `/api/v1/releases` contract). Verified: `npx tsc --noEmit`.
 > - 2026-11-05: **P3 App Allow List catalog picker.** `/allowlists/apps` selects from

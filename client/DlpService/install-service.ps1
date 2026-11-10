@@ -131,6 +131,7 @@ $defaults = [ordered]@{
     "ALPHA_DLP_WEB_BLOCK"          = (Read-EnvKey $clientEnvPath "ALPHA_DLP_WEB_BLOCK" "true")
     "ALPHA_DLP_NETWORK_LOCKDOWN"   = (Read-EnvKey $clientEnvPath "ALPHA_DLP_NETWORK_LOCKDOWN" "true")
     "ALPHA_DLP_APP_BLOCK"          = (Read-EnvKey $clientEnvPath "ALPHA_DLP_APP_BLOCK" "true")
+    "ALPHA_DLP_PORT_BLOCK"         = (Read-EnvKey $clientEnvPath "ALPHA_DLP_PORT_BLOCK" "true")
     "ALPHA_DLP_DELETE_BLOCK"       = (Read-EnvKey $clientEnvPath "ALPHA_DLP_DELETE_BLOCK" "true")
     "ALPHA_DLP_LOGIN_REBOOT"       = (Read-EnvKey $clientEnvPath "ALPHA_DLP_LOGIN_REBOOT" "true")
     "ALPHA_DLP_POLICY_POLL_SEC"    = (Read-EnvKey $clientEnvPath "ALPHA_DLP_POLICY_POLL_SEC" "300")

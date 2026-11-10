@@ -43,7 +43,9 @@ public sealed class PolicyPullWorker : BackgroundService
         }
 
         await _store.InitializeAsync(stoppingToken);
-        var interval = TimeSpan.FromSeconds(Math.Max(30, _cfg.PolicyPollSec));
+        // Lab may set ALPHA_DLP_POLICY_POLL_SEC=1; ship default is 300. Floor is 1s.
+        // The interval is re-read every pass (RefreshLocalSwitches updates it from
+        // service.env), and a server push (pipe op RequestPolicyPull) ends the wait early.
         var waitInterval = TimeSpan.FromSeconds(15);
         // While a login reboot is pending, re-try hardening quickly instead of the long poll.
         var pendingInterval = TimeSpan.FromSeconds(10);
@@ -114,8 +116,14 @@ public sealed class PolicyPullWorker : BackgroundService
                 _logger.LogWarning(ex, "DLP policy pull failed");
             }
 
-            var delay = _pendingLoginReboot ? pendingInterval : interval;
-            try { await Task.Delay(delay, stoppingToken); }
+            var delay = _pendingLoginReboot
+                ? pendingInterval
+                : TimeSpan.FromSeconds(Math.Max(1, _cfg.PolicyPollSec));
+            try
+            {
+                if (await DlpSignals.WaitPullAsync(delay, stoppingToken))
+                    _logger.LogInformation("Policy pull requested (server push) — pulling now");
+            }
             catch (OperationCanceledException) { break; }
         }
     }
@@ -259,5 +267,31 @@ public sealed class PolicyPullWorker : BackgroundService
             bundle = "{}";
         }
         await _store.SavePolicyAsync(newVersion, hash, bundle, ct);
+        // Apply right away instead of waiting out EnforceWorker's 15 s tick.
+        DlpSignals.RequestEnforce();
+
+        // Heal / sync service.env (incl. ALPHA_DLP_PORT_BLOCK) and refresh live switches
+        // so EnforceWorker picks up PortBlock without a service restart.
+        try
+        {
+            var synced = EnvBootstrap.SyncServiceEnvAfterPolicyApply();
+            _cfg.RefreshLocalSwitches();
+            if (synced.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Synced service.env after policy v{Version}: {Keys}; portBlock={Port}",
+                    newVersion, string.Join(", ", synced), _cfg.PortBlock);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "service.env reload after policy v{Version}; portBlock={Port}",
+                    newVersion, _cfg.PortBlock);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "service.env sync after policy v{Version} failed", newVersion);
+        }
     }
 }

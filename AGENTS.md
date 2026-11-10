@@ -3,6 +3,11 @@
 > **Last audited:** 2026-11-10
 > **Changelog:**
 >
+> - 2026-11-10: **Merge amircode + sohaib (`marged-11-10-2026`).** Keeps screenshots / scale /
+>   timedatewarning / delete-block from amircode and Port Control + same-site API proxy from
+>   sohaib. Port migrations renumbered to **066** / **067** (after screenshots **065**).
+>   Client **VERSION 1.0.16**.
+>
 > - 2026-11-10: **Clock/timezone warning subprocess (client).** `TimeDateWarningWorker` checks on
 >   tracker start then every hour: skew vs `GET /api/v1/server-time` + OS TZ vs IP IANA timezone
 >   (`LocationProbe` `timezone` field; shift schedule fallback). Unhealthy → writes
@@ -79,6 +84,59 @@
 >   `/allowlists/apps`: **Windows Settings (Win10/11)** preset + install-path override + Linux
 >   catalog warning. Client **VERSION 1.0.6**. Lab: `TESTING.md` §H steps 15–17. Installer-Parity:
 >   re-bake + rebuild Windows installer so `service.env` carries `ALPHA_DLP_DELETE_BLOCK`.
+> - 2026-11-10: **Auth 401 on `/auth/refresh` fixed — same-site API proxy restored.** `web/.env` pointed
+>   `NEXT_PUBLIC_API_URL` at `http://192.168.88.44:8000/api/v1`, so a page on `localhost:3000` called the
+>   API cross-site; the server's `SameSite=Lax` httpOnly cookies were never sent (no `Cookie` header) and
+>   `/auth/check` / `/auth/refresh` always failed → bounce to `/login`. `next.config.ts` had no rewrites
+>   despite the docs. Added `rewrites()` `/api/v1/:path*` → `API_PROXY_TARGET` (server-side env, default
+>   `http://localhost:8080`); `.env` now leaves `NEXT_PUBLIC_API_URL` unset (client uses relative
+>   `/api/v1`). `<body suppressHydrationWarning>` for extension-injected attributes (ColorZilla).
+>   WebSockets still use `NEXT_PUBLIC_WS_URL` (ticket auth, not cookies). Verified via `localhost:3000`:
+>   login 200 → check authenticated → refresh 200 → logout 200; `npx tsc --noEmit`.
+>
+> - 2026-11-10: **Port blocking reliability + instant policy delivery (DlpService + server + tracker).**
+>   Root causes from testingpc (EMP-10003): (1) disabled devices were never recognised as
+>   disabled — `Get-PnpDevice` reports them as `Status=Error`, not `Disabled`, so every block
+>   was "Failed", retried forever and never recorded for Unblock; (2) a re-enabled Ethernet
+>   adapter stayed online until the next slow pass (11 rules × up to 3 PowerShell spawns);
+>   (3) rules looked "restart-only" because the policy pull interval was read once at service
+>   start and nothing woke the PC on publish. **Fix:** new `CfgMgrDevices` (native cfgmgr32:
+>   locate/status/disable-persist/enable/list-by-class/class-guid; disabled = problem code 22;
+>   veto → `Vetoed`/pending, PowerShell only as fallback in the full pass); new
+>   `PortGuardWorker` re-disables any re-enabled blocked device every 2 s (native only, 60 s
+>   back-off on veto) and raises a `device_control` / `reblocked` alert (10 min per-device
+>   rate limit). Policy delivery: server `ws.Hub.SubscribePolicy/BroadcastPolicyChanged`,
+>   presence socket writes `{"type":"policy_changed"}` after every `DlpService.Publish`;
+>   tracker `WsClient` forwards it as pipe op `RequestPolicyPull`; `DlpSignals` wakes
+>   `PolicyPullWorker` (interval now re-read each pass) and then `EnforceWorker`. Verified:
+>   `dotnet build` client + DlpService 0/0, `dotnet test` 37/37, `go build`/`go vet`,
+>   `go test ./internal/ws`; native wrapper read-only against live devices (enumeration,
+>   class GUID, problem codes match `Get-PnpDevice`). Disable/enable path needs an elevated
+>   installed-service lab run. Installer-Parity: rebuild the Windows installer; restart API.
+>
+> - 2026-11-07: **Hardware & Port Control (scan + block, server + client + DlpService + web).** New
+>   feature: scan every physical port / interface / device on each Windows PC and block/allow/alert it
+>   per employee, per machine, or fleet-wide. **Server:** migration **066** (`machine_ports` inventory,
+>   `device_control_rules` with `scope`/`scope_value`, `dlp_policy_device_control` snapshot) + **067**
+>   (idempotent re-create — renumbered after screenshots **065**). DeviceAuth
+>   `POST /hardware-ports/sync`; JWT `GET /hardware-ports`, `/device-control/rules` CRUD (auto-publish).
+>   `Publish` folds **global** rules into the bundle (`SnapshotDeviceControl`); employee/machine/
+>   department rules resolve per-device at pull (`ResolveScopedDeviceControl` → `mergeDeviceControl`).
+>   **Client tracker:** `PortDeviceCollector` (Get-PnpDevice → `machine_ports` SQLite → sync),
+>   `ALPHA_PORT_SCAN_ENABLED` (default true). **DlpService:** `PortDeviceEnforcer` (instance →
+>   `Disable-PnpDevice`; class → Device Installation Restrictions retroactive; `Clear` re-enables),
+>   wired into `EnforceWorker` + park-clear, local switch `ALPHA_DLP_PORT_BLOCK` (`DlpConfig` +
+>   `EnvBootstrap`). **Offline-first fix (root cause of "blocking never applied"):** `PolicyStore`
+>   round-trips the applied bundle through `dlp.db` relational tables and rebuilds it, but previously
+>   **dropped `deviceControl`**, so `EnforceWorker` always saw an empty block set. New
+>   `policy_device_control` table + persist on apply + emit on rebuild — port rules now survive offline
+>   and actually enforce. **Web:** `/device-specs/ports` (Device Specs → Ports Control) — inventory by
+>   category with per-device descriptions, Block/Alert/Unblock, scope selector; `portControlApi`.
+>   Video outputs + internal system disks are detect/alert-only (never hard-disabled). Verified:
+>   `go build`/`go vet`; `npx tsc --noEmit`; `dotnet build` client + DlpService (0/0); live scan on a
+>   Windows PC (52 devices classified); SQLite upsert/`is_synced` round-trip. Installer-Parity: rebuild
+>   client installer + re-bake `config.enc` so `ALPHA_PORT_SCAN_ENABLED` / `ALPHA_DLP_PORT_BLOCK`
+>   reach installed PCs; restart API for 066/067.
 >
 > - 2026-11-07: **Local blocker switches in client `.env` (DlpService).** Four `true|false` keys decide
 >   whether this PC applies each blocker at all: `ALPHA_DLP_USB_BLOCK` (USB storage),

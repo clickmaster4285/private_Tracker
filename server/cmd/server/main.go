@@ -92,6 +92,8 @@ func main() {
 	dlpService := services.NewDlpService(dlpRepo, cfg.DlpRemovalCodeTTLMin).
 		WithPlatformAllow(services.CompilePlatformAllowHosts(cfg)).
 		WithDeviceRepo(deviceRepo)
+	portRepo := repository.NewPortRepo(pool)
+	portService := services.NewPortService(portRepo, dlpService)
 	rbacService := services.NewRBACService(rbacRepo)
 	shiftService := services.NewShiftService(shiftRepo, cfg.DefaultShiftTimezone)
 	timeAttendanceService := services.NewTimeAttendanceService(timeAttendanceRepo)
@@ -109,6 +111,7 @@ func main() {
 	newSchemaHandler := handlers.NewNewSchemaHandler(newSchemaService, authService)
 	monitoringHandler := handlers.NewMonitoringHandler(monitoringService)
 	dlpHandler := handlers.NewDlpHandler(dlpService, employeeRepo)
+	portHandler := handlers.NewPortHandler(portService)
 	rbacHandler := handlers.NewRBACHandler(rbacService)
 	shiftHandler := handlers.NewShiftHandler(shiftService)
 	timeAttendanceHandler := handlers.NewTimeAttendanceHandler(timeAttendanceService)
@@ -146,6 +149,9 @@ func main() {
 		InstanceID:     instanceID,
 	})
 	defer presenceHub.Close()
+	// Push "policy_changed" over the presence socket on every DLP publish so PCs pull now
+	// instead of waiting for ALPHA_DLP_POLICY_POLL_SEC (was: rules looked "restart-only").
+	dlpService.SetPolicyNotifier(presenceHub.BroadcastPolicyChanged)
 
 	// Phase 2: when Redis is up, share presence + watch tickets + publisher routing.
 	if redisClient != nil {
@@ -295,7 +301,7 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler, screenshotHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, portHandler, releaseHandler, screenshotHandler)
 
 	// ────────────────
 	// Graceful Shutdown

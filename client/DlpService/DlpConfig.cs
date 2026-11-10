@@ -11,20 +11,22 @@ public sealed class DlpConfig
     public string ServerUrl { get; private set; } = "";
     public string DeviceToken { get; private set; } = "";
     public string DataDir { get; init; } = "";
-    public int PolicyPollSec { get; init; } = 300;
-    public int AlertSyncSec { get; init; } = 60;
+    public int PolicyPollSec { get; private set; } = 300;
+    public int AlertSyncSec { get; private set; } = 60;
     /// <summary>
     /// Local kill-switches for each blocker (client .env -> service.env). When false the
     /// service never applies that blocker, even if the published server policy asks for
     /// it, and clears anything an earlier run left behind.
     /// </summary>
-    public bool UsbBlock { get; init; } = true;
+    public bool UsbBlock { get; private set; } = true;
     /// <summary>Web Blocker domains (<c>/web-blocker</c>): hosts sink + firewall + DNS pin.</summary>
-    public bool WebBlock { get; init; } = true;
+    public bool WebBlock { get; private set; } = true;
     /// <summary>Network lockdown (<c>/allowlists/web</c>): default-deny outbound 80/443 firewall.</summary>
-    public bool NetworkLockdown { get; init; } = true;
+    public bool NetworkLockdown { get; private set; } = true;
     /// <summary>App lockdown (<c>/allowlists/apps</c>): AppLocker default-deny + running-app kill sweep.</summary>
-    public bool AppBlock { get; init; } = true;
+    public bool AppBlock { get; private set; } = true;
+    /// <summary>Hardware/port control (<c>/device-specs/ports</c>): disable blocked device classes/instances.</summary>
+    public bool PortBlock { get; private set; } = true;
     /// <summary>
     /// NTFS Deny Delete on Fixed/Removable volume roots (create/edit allowed).
     /// Same lockdown gate as app/network; false clears leftover ACEs.
@@ -75,6 +77,7 @@ public sealed class DlpConfig
             WebBlock = GetBool("ALPHA_DLP_WEB_BLOCK", true),
             NetworkLockdown = GetBool("ALPHA_DLP_NETWORK_LOCKDOWN", true),
             AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true),
+            PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true),
             DeleteBlock = GetBool("ALPHA_DLP_DELETE_BLOCK", true),
             LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
@@ -113,6 +116,23 @@ public sealed class DlpConfig
             ServerUrl = envUrl;
         if (string.IsNullOrWhiteSpace(DeviceToken) && !string.IsNullOrWhiteSpace(envTok))
             DeviceToken = envTok;
+    }
+
+    /// <summary>
+    /// Re-read local blocker kill-switches from the process environment (after
+    /// <see cref="EnvBootstrap.SyncServiceEnvAfterPolicyApply"/> reloads <c>service.env</c>).
+    /// </summary>
+    public void RefreshLocalSwitches()
+    {
+        UsbBlock = GetBool("ALPHA_DLP_USB_BLOCK", true);
+        WebBlock = GetBool("ALPHA_DLP_WEB_BLOCK", true);
+        NetworkLockdown = GetBool("ALPHA_DLP_NETWORK_LOCKDOWN", true);
+        AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true);
+        PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true);
+        var poll = GetInt("ALPHA_DLP_POLICY_POLL_SEC", PolicyPollSec);
+        if (poll > 0) PolicyPollSec = poll;
+        var alert = GetInt("ALPHA_DLP_ALERT_SYNC_SEC", AlertSyncSec);
+        if (alert > 0) AlertSyncSec = alert;
     }
 
     private static bool GetBool(string key, bool fallback)

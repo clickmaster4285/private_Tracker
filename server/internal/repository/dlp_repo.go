@@ -759,6 +759,10 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	if err != nil {
 		return nil, err
 	}
+	deviceControl, err := r.listPolicyDeviceControl(ctx, version)
+	if err != nil {
+		return nil, err
+	}
 
 	bundle := struct {
 		PolicyVersion int64  `json:"policyVersion"`
@@ -777,6 +781,7 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 			Publishers []string `json:"publishers"`
 			AppNames   []string `json:"appNames"`
 		} `json:"shadowDeny"`
+		DeviceControl []map[string]any `json:"deviceControl"`
 	}{
 		PolicyVersion: version,
 		PublishedAt:   header.PublishedAt.UTC().Format(time.RFC3339),
@@ -786,12 +791,125 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	bundle.PlatformAllow.Hosts = platformHosts
 	bundle.Allow.Hosts = allowHosts
 	bundle.Allow.Apps = allowApps
+	bundle.DeviceControl = deviceControl
 	bundle.ShadowDeny.Domains = shadowDomains
 	bundle.ShadowDeny.Publishers = []string{}
 	bundle.ShadowDeny.AppNames = []string{}
 	// Always emit lockdown true|false. Agents default-deny after login when the
 	// field is missing or true; explicit false is the admin opt-out.
 	return json.Marshal(bundle)
+}
+
+// SnapshotDeviceControl folds enabled draft device-control rules into the
+// immutable bundle snapshot for a published version. Called from Publish.
+func (r *DlpRepo) SnapshotDeviceControl(ctx context.Context, version int64) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT target_kind, target_value, pnp_class, action
+		FROM device_control_rules
+		WHERE enabled=TRUE AND scope='global' ORDER BY id LIMIT $1`, MaxDeviceControlRules)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type dc struct{ kind, value, class, action string }
+	list := make([]dc, 0)
+	for rows.Next() {
+		var x dc
+		if err := rows.Scan(&x.kind, &x.value, &x.class, &x.action); err != nil {
+			return err
+		}
+		// Never publish Net adapter disables — that takes the PC offline.
+		if isNetAdapterDeviceControl(x.class, x.value, x.action) {
+			continue
+		}
+		list = append(list, x)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i, x := range list {
+		if _, err := r.pool.Exec(ctx, `
+			INSERT INTO dlp_policy_device_control
+			    (policy_version, seq, target_kind, target_value, pnp_class, action)
+			VALUES ($1,$2,$3,$4,$5,$6)`,
+			version, i, x.kind, x.value, x.class, x.action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ResolveScopedDeviceControl returns enabled NON-global device-control entries that
+// apply to one device: scope=employee matching this employee, scope=machine matching
+// this machine, or scope=department matching the employee's department. Merged into
+// the device's pulled bundle on top of the global snapshot.
+func (r *DlpRepo) ResolveScopedDeviceControl(ctx context.Context, employeeID, machineID string) ([]map[string]any, error) {
+	if employeeID == "" {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT dcr.target_kind, dcr.target_value, dcr.pnp_class, dcr.action
+		FROM device_control_rules dcr
+		WHERE dcr.enabled = TRUE AND dcr.scope <> 'global' AND (
+		    (dcr.scope = 'employee'   AND dcr.scope_value = $1)
+		 OR (dcr.scope = 'machine'    AND dcr.scope_value = $2)
+		 OR (dcr.scope = 'department' AND dcr.scope_value = (
+		        SELECT COALESCE(department_id::text, '') FROM employees WHERE employee_id = $1))
+		)
+		ORDER BY dcr.id LIMIT $3`, employeeID, machineID, MaxDeviceControlRules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var kind, value, class, action string
+		if err := rows.Scan(&kind, &value, &class, &action); err != nil {
+			return nil, err
+		}
+		if isNetAdapterDeviceControl(class, value, action) {
+			continue
+		}
+		out = append(out, map[string]any{
+			"kind": kind, "value": value, "pnpClass": class, "action": action,
+		})
+	}
+	return out, rows.Err()
+}
+
+// Net setup-class GUID — disabling NICs cuts the management channel.
+const netClassGUID = "{4d36e972-e325-11ce-bfc1-08002be10318}"
+
+func isNetAdapterDeviceControl(pnpClass, value, action string) bool {
+	if !strings.EqualFold(strings.TrimSpace(action), "block") {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(pnpClass), "Net") {
+		return true
+	}
+	v := strings.TrimSpace(value)
+	return strings.EqualFold(v, "Net") || strings.EqualFold(v, netClassGUID)
+}
+
+func (r *DlpRepo) listPolicyDeviceControl(ctx context.Context, version int64) ([]map[string]any, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT target_kind, target_value, pnp_class, action
+		FROM dlp_policy_device_control WHERE policy_version=$1 ORDER BY seq`, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var kind, value, class, action string
+		if err := rows.Scan(&kind, &value, &class, &action); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"kind": kind, "value": value, "pnpClass": class, "action": action,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int64) ([]string, error) {

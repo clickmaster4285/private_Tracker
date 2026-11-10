@@ -42,6 +42,11 @@ type Hub struct {
 	conns   map[string]*ConnMeta
 	nextGen atomic.Uint64
 	backend PresenceBackend
+
+	// policySubs: one wake channel per live socket (keyed by connection generation).
+	// BroadcastPolicyChanged pokes all of them so each PC pulls the new DLP policy now.
+	policyMu   sync.Mutex
+	policySubs map[uint64]chan struct{}
 }
 
 // NewHub constructs a presence hub. MaxConnections <= 0 defaults to 10_000.
@@ -50,8 +55,9 @@ func NewHub(cfg Config) *Hub {
 		cfg.MaxConnections = 10_000
 	}
 	return &Hub{
-		cfg:   cfg,
-		conns: make(map[string]*ConnMeta),
+		cfg:        cfg,
+		conns:      make(map[string]*ConnMeta),
+		policySubs: make(map[uint64]chan struct{}),
 	}
 }
 
@@ -188,4 +194,36 @@ func (h *Hub) Close() {
 			_ = backend.ClearPresence(ctx, id, instanceID)
 		}
 	}
+}
+
+// SubscribePolicy returns a channel that receives a value whenever a new DLP policy is
+// published, plus a cancel func the socket must call on close. The channel is buffered
+// (size 1) so bursts of publishes collapse into a single "policy_changed" push.
+func (h *Hub) SubscribePolicy(gen uint64) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.policyMu.Lock()
+	h.policySubs[gen] = ch
+	h.policyMu.Unlock()
+	return ch, func() {
+		h.policyMu.Lock()
+		delete(h.policySubs, gen)
+		h.policyMu.Unlock()
+	}
+}
+
+// BroadcastPolicyChanged wakes every connected socket on this instance (non-blocking).
+// Returns how many sockets were notified. PCs that are offline simply pull on their
+// normal ALPHA_DLP_POLICY_POLL_SEC timer when they come back.
+func (h *Hub) BroadcastPolicyChanged() int {
+	h.policyMu.Lock()
+	defer h.policyMu.Unlock()
+	n := 0
+	for _, ch := range h.policySubs {
+		select {
+		case ch <- struct{}{}:
+			n++
+		default: // a push is already queued for this socket
+		}
+	}
+	return n
 }
