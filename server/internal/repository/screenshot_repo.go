@@ -72,15 +72,26 @@ func (r *ScreenshotRepo) GetByID(ctx context.Context, id string) (*models.Screen
 	return &s, nil
 }
 
-// List returns newest-first rows with optional employee + time window.
+// ScreenshotListFilter is the server-side list filter (date window + optional clock times).
+type ScreenshotListFilter struct {
+	EmployeeID string
+	From       *time.Time
+	To         *time.Time
+	// TimeFrom / TimeTo are HH:mm (24h). Empty = not applied.
+	// Compared against (captured_at AT TIME ZONE TimeZone)::time so multi-day
+	// date windows still restrict to that clock range each day.
+	TimeFrom string
+	TimeTo   string
+	// IANA zone for clock-time filter (e.g. Asia/Karachi). Empty → UTC.
+	TimeZone string
+	Cursor   *time.Time
+	Limit    int
+}
+
+// List returns newest-first rows with optional employee + date + clock filters.
 // Cursor is an RFC3339 captured_at of the last item (exclusive).
-func (r *ScreenshotRepo) List(
-	ctx context.Context,
-	employeeID string,
-	from, to *time.Time,
-	cursor *time.Time,
-	limit int,
-) ([]models.ScreenshotListItem, error) {
+func (r *ScreenshotRepo) List(ctx context.Context, f ScreenshotListFilter) ([]models.ScreenshotListItem, error) {
+	limit := f.Limit
 	if limit < 1 {
 		limit = 40
 	}
@@ -88,8 +99,13 @@ func (r *ScreenshotRepo) List(
 		limit = 100
 	}
 
+	tz := strings.TrimSpace(f.TimeZone)
+	if tz == "" {
+		tz = "UTC"
+	}
+
 	var b strings.Builder
-	args := make([]any, 0, 8)
+	args := make([]any, 0, 12)
 	b.WriteString(`
 		SELECT s.id, s.employee_id, COALESCE(e.name, ''), s.machine_id, s.captured_at,
 		       s.byte_size, s.width, s.height, s.content_type
@@ -97,20 +113,33 @@ func (r *ScreenshotRepo) List(
 		LEFT JOIN employees e ON e.employee_id = s.employee_id AND e.deleted_at IS NULL
 		WHERE 1=1`)
 
-	if employeeID != "" {
-		args = append(args, employeeID)
+	if f.EmployeeID != "" {
+		args = append(args, f.EmployeeID)
 		fmt.Fprintf(&b, ` AND s.employee_id = $%d`, len(args))
 	}
-	if from != nil {
-		args = append(args, *from)
+	if f.From != nil {
+		args = append(args, *f.From)
 		fmt.Fprintf(&b, ` AND s.captured_at >= $%d`, len(args))
 	}
-	if to != nil {
-		args = append(args, *to)
+	if f.To != nil {
+		args = append(args, *f.To)
 		fmt.Fprintf(&b, ` AND s.captured_at <= $%d`, len(args))
 	}
-	if cursor != nil {
-		args = append(args, *cursor)
+	if f.TimeFrom != "" || f.TimeTo != "" {
+		args = append(args, tz)
+		tzIdx := len(args)
+		localTimeExpr := fmt.Sprintf(`((s.captured_at AT TIME ZONE $%d)::time)`, tzIdx)
+		if f.TimeFrom != "" {
+			args = append(args, f.TimeFrom)
+			fmt.Fprintf(&b, ` AND %s >= $%d::time`, localTimeExpr, len(args))
+		}
+		if f.TimeTo != "" {
+			args = append(args, f.TimeTo)
+			fmt.Fprintf(&b, ` AND %s <= $%d::time`, localTimeExpr, len(args))
+		}
+	}
+	if f.Cursor != nil {
+		args = append(args, *f.Cursor)
 		fmt.Fprintf(&b, ` AND s.captured_at < $%d`, len(args))
 	}
 	args = append(args, limit)

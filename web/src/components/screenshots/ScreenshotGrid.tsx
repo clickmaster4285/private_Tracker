@@ -14,23 +14,34 @@ export function ScreenshotGrid({
   employeeId,
   from,
   to,
+  timeFrom,
+  timeTo,
+  timeZone,
 }: {
   employeeId?: string;
+  /** YYYY-MM-DD — server applies day bounds. */
   from?: string;
   to?: string;
+  /** HH:mm — server clock filter; omit when empty. */
+  timeFrom?: string;
+  timeTo?: string;
+  timeZone?: string;
 }) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const pendingAdvanceRef = useRef(false);
 
   const query = useInfiniteQuery({
-    queryKey: ['screenshots', { employeeId, from, to }],
+    queryKey: ['screenshots', { employeeId, from, to, timeFrom, timeTo, timeZone }],
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) =>
       screenshotsApi.list({
         employeeId: employeeId || undefined,
         from: from || undefined,
         to: to || undefined,
+        timeFrom: timeFrom || undefined,
+        timeTo: timeTo || undefined,
+        timeZone: timeZone || undefined,
         cursor: pageParam,
         limit: PAGE_SIZE,
       }),

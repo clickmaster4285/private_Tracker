@@ -1,17 +1,31 @@
 'use client';
 
-import { Suspense, useMemo } from 'react';
+import { Suspense } from 'react';
 import { Camera, Loader2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import ActivityFilters, { type ActivityFilter } from '@/components/journey/ActivityFilters';
+import ActivityFilters from '@/components/journey/ActivityFilters';
 import { ScreenshotGrid } from '@/components/screenshots/ScreenshotGrid';
+import {
+  ScreenshotTimeRangeFilter,
+  browserTimeZone,
+  isoToYmd,
+  parseTimeParam,
+} from '@/components/screenshots/ScreenshotTimeRangeFilter';
 import { useUrlActivityFilter } from '@/hooks/use-url-activity-filter';
 import { employeesApi } from '@/lib/api';
 
 function ScreenshotsInner() {
-  const { filter, setFilter, extra, setExtra } = useUrlActivityFilter<{ employeeId: string }>(
-    { employeeId: {} },
-    { employeeId: '' },
+  const { filter, setFilter, extra, setExtra } = useUrlActivityFilter<{
+    employeeId: string;
+    timeFrom: string;
+    timeTo: string;
+  }>(
+    {
+      employeeId: {},
+      timeFrom: { parse: parseTimeParam },
+      timeTo: { parse: parseTimeParam },
+    },
+    { employeeId: '', timeFrom: '', timeTo: '' },
     'today',
   );
 
@@ -20,7 +34,10 @@ function ScreenshotsInner() {
     queryFn: () => employeesApi.list({ page: 1, perPage: 200 }),
   });
 
-  const range = useMemo(() => dateRangeFromFilter(filter), [filter]);
+  // Pass filter params through only — server applies date + clock filters.
+  const from = filter.preset === 'all' ? undefined : isoToYmd(filter.dateFrom);
+  const to = filter.preset === 'all' ? undefined : isoToYmd(filter.dateTo);
+  const timeZone = browserTimeZone();
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -51,22 +68,23 @@ function ScreenshotsInner() {
 
         <ActivityFilters value={filter} onChange={setFilter} searchShow={false} />
 
+        <ScreenshotTimeRangeFilter
+          timeFrom={extra.timeFrom}
+          timeTo={extra.timeTo}
+          onChange={(next) => setExtra(next)}
+        />
+
         <ScreenshotGrid
           employeeId={extra.employeeId || undefined}
-          from={range.from}
-          to={range.to}
+          from={from}
+          to={to}
+          timeFrom={extra.timeFrom || undefined}
+          timeTo={extra.timeTo || undefined}
+          timeZone={timeZone}
         />
       </div>
     </div>
   );
-}
-
-function dateRangeFromFilter(filter: ActivityFilter): { from?: string; to?: string } {
-  if (filter.preset === 'all') return {};
-  if (filter.dateFrom && filter.dateTo) {
-    return { from: filter.dateFrom, to: filter.dateTo };
-  }
-  return {};
 }
 
 export default function ScreenshotsPage() {

@@ -180,12 +180,9 @@ func (s *ScreenshotService) AbsolutePath(rel string) (string, error) {
 
 func (s *ScreenshotService) List(
 	ctx context.Context,
-	employeeID string,
-	from, to *time.Time,
-	cursor *time.Time,
-	limit int,
+	f repository.ScreenshotListFilter,
 ) ([]models.ScreenshotListItem, error) {
-	items, err := s.repo.List(ctx, employeeID, from, to, cursor, limit)
+	items, err := s.repo.List(ctx, f)
 	if err != nil {
 		return nil, err
 	}

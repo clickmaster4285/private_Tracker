@@ -1447,8 +1447,14 @@ export interface ScreenshotRow {
 export const screenshotsApi = {
   list: (params?: {
     employeeId?: string;
+    /** YYYY-MM-DD or RFC3339 — server expands date-only to day bounds. */
     from?: string;
     to?: string;
+    /** HH:mm clock filter (server-side, optional). */
+    timeFrom?: string;
+    timeTo?: string;
+    /** IANA zone for timeFrom/timeTo (default UTC on server). */
+    timeZone?: string;
     cursor?: string;
     limit?: number;
   }) =>

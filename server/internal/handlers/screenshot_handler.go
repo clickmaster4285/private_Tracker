@@ -4,13 +4,17 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/services"
 	"github.com/labstack/echo/v4"
 )
+
+var screenshotHHMM = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
 type ScreenshotHandler struct {
 	svc *services.ScreenshotService
@@ -111,6 +115,8 @@ func (h *ScreenshotHandler) Upload(c echo.Context) error {
 }
 
 // List handles JWT GET /screenshots (infinite scroll metadata).
+// Filters are applied server-side only:
+//   employeeId, from, to (date or RFC3339), timeFrom, timeTo (HH:mm), timeZone (IANA).
 func (h *ScreenshotHandler) List(c echo.Context) error {
 	employeeID := strings.TrimSpace(c.QueryParam("employeeId"))
 	limit, _ := strconv.Atoi(c.QueryParam("limit"))
@@ -118,31 +124,64 @@ func (h *ScreenshotHandler) List(c echo.Context) error {
 		limit = 40
 	}
 
-	var from, to, cursor *time.Time
+	f := repository.ScreenshotListFilter{
+		EmployeeID: employeeID,
+		Limit:      limit,
+	}
+
 	if raw := strings.TrimSpace(c.QueryParam("from")); raw != "" {
 		if t, e := time.Parse(time.RFC3339, raw); e == nil {
-			from = &t
+			f.From = &t
 		} else if t, e := time.Parse("2006-01-02", raw); e == nil {
-			from = &t
+			f.From = &t
+		} else {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid from (use YYYY-MM-DD or RFC3339)")
 		}
 	}
 	if raw := strings.TrimSpace(c.QueryParam("to")); raw != "" {
 		if t, e := time.Parse(time.RFC3339, raw); e == nil {
-			to = &t
+			f.To = &t
 		} else if t, e := time.Parse("2006-01-02", raw); e == nil {
 			end := t.Add(24*time.Hour - time.Nanosecond)
-			to = &end
-		}
-	}
-	if raw := strings.TrimSpace(c.QueryParam("cursor")); raw != "" {
-		if t, e := time.Parse(time.RFC3339Nano, raw); e == nil {
-			cursor = &t
-		} else if t, e := time.Parse(time.RFC3339, raw); e == nil {
-			cursor = &t
+			f.To = &end
+		} else {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid to (use YYYY-MM-DD or RFC3339)")
 		}
 	}
 
-	items, err := h.svc.List(c.Request().Context(), employeeID, from, to, cursor, limit)
+	timeFrom := strings.TrimSpace(c.QueryParam("timeFrom"))
+	timeTo := strings.TrimSpace(c.QueryParam("timeTo"))
+	if timeFrom != "" {
+		if !screenshotHHMM.MatchString(timeFrom) {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid timeFrom (use HH:mm)")
+		}
+		f.TimeFrom = timeFrom
+	}
+	if timeTo != "" {
+		if !screenshotHHMM.MatchString(timeTo) {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid timeTo (use HH:mm)")
+		}
+		f.TimeTo = timeTo
+	}
+
+	tz := strings.TrimSpace(c.QueryParam("timeZone"))
+	if tz == "" {
+		tz = "UTC"
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid timeZone (IANA name required)")
+	}
+	f.TimeZone = tz
+
+	if raw := strings.TrimSpace(c.QueryParam("cursor")); raw != "" {
+		if t, e := time.Parse(time.RFC3339Nano, raw); e == nil {
+			f.Cursor = &t
+		} else if t, e := time.Parse(time.RFC3339, raw); e == nil {
+			f.Cursor = &t
+		}
+	}
+
+	items, err := h.svc.List(c.Request().Context(), f)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
