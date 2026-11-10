@@ -75,6 +75,10 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"StreamMinUplinkKbps={cfg.StreamMinUplinkKbps}");
     Console.WriteLine($"StreamVp8LagFrames={cfg.StreamVp8LagFrames}");
     Console.WriteLine($"StreamDebugSendDelayMs={cfg.StreamDebugSendDelayMs}");
+    Console.WriteLine($"ScreenshotEnabled={cfg.ScreenshotEnabled}");
+    Console.WriteLine($"ScreenshotIntervalSec={cfg.ScreenshotIntervalSec}");
+    Console.WriteLine($"ScreenshotMaxWidth={cfg.ScreenshotMaxWidth}");
+    Console.WriteLine($"ScreenshotWebpQuality={cfg.ScreenshotWebpQuality}");
     Console.WriteLine($"WsEnabled={cfg.WsEnabled}");
     Console.WriteLine($"WsPingSec={cfg.WsPingSec}");
     Console.WriteLine($"WsReconnectBaseSec={cfg.WsReconnectBaseSec}");
@@ -547,11 +551,22 @@ if (!isProtectedUninstall && !isRemoveAccount)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.LiveStreamClient>());
 }
 
+// Offline-first screenshots: capture (local WebP) + sync (upload then delete).
+builder.Services.AddSingleton<client.Services.Screenshots.ScreenshotCaptureWorker>();
+builder.Services.AddSingleton<client.Services.Screenshots.ScreenshotSyncWorker>();
+if (!isProtectedUninstall && !isRemoveAccount)
+{
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<client.Services.Screenshots.ScreenshotCaptureWorker>());
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<client.Services.Screenshots.ScreenshotSyncWorker>());
+}
+
 // HTTP Client
 builder.Services.AddSingleton<HttpClient>(sp =>
 {
     var client = new HttpClient();
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(120);
     return client;
 });
 

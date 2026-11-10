@@ -1,7 +1,11 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-10 (theater LIVE vs Offline badge)
+> **Last audited:** 2026-11-10 (screenshots lazy grid)
 > **Changelog:**
+> - 2026-11-10: **`/screenshots` live grid.** `screenshotsApi` + `ScreenshotGrid` infinite scroll
+>   with per-card IntersectionObserver lazy `<img>` (never bulk-loads blobs). URL filters via
+>   `useUrlActivityFilter` + employee picker. Journey `/employee-journey/screenshots` reuses the
+>   grid scoped by employee. Verified: `npx tsc --noEmit`.
 > - 2026-11-10: **Theater false LIVE on offline tiles.** Watch SFU `ontrack` could stick
 >   `status=live` with no frames; status ticks kept LIVE even when `clientConnected=false`.
 >   `useLiveStreamSocket` now clears to `offline` + drops the MediaStream when the publisher

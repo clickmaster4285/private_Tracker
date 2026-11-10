@@ -1427,6 +1427,39 @@ export const liveStreamApi = {
 };
 
 // ──────────────────────────
+// Screenshots (offline-first WebP; lazy image URLs)
+// ──────────────────────────
+
+export interface ScreenshotRow {
+  id: string;
+  employeeId: string;
+  employeeName?: string;
+  machineId: string;
+  capturedAt: string;
+  byteSize: number;
+  width: number;
+  height: number;
+  contentType: string;
+  /** Relative API path — load with credentials / same-origin rewrite. */
+  imageUrl: string;
+}
+
+export const screenshotsApi = {
+  list: (params?: {
+    employeeId?: string;
+    from?: string;
+    to?: string;
+    cursor?: string;
+    limit?: number;
+  }) =>
+    request<{ data: ScreenshotRow[]; nextCursor: string; hasMore: boolean }>('/screenshots', {
+      params: params as Record<string, string | number | boolean | undefined>,
+    }),
+  /** Absolute path for <img src> through the Next rewrite (cookies included). */
+  imageSrc: (id: string) => `${API_BASE}/screenshots/${encodeURIComponent(id)}/image`,
+};
+
+// ──────────────────────────
 // Dashboard summary (home)
 // ──────────────────────────
 

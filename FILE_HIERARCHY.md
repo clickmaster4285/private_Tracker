@@ -83,7 +83,8 @@ client/
 │   ├── SyncService.cs               dedicated sync drain (byte-bounded, gzip, backoff)
 │   ├── LiveStreamClient.cs          WebRTC VP8 publisher → /live-stream/push (ABR + connected-gated send)
 │   ├── NetProbeService.cs           Uplink probe → POST /live-stream/uplink-probe; bitrate ladder
-│   ├── ScreenCaptureService.cs      Windows multi-path GDI BitBlt → BGRA (DropOldest; Win11 hardened)
+│   ├── ScreenCaptureService.cs      Windows multi-path GDI BitBlt → BGRA (+ CaptureStill for screenshots)
+│   └── Screenshots/                 Offline capture + sync workers (WebP pending/ → DeviceAuth upload)
 │   ├── ClientIdentityHeaders.cs     X-Client-Version / X-Client-Platform on DeviceAuth HTTP+WS
 │   ├── WsClient.cs                  presence WS → /api/v1/ws (Online/Offline; not media)
 │   ├── Streaming/
@@ -251,7 +252,7 @@ web/
     │       │                        /roles is a real-API CRUD page since 2026-08-25)
     │       ├── employee-journey    per-employee journey behind the shared EmployeePage shell +
     │       │                       EmployeeSelector picker (?employeeId= deep-link): timeline ·
-    │       │                       apps · web are real-API; screenshots · location placeholders
+    │       │                       apps · web · screenshots are real-API; location placeholder
     │       ├── device-specs        per-employee machine picture over GET /employees/:id/detail:
     │       │                       hardware · software · peripherals · permissions
     │       ├── configuration       apps · websites · categories (monitoring classification, 2026-08-22)

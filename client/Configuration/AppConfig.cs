@@ -121,6 +121,16 @@ public class AppConfig
     /// </summary>
     public int StreamDebugSendDelayMs { get; init; } = 0;
 
+    // ─── Offline-first screenshots (capture local → sync upload) ───
+    public bool ScreenshotEnabled { get; init; } = true;
+    public int ScreenshotIntervalSec { get; init; } = 30;
+    public int ScreenshotMaxWidth { get; init; } = 1280;
+    public int ScreenshotWebpQuality { get; init; } = 75;
+    public int ScreenshotMaxPending { get; init; } = 5000;
+    public int ScreenshotMaxPendingMb { get; init; } = 2048;
+    public int ScreenshotSyncBatch { get; init; } = 5;
+    public int ScreenshotSyncPollSec { get; init; } = 15;
+
     // ─── Control WebSocket (presence / keep-alive channel) ───
     // Long-lived outbound WS to GET /api/v1/ws (DeviceAuth). Independent of
     // LiveStreamClient. Default OFF — fleet opt-in + config.enc bake required.
@@ -186,6 +196,14 @@ public class AppConfig
             StreamMinUplinkKbps = Math.Clamp(int.TryParse(GetEnv("ALPHA_STREAM_MIN_UPLINK_KBPS"), out var streamMinUp) ? streamMinUp : 300, 100, 15000),
             StreamVp8LagFrames = Math.Clamp(int.TryParse(GetEnv("ALPHA_STREAM_VP8_LAG_FRAMES"), out var streamLag) ? streamLag : 0, 0, 5),
             StreamDebugSendDelayMs = Math.Clamp(int.TryParse(GetEnv("ALPHA_STREAM_DEBUG_SEND_DELAY_MS"), out var streamDbgDelay) ? streamDbgDelay : 0, 0, 500),
+            ScreenshotEnabled = GetEnv("ALPHA_SCREENSHOT_ENABLED") is not ("0" or "false" or "False"),
+            ScreenshotIntervalSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_INTERVAL_SEC"), out var ssInt) ? ssInt : 30, 10, 600),
+            ScreenshotMaxWidth = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_MAX_WIDTH"), out var ssW) ? ssW : 1280, 320, 1920),
+            ScreenshotWebpQuality = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_WEBP_QUALITY"), out var ssQ) ? ssQ : 75, 1, 100),
+            ScreenshotMaxPending = Math.Max(100, int.TryParse(GetEnv("ALPHA_SCREENSHOT_MAX_PENDING"), out var ssPend) ? ssPend : 5000),
+            ScreenshotMaxPendingMb = Math.Max(64, int.TryParse(GetEnv("ALPHA_SCREENSHOT_MAX_PENDING_MB"), out var ssMb) ? ssMb : 2048),
+            ScreenshotSyncBatch = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_SYNC_BATCH"), out var ssBatch) ? ssBatch : 5, 1, 20),
+            ScreenshotSyncPollSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_SYNC_POLL_SEC"), out var ssPoll) ? ssPoll : 15, 5, 120),
             WsEnabled = IsEnvTruthy(GetEnv("ALPHA_WS_ENABLED")),
             WsPingSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_WS_PING_SEC"), out var wsPing) ? wsPing : 30, 5, 300),
             WsReconnectBaseSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_WS_RECONNECT_BASE_SEC"), out var wsRecon) ? wsRecon : 2, 1, 60),

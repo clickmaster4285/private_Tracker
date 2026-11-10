@@ -21,6 +21,17 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./n
 
 ---
 
+## Screenshots — offline capture + lazy web grid
+
+**Prereqs:** migration **065**; API with `SCREENSHOTS_DIR`; client **1.0.10+** logged in (`ALPHA_SCREENSHOT_ENABLED=true`).
+
+1. Disconnect network (or stop API). Wait ≥30s → `%LocalAppData%\AlphaAITracker\screenshots\pending\` gains `.webp` + `.json`.
+2. Restore network → sync worker uploads; pending files disappear only after 2xx; files appear under `server/media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`.
+3. `/screenshots`: scroll the grid — Network tab shows image requests only as cards enter the viewport (not one giant dump).
+4. 429/503 with `Retry-After`: local file stays until a later OK.
+
+---
+
 ## Live stream — Windows VP8 (`vpxmd` / VCRUNTIME140)
 
 **Prereqs:** Windows client **1.0.8+** (ships `vcruntime140.dll` app-local next to `vpxmd.dll`).

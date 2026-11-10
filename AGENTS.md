@@ -3,6 +3,21 @@
 > **Last audited:** 2026-11-10
 > **Changelog:**
 >
+> - 2026-11-10: **Screenshot upload idempotency.** Client mints `screenshotId` UUID at capture
+>   (sidecar + form field); server uses it as `screenshots.id` PK. Replay of a lost-200 returns
+>   `{accepted:true, idempotentReplay:true}` without a second file. Fast-path GetByID before
+>   reading the multipart body. Verified: `go build`/`go vet`, `dotnet build`.
+>
+> - 2026-11-10: **Offline-first screenshots (client + server + web).** Two hosted workers:
+>   `ScreenshotCaptureWorker` (30s still → WebP → LocalAppData `screenshots/pending/`, no
+>   network) and `ScreenshotSyncWorker` (DeviceAuth multipart upload; delete local only on
+>   2xx `accepted`; Retry-After on 429/503). Server migration **065** indexes rows; files at
+>   `SCREENSHOTS_DIR` default `media/screenshots/{emp}/{yyyy}/{MM}/{dd}/` (**no retention
+>   purge** this ship); `POST /screenshots/upload` + JWT `GET /screenshots` + `/image`
+>   (`ServeContent`). Web `/screenshots` + journey screenshots: infinite lazy grid. Client
+>   **VERSION 1.0.10** + `ALPHA_SCREENSHOT_*`. Verified: `dotnet build`, `go build`/`go vet`,
+>   `npx tsc --noEmit`. Installer-Parity: re-bake `config.enc` + Windows installer.
+>
 > - 2026-11-10: **Live theater false LIVE on offline tiles (web).** SFU `ontrack` stuck
 >   `status=live` (black + `— FPS`) while sidebar correctly said Offline; status ticks kept
 >   LIVE when `clientConnected=false`. Fix: watch socket clears to `offline` + drops the

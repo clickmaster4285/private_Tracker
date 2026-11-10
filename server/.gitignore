@@ -33,3 +33,8 @@ vendor/
 /dist/
 /build/
 /out/
+
+# ── Screenshot media (ops-owned disk; not source) ──
+/media/screenshots/**
+!/media/screenshots/.gitkeep
+

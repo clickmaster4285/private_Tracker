@@ -207,6 +207,18 @@ func main() {
 		log.Printf("[server] WARNING: releases dir %s not found — /api/v1/releases returns an empty list until installers are added", releaseService.Dir())
 	}
 
+	screenshotRepo := repository.NewScreenshotRepo(pool)
+	screenshotService := services.NewScreenshotService(
+		screenshotRepo, cfg.Screenshots.Dir, cfg.Screenshots.MaxUploadBytes,
+	)
+	if err := os.MkdirAll(screenshotService.RootDir(), 0o755); err != nil {
+		log.Printf("[server] WARNING: could not create screenshots dir %s: %v", screenshotService.RootDir(), err)
+	} else {
+		log.Printf("[server] screenshots store %s (max upload %d bytes; no retention purge)",
+			screenshotService.RootDir(), screenshotService.MaxBytes())
+	}
+	screenshotHandler := handlers.NewScreenshotHandler(screenshotService)
+
 	// ────────────────
 	// Seed RBAC catalog (modules, submodules, system role) — idempotent
 	// ────────────────
@@ -283,7 +295,7 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler, screenshotHandler)
 
 	// ────────────────
 	// Graceful Shutdown

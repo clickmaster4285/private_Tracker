@@ -37,6 +37,7 @@ func Setup(
 	logGraphicalHandler *handlers.LogGraphicalHandler,
 	dlpHandler *handlers.DlpHandler,
 	releaseHandler *handlers.ReleaseHandler,
+	screenshotHandler *handlers.ScreenshotHandler,
 ) {
 	// ─────────────────────────────
 	// Global Middleware
@@ -76,6 +77,7 @@ func Setup(
 	// ─────────────────────────────
 	loginRL := admit.NewLimiter(cfg.Scale.LoginRPS, cfg.Scale.LoginBurst)
 	syncRL := admit.NewLimiter(cfg.Scale.SyncRPS, cfg.Scale.SyncBurst)
+	screenshotRL := admit.NewLimiter(cfg.Scale.ScreenshotUploadRPS, cfg.Scale.ScreenshotUploadBurst)
 	adminRL := admit.NewLimiter(cfg.Scale.AdminSearchRPS, cfg.Scale.AdminSearchBurst)
 	syncGate := admit.NewSyncGate(int64(cfg.Scale.SyncMaxConcurrent))
 	byIP := func(c echo.Context) string { return c.RealIP() }
@@ -151,6 +153,11 @@ func Setup(
 		syncGroup.GET("/ws", wsHandler.Connect)
 	}
 
+	// Offline-first screenshots upload (DeviceAuth) — separate RL so bursts do not starve sync.
+	if screenshotHandler != nil {
+		syncGroup.POST("/screenshots/upload", screenshotHandler.Upload, screenshotRL.Middleware(byIP))
+	}
+
 	// ─────────────────────────────
 	// Semi-Protected Routes (optional auth)
 	// ─────────────────────────────
@@ -177,7 +184,8 @@ func Setup(
 				strings.Contains(path, "/app-items") ||
 				strings.Contains(path, "/attendance") ||
 				strings.Contains(path, "/dashboard") ||
-				strings.Contains(path, "/live-stream/employees") {
+				strings.Contains(path, "/live-stream/employees") ||
+				strings.Contains(path, "/screenshots") {
 				return adminMW(next)(c)
 			}
 			return next(c)
@@ -345,5 +353,10 @@ func Setup(
 		protected.GET("/live-stream/employees", streamHandler.ListEmployees)
 		protected.GET("/live-stream/watch-ticket", streamHandler.IssueWatchTicket)
 		e.GET("/api/v1/live-stream/watch", streamHandler.Watch)
+	}
+
+	if screenshotHandler != nil {
+		protected.GET("/screenshots", screenshotHandler.List)
+		protected.GET("/screenshots/:id/image", screenshotHandler.Image)
 	}
 }

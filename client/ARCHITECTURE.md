@@ -1,7 +1,13 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-10 (vpxmd + VCRUNTIME140 app-local)
+> **Last audited:** 2026-11-10 (offline-first screenshots)
 > **Changelog:**
+> - 2026-11-10: **Offline-first screenshots.** `ScreenshotCaptureWorker` + `ScreenshotSyncWorker`
+>   under `Services/Screenshots/`. Capture: `ScreenCaptureService.CaptureStill` → SkiaSharp WebP →
+>   `%LocalAppData%/<APP>/screenshots/pending/` (+ JSON sidecar); skip on pending pressure (never
+>   delete unsynced). Sync: multipart `POST /api/v1/screenshots/upload`; delete local only on OK;
+>   honor Retry-After. Env: `ALPHA_SCREENSHOT_*`. **VERSION 1.0.10**. Verified: `dotnet build`.
+>   Installer-Parity: re-bake `config.enc`.
 > - 2026-11-10: **Windows live-stream VP8 native load.** `VpxNativeBootstrap` (Program +
 >   `ScreenVp8Encoder`) preloads app-local `VCRUNTIME140` and resolves `vpxmd.dll` from
 >   `AppContext.BaseDirectory`. `publish/ensure-vpx-native.ps1` (MSBuild AfterBuild/Publish +

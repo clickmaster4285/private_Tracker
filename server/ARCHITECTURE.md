@@ -1,7 +1,12 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-10 (scale admission + Asynq + dashboard cache)
+> **Last audited:** 2026-11-10 (offline-first screenshots)
 > **Changelog:**
+> - 2026-11-10: **Screenshots store + API.** Migration **065** `screenshots` index. Files under
+>   `SCREENSHOTS_DIR` (`media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`). DeviceAuth
+>   `POST /screenshots/upload` (multipart WebP, size cap, `RATE_LIMIT_SCREENSHOT_*`); JWT
+>   `GET /screenshots` (cursor infinite scroll) + `GET /screenshots/:id/image` (`ServeContent`).
+>   **No retention purge** this ship. Verified: `go build`/`go vet`.
 > - 2026-11-10: **Scale foundation (one Postgres).** `admit` rate limits (login/sync/admin GET) +
 >   sync concurrency gate (`503`/`429` + `Retry-After`); Redis `cache` for dashboard summary;
 >   Asynq embedded worker/scheduler (or `cmd/worker`) for session/retention/staleness with

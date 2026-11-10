@@ -43,9 +43,20 @@ type Config struct {
 	// Releases configures the local installer folder behind /releases + /downloads.
 	Releases ReleasesConfig
 
+	// Screenshots configures offline-first WebP storage (no retention purge yet).
+	Screenshots ScreenshotsConfig
+
 	// Scale holds admission-control / Asynq / cache knobs for ~1000-agent fleets.
 	// All Go processes still share ONE PostgreSQL — pools must fit max_connections.
 	Scale ScaleConfig
+}
+
+// ScreenshotsConfig points at media/screenshots/{emp}/{yyyy}/{MM}/{dd}/….
+type ScreenshotsConfig struct {
+	Dir              string
+	MaxUploadBytes   int64
+	UploadRPS        float64
+	UploadBurst      int
 }
 
 // ScaleConfig controls rate limits, sync admission, Asynq workers, and Redis cache TTLs.
@@ -65,6 +76,9 @@ type ScaleConfig struct {
 	// SyncRPS / SyncBurst rate-limit DeviceAuth sync POSTs per IP (coarse).
 	SyncRPS   float64
 	SyncBurst int
+	// ScreenshotUploadRPS / Burst rate-limit DeviceAuth screenshot uploads per IP.
+	ScreenshotUploadRPS   float64
+	ScreenshotUploadBurst int
 	// AdminSearchRPS rate-limits JWT list/search-ish GETs per IP.
 	AdminSearchRPS   float64
 	AdminSearchBurst int
@@ -234,19 +248,26 @@ func Load() (*Config, error) {
 			Dir: strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
 		},
 
+		Screenshots: ScreenshotsConfig{
+			Dir:            strings.TrimSpace(getEnv("SCREENSHOTS_DIR", "media/screenshots")),
+			MaxUploadBytes: getEnvInt64("SCREENSHOTS_MAX_UPLOAD_BYTES", 2<<20),
+		},
+
 		Scale: ScaleConfig{
-			AsynqEnabled:         getEnvBool("ASYNQ_ENABLED", true),
-			AsynqEmbed:           getEnvBool("ASYNQ_EMBED", true),
-			AsynqConcurrency:     getEnvInt("ASYNQ_CONCURRENCY", 8),
-			SyncMaxConcurrent:    getEnvInt("SYNC_MAX_CONCURRENT", 0), // 0 → derive from DB pool
-			LoginRPS:             getEnvFloat("RATE_LIMIT_LOGIN_RPS", 2),
-			LoginBurst:           getEnvInt("RATE_LIMIT_LOGIN_BURST", 5),
-			SyncRPS:              getEnvFloat("RATE_LIMIT_SYNC_RPS", 30),
-			SyncBurst:            getEnvInt("RATE_LIMIT_SYNC_BURST", 60),
-			AdminSearchRPS:       getEnvFloat("RATE_LIMIT_ADMIN_RPS", 20),
-			AdminSearchBurst:     getEnvInt("RATE_LIMIT_ADMIN_BURST", 40),
-			DashboardCacheTTLSec: getEnvInt("DASHBOARD_CACHE_TTL_SEC", 20),
-			SessionSweepSec:      getEnvInt("SESSION_SWEEP_INTERVAL_SECONDS", 60),
+			AsynqEnabled:          getEnvBool("ASYNQ_ENABLED", true),
+			AsynqEmbed:            getEnvBool("ASYNQ_EMBED", true),
+			AsynqConcurrency:      getEnvInt("ASYNQ_CONCURRENCY", 8),
+			SyncMaxConcurrent:     getEnvInt("SYNC_MAX_CONCURRENT", 0), // 0 → derive from DB pool
+			LoginRPS:              getEnvFloat("RATE_LIMIT_LOGIN_RPS", 2),
+			LoginBurst:            getEnvInt("RATE_LIMIT_LOGIN_BURST", 5),
+			SyncRPS:               getEnvFloat("RATE_LIMIT_SYNC_RPS", 30),
+			SyncBurst:             getEnvInt("RATE_LIMIT_SYNC_BURST", 60),
+			ScreenshotUploadRPS:   getEnvFloat("RATE_LIMIT_SCREENSHOT_RPS", 40),
+			ScreenshotUploadBurst: getEnvInt("RATE_LIMIT_SCREENSHOT_BURST", 80),
+			AdminSearchRPS:        getEnvFloat("RATE_LIMIT_ADMIN_RPS", 20),
+			AdminSearchBurst:      getEnvInt("RATE_LIMIT_ADMIN_BURST", 40),
+			DashboardCacheTTLSec:  getEnvInt("DASHBOARD_CACHE_TTL_SEC", 20),
+			SessionSweepSec:       getEnvInt("SESSION_SWEEP_INTERVAL_SECONDS", 60),
 		},
 	}
 
@@ -300,6 +321,15 @@ func getEnv(key, fallback string) string {
 func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return i
 		}
 	}
