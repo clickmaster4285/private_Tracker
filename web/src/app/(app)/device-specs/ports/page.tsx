@@ -48,7 +48,12 @@ interface ClassInfo { label: string; desc: string; icon: React.ElementType; risk
 const CLASS_INFO: Record<string, ClassInfo> = {
   USB: { label: 'USB controllers & hubs', desc: 'USB ports, hubs and composite devices.', icon: Usb, risky: 'Blocking a USB hub or controller can also disconnect the keyboard and mouse plugged into it.' },
   USBDevice: { label: 'USB devices', desc: 'Generic devices connected to a USB port.', icon: Usb },
-  Keyboard: { label: 'Keyboards', desc: 'Blocking stops typing on the keyboard.', icon: Keyboard, risky: 'The employee will not be able to type with this keyboard.' },
+  Keyboard: {
+    label: 'Keyboards',
+    desc: 'Blocking tries to disable the keyboard. Windows often refuses to disable the keyboard that is currently in use (so the PC can still be unlocked).',
+    icon: Keyboard,
+    risky: 'Windows commonly vetoes disabling the active/boot keyboard. The rule is stored and applies more reliably to extra USB keyboards or after a restart; the main keyboard may keep working.',
+  },
   Mouse: { label: 'Mice & touchpads', desc: 'Blocking stops this pointing device.', icon: Mouse, risky: 'The employee will not be able to use this mouse or touchpad.' },
   HIDClass: { label: 'Input devices (HID)', desc: 'Keyboards, mice, game controllers and some readers.', icon: Keyboard, risky: 'HID devices include keyboards and mice. Blocking them can leave the computer without input.' },
   Camera: { label: 'Cameras', desc: 'Webcams. Blocking stops video capture.', icon: Camera },
@@ -736,7 +741,7 @@ function PolicyBadge({ rule }: { rule: DeviceControlRule }) {
 
 const ENFORCEMENT_UI: Record<Enforcement, { label: string; cls: string; icon: React.ElementType; hint: string }> = {
   enforced: { label: 'Disabled', cls: 'text-red-600', icon: ShieldOff, hint: 'The PC reports this device as disabled.' },
-  pending: { label: 'Waiting for PC', cls: 'text-amber-600', icon: Clock, hint: 'The rule was sent but the PC still reports the device as working. Windows may need a restart for in-use keyboards and mice.' },
+  pending: { label: 'Waiting for PC', cls: 'text-amber-600', icon: Clock, hint: 'The rule was sent but the PC still reports the device as working. Windows often refuses to disable the keyboard currently in use; a restart may help for extra USB keyboards, while the main keyboard can stay active by design.' },
   'on-connect': { label: 'Applies when plugged in', cls: 'text-muted-foreground', icon: Plug, hint: 'The device is not connected. The block applies when it is plugged in again.' },
   monitoring: { label: 'Logging use', cls: 'text-amber-600', icon: Eye, hint: 'The device works normally; its use is recorded as an alert.' },
   none: { label: '—', cls: 'text-muted-foreground', icon: CircleSlash, hint: '' },
