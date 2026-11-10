@@ -36,6 +36,8 @@ public sealed class ScreenVp8Encoder : IDisposable
     {
         if (OperatingSystem.IsLinux())
             _linux = new LinuxGstVp8Encoder();
+        else if (OperatingSystem.IsWindows())
+            VpxNativeBootstrap.EnsureWindows();
     }
 
     public uint TargetKbps
@@ -144,6 +146,27 @@ public sealed class ScreenVp8Encoder : IDisposable
         _width = width;
         _height = height;
         _pts = 0;
+
+        try
+        {
+            InitEncoderNativeUnlocked(width, height);
+        }
+        catch (DllNotFoundException ex)
+        {
+            var hint = VpxNativeBootstrap.ProbeWindowsLoadError()
+                       ?? "Install VC++ 2015-2022 x64 redistributable, or use a client build that ships VCRUNTIME140.dll app-local.";
+            throw new InvalidOperationException(
+                $"Unable to load vpxmd (VP8 encode). {hint} ({ex.Message})", ex);
+        }
+        catch (BadImageFormatException ex)
+        {
+            throw new InvalidOperationException(
+                $"vpxmd.dll is the wrong architecture for this process. ({ex.Message})", ex);
+        }
+    }
+
+    private void InitEncoderNativeUnlocked(uint width, uint height)
+    {
         _ctx = new VpxCodecCtx();
         _img = new VpxImage();
 

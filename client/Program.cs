@@ -202,6 +202,11 @@ if (OperatingSystem.IsWindows())
 
 EnvLoader.Load();
 
+// Live-stream VP8 (Windows): resolve vpxmd.dll from the install dir and preload
+// app-local VCRUNTIME140 before any encode path runs.
+if (OperatingSystem.IsWindows())
+    client.Services.Streaming.VpxNativeBootstrap.EnsureWindows();
+
 // Elevated-only hosts/USB/DLP cleanup after unelevated protected-uninstall wrote teardown.ok.
 // Spawned via UAC (runas) from WindowsTeardownCleanup.TryElevateCleanupViaUac.
 if (isTeardownCleanupElevated)

@@ -58,6 +58,12 @@ public class AppConfig
     public int SyncBackoffMaxSec { get; init; } = 300;       // exponential-backoff ceiling on failure (5 min)
     public bool SyncCompression { get; init; } = true;       // gzip request bodies (server: middleware.Decompress)
     public int SyncRetentionHours { get; init; } = 24;       // retention: synced app_items/app_sessions older than this are deleted client-side
+    /// <summary>
+    /// Max random delay (seconds) before the first post-login sync drain.
+    /// Spreads 09:00 login storms across ~N seconds so 1000 agents do not hit the API in the same second.
+    /// 0 = immediate (legacy behaviour).
+    /// </summary>
+    public int SyncLoginJitterSec { get; init; } = 120;
     // Account removal (R4, 2026-10-19): how long `client --remove-account` waits for the
     // final drain before wiping anyway. Bounded so a huge backlog / offline machine can
     // never block removal forever (Removal always proceeds; the unsent rows are the
@@ -157,6 +163,7 @@ public class AppConfig
             SyncBackoffMaxSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_SYNC_BACKOFF_MAX_SEC"), out var syncBack) ? syncBack : 300),
             SyncCompression = GetEnv("ALPHA_SYNC_COMPRESSION") is not ("0" or "false" or "False"),
             SyncRetentionHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_RETENTION_HOURS"), out var syncRet) ? syncRet : 24),
+            SyncLoginJitterSec = Math.Max(0, int.TryParse(GetEnv("ALPHA_SYNC_LOGIN_JITTER_SEC"), out var syncJitter) ? syncJitter : 120),
             RemoveAccountSyncTimeoutSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_REMOVE_ACCOUNT_SYNC_TIMEOUT_SEC"), out var remTmo) ? remTmo : 120),
             UpdateEnabled = GetEnv("ALPHA_UPDATE_ENABLED") is not ("0" or "false" or "False"),
             UpdateCheckIntervalSec = Math.Max(15, int.TryParse(GetEnv("ALPHA_UPDATE_CHECK_INTERVAL_SEC"), out var updSec) ? updSec : 60),

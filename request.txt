@@ -1,0 +1,5 @@
+i want to acheive the functionalitiy of capturing the screenshot and then convert to webp and push to server and save on server/media/{empID}/{year}/{month}/{day}/ ... 
+
+i want to capture the screenshot every 30sec 
+
+first make a plan for scalability and then implement the code.

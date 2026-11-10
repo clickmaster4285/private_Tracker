@@ -19,6 +19,7 @@ Alpha-AI-TrackerV2.0/
 ├── plan.md                   Security & DLP phased roadmap (P0+P1 shipped; P2 Web Blocker largely done)
 ├── newplan.md                Fixed/Roaming + Start/Stop + hourly control (P0 spine shipped source-build)
 ├── doc/plan.md               feature plans (public releases / private GitHub download bridge)
+├── newplan.md                Scale plan (~1000 agents / one Postgres / Asynq)
 ├── client/                   .NET 10 / Avalonia desktop agent + Windows DlpService
 ├── server/                   Go API + Postgres + Redis (the collector of record)
 └── web/                      Next.js dashboard (the human-facing console)
@@ -169,7 +170,11 @@ client/
 
 ```
 server/
-├── cmd/server/main.go        ⭐ entry point: config, DB, Redis, router, listen
+├── cmd/server/main.go        ⭐ entry point: config, DB, Redis, router, listen (+ optional Asynq embed)
+├── cmd/worker/main.go           Asynq worker+scheduler (when ASYNQ_EMBED=false)
+├── internal/admit/              rate limit + sync concurrency gate (Retry-After)
+├── internal/cache/              Redis JSON cache + singleflight
+├── internal/queue/              Asynq task types + worker mux
 ├── go.mod / go.sum              module github.com/alpha-ai-tracker/server
 ├── Makefile                     build / run / migrate targets
 │

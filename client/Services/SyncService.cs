@@ -272,6 +272,53 @@ public class SyncService : BackgroundService
     }
 
     /// <summary>
+    /// Like <see cref="RequestImmediateSync"/> but waits a random 0..<see cref="AppConfig.SyncLoginJitterSec"/>
+    /// first so 1000 simultaneous logins do not align on the same second.
+    /// </summary>
+    public async Task RequestImmediateSyncWithLoginJitterAsync(CancellationToken ct = default)
+    {
+        var max = _config.SyncLoginJitterSec;
+        if (max > 0)
+        {
+            var delaySec = Random.Shared.Next(0, max + 1);
+            if (delaySec > 0)
+            {
+                _logger.LogInformation("Login sync jitter: waiting {Sec}s before first drain", delaySec);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySec), ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
+        RequestImmediateSync();
+    }
+
+    private async Task HonorRetryAfterAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var raw = response.Headers.RetryAfter?.Delta?.TotalSeconds
+                  ?? (response.Headers.TryGetValues("Retry-After", out var vals)
+                      && double.TryParse(vals.FirstOrDefault(), out var sec)
+                          ? sec
+                          : (double?)null);
+        if (raw is null or <= 0)
+            return;
+        var wait = TimeSpan.FromSeconds(Math.Clamp(raw.Value, 1, _config.SyncBackoffMaxSec));
+        _logger.LogInformation("Honoring Retry-After {Wait}s after {Status}", wait.TotalSeconds, (int)response.StatusCode);
+        try
+        {
+            await Task.Delay(wait, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // shutdown / pass budget
+        }
+    }
+
+    /// <summary>
     /// True after at least one sync POST returned HTTP 2xx in this process lifetime
     /// (cleared if credentials are declared dead). Used by <c>WsClient</c> to avoid
     /// opening the control socket while the server is known-unreachable.
@@ -1144,16 +1191,21 @@ public class SyncService : BackgroundService
                 return (true, body);
             }
 
-            if ((int)response.StatusCode == 401 || (int)response.StatusCode == 403)
+            var status = (int)response.StatusCode;
+            if (status == 401 || status == 403)
             {
-                _logger.LogWarning("Auth failed (status {Status}) for {Endpoint}", (int)response.StatusCode, endpoint);
+                _logger.LogWarning("Auth failed (status {Status}) for {Endpoint}", status, endpoint);
                 await HandleAuthFailureAsync(endpoint, ct);
             }
             else
             {
                 var errBody = await response.Content.ReadAsStringAsync(ct);
                 _logger.LogWarning("Sync failed for {Endpoint} (status {Status}): {Body}",
-                    endpoint, (int)response.StatusCode, errBody);
+                    endpoint, status, errBody);
+                // Honor Retry-After on 429/503 so admission control can pace 1000-agent storms
+                // without marking rows synced (non-2xx leaves is_synced=0).
+                if (status is 429 or 503)
+                    await HonorRetryAfterAsync(response, ct);
             }
             return (false, null);
         }

@@ -42,6 +42,36 @@ type Config struct {
 
 	// Releases configures the local installer folder behind /releases + /downloads.
 	Releases ReleasesConfig
+
+	// Scale holds admission-control / Asynq / cache knobs for ~1000-agent fleets.
+	// All Go processes still share ONE PostgreSQL — pools must fit max_connections.
+	Scale ScaleConfig
+}
+
+// ScaleConfig controls rate limits, sync admission, Asynq workers, and Redis cache TTLs.
+type ScaleConfig struct {
+	// AsynqEnabled runs background sweeps via Asynq instead of in-process tickers.
+	// Requires Redis. When true, prefer `go run ./cmd/worker` (or embed with AsynqEmbed).
+	AsynqEnabled bool
+	// AsynqEmbed starts Asynq scheduler+worker inside the API process (single-VPS default).
+	AsynqEmbed bool
+	// AsynqConcurrency is the hard cap on job handler goroutines.
+	AsynqConcurrency int
+	// SyncMaxConcurrent bounds in-flight DeviceAuth sync handlers (503 when full).
+	SyncMaxConcurrent int
+	// LoginRPS / LoginBurst rate-limit POST /auth/login and /auth/employee-login per IP.
+	LoginRPS   float64
+	LoginBurst int
+	// SyncRPS / SyncBurst rate-limit DeviceAuth sync POSTs per IP (coarse).
+	SyncRPS   float64
+	SyncBurst int
+	// AdminSearchRPS rate-limits JWT list/search-ish GETs per IP.
+	AdminSearchRPS   float64
+	AdminSearchBurst int
+	// DashboardCacheTTLSec caches GET /dashboard/summary in Redis (0 = off).
+	DashboardCacheTTLSec int
+	// SessionSweepSec is the Asynq period for session lifecycle (default 60).
+	SessionSweepSec int
 }
 
 // ReleasesConfig points at the folder holding client installers (e.g. setup/v1.0.0.exe).
@@ -186,7 +216,7 @@ func Load() (*Config, error) {
 
 		LiveStream: LiveStreamConfig{
 			Enabled:                getEnvBool("LIVE_STREAM_ENABLED", true),
-			MaxStreams:             getEnvInt("LIVE_STREAM_MAX_STREAMS", 25),
+			MaxStreams:             getEnvInt("LIVE_STREAM_MAX_STREAMS", 100),
 			MaxWatchersPerEmployee: getEnvInt("LIVE_STREAM_MAX_WATCHERS_PER_EMPLOYEE", 10),
 			IdleSec:                getEnvInt("LIVE_STREAM_IDLE_SEC", 90),
 			MaxBitrateKbps:         getEnvInt("WEBRTC_MAX_BITRATE_KBPS", 8000),
@@ -203,6 +233,31 @@ func Load() (*Config, error) {
 		Releases: ReleasesConfig{
 			Dir: strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
 		},
+
+		Scale: ScaleConfig{
+			AsynqEnabled:         getEnvBool("ASYNQ_ENABLED", true),
+			AsynqEmbed:           getEnvBool("ASYNQ_EMBED", true),
+			AsynqConcurrency:     getEnvInt("ASYNQ_CONCURRENCY", 8),
+			SyncMaxConcurrent:    getEnvInt("SYNC_MAX_CONCURRENT", 0), // 0 → derive from DB pool
+			LoginRPS:             getEnvFloat("RATE_LIMIT_LOGIN_RPS", 2),
+			LoginBurst:           getEnvInt("RATE_LIMIT_LOGIN_BURST", 5),
+			SyncRPS:              getEnvFloat("RATE_LIMIT_SYNC_RPS", 30),
+			SyncBurst:            getEnvInt("RATE_LIMIT_SYNC_BURST", 60),
+			AdminSearchRPS:       getEnvFloat("RATE_LIMIT_ADMIN_RPS", 20),
+			AdminSearchBurst:     getEnvInt("RATE_LIMIT_ADMIN_BURST", 40),
+			DashboardCacheTTLSec: getEnvInt("DASHBOARD_CACHE_TTL_SEC", 20),
+			SessionSweepSec:      getEnvInt("SESSION_SWEEP_INTERVAL_SECONDS", 60),
+		},
+	}
+
+	if cfg.Scale.SyncMaxConcurrent <= 0 {
+		cfg.Scale.SyncMaxConcurrent = int(syncMaxFromPool(cfg.Database.MaxOpenConns))
+	}
+	if cfg.Scale.AsynqConcurrency < 1 {
+		cfg.Scale.AsynqConcurrency = 4
+	}
+	if cfg.LiveStream.MaxStreams < 1 {
+		cfg.LiveStream.MaxStreams = 100
 	}
 
 	if cfg.Database.Password == "" {
@@ -213,6 +268,26 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func syncMaxFromPool(maxOpenConns int) int64 {
+	if maxOpenConns < 4 {
+		return 2
+	}
+	n := int64(maxOpenConns) * 3 / 5
+	if n < 2 {
+		return 2
+	}
+	return n
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
 }
 
 func getEnv(key, fallback string) string {

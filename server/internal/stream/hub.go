@@ -57,7 +57,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Enabled:                true,
-		MaxStreams:             25,
+		MaxStreams:             100,
 		MaxWatchersPerEmployee: 10,
 		IdleSec:                90,
 		MaxBitrateKbps:         8000,

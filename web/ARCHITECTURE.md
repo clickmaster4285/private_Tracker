@@ -1,7 +1,10 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-10 (Windows Settings allow preset)
+> **Last audited:** 2026-11-10 (live-stream bounded employee poll)
 > **Changelog:**
+> - 2026-11-10: **Live-stream employee list bounded.** `/live-stream` and theater poll
+>   `liveStreamApi.employees({ onlineOnly, limit: 200 })` instead of unbounded `ListAll` every 2s.
+>   Verified: `npx tsc --noEmit`.
 > - 2026-11-10: **`/allowlists/apps` Windows Settings preset + path override.** Add dialog offers
 >   **Windows Settings (Win10/11)** (posts
 >   `C:\Windows\ImmersiveControlPanel\SystemSettings.exe` + ImmersiveControlPanel Appx product)

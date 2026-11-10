@@ -68,8 +68,12 @@ function LiveStreamTheaterInner() {
   }, []);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['live-stream-employees'],
-    queryFn: () => liveStreamApi.employees(),
+    queryKey: ['live-stream-employees', { onlineOnly, limit: 200 }],
+    queryFn: () =>
+      liveStreamApi.employees({
+        onlineOnly: onlineOnly || undefined,
+        limit: 200,
+      }),
     refetchInterval: 2_000,
     staleTime: 1_000,
   });

@@ -9,10 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/cache"
 	"github.com/alpha-ai-tracker/server/internal/config"
 	"github.com/alpha-ai-tracker/server/internal/database"
 	"github.com/alpha-ai-tracker/server/internal/handlers"
 	"github.com/alpha-ai-tracker/server/internal/jobs"
+	"github.com/alpha-ai-tracker/server/internal/queue"
 	goredis "github.com/alpha-ai-tracker/server/internal/redis"
 	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/router"
@@ -180,6 +182,13 @@ func main() {
 	dashboardService := services.NewDashboardService(
 		dashboardRepo, employeeRepo, timeAttendanceRepo, timeAttendanceService, streamHub, presenceHub,
 	)
+	if redisClient != nil && cfg.Scale.DashboardCacheTTLSec > 0 {
+		dashboardService.WithCache(
+			cache.New(redisClient.Underlying()),
+			time.Duration(cfg.Scale.DashboardCacheTTLSec)*time.Second,
+		)
+		log.Printf("[server] dashboard summary Redis cache ttl=%ds", cfg.Scale.DashboardCacheTTLSec)
+	}
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService)
 
 	logInsightsRepo := repository.NewLogInsightsRepo(pool)
@@ -222,19 +231,50 @@ func main() {
 	}
 
 	// ────────────────
-	// Background jobs
+	// Background jobs (Asynq when Redis+enabled; else in-process tickers)
 	// ────────────────
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
 	defer sweepCancel()
-	stalenessSweep := jobs.NewStalenessSweep(pool, cfg.LinkStaleDays)
-	stalenessSweep.Start(sweepCtx)
-	log.Printf("[server] staleness sweep started (stale window: %d days)", cfg.LinkStaleDays)
 
-	retentionWorker := jobs.NewRetentionWorker(pool)
-	go retentionWorker.Start(sweepCtx)
+	useAsynq := cfg.Scale.AsynqEnabled && redisClient != nil
+	if useAsynq && cfg.Scale.AsynqEmbed {
+		opt := queue.RedisOpt(redisAddr, cfg.Redis.Password, cfg.Redis.DB)
+		deps := queue.NewJobDeps(pool, cfg.LinkStaleDays)
+		sessionEvery := time.Duration(cfg.Scale.SessionSweepSec) * time.Second
+		if sessionEvery <= 0 {
+			sessionEvery = time.Minute
+		}
+		if _, err := queue.SchedulePeriodic(sweepCtx, opt, sessionEvery, time.Hour, time.Hour); err != nil {
+			log.Printf("[server] WARNING: asynq scheduler failed (%v) — falling back to in-process tickers", err)
+			useAsynq = false
+		} else {
+			go func() {
+				if err := queue.RunWorker(sweepCtx, opt, cfg.Scale.AsynqConcurrency, deps); err != nil {
+					log.Printf("[server] asynq worker stopped: %v", err)
+				}
+			}()
+			log.Printf("[server] asynq embedded worker+scheduler (concurrency=%d) — set ASYNQ_EMBED=false and run cmd/worker for split deploy",
+				cfg.Scale.AsynqConcurrency)
+		}
+	} else if useAsynq && !cfg.Scale.AsynqEmbed {
+		log.Println("[server] ASYNQ_ENABLED=true ASYNQ_EMBED=false — start `go run ./cmd/worker` for background jobs")
+	}
 
-	sessionLifecycleSweep := jobs.NewSessionLifecycleSweep(pool)
-	go sessionLifecycleSweep.Start(sweepCtx)
+	if !useAsynq {
+		stalenessSweep := jobs.NewStalenessSweep(pool, cfg.LinkStaleDays)
+		stalenessSweep.Start(sweepCtx)
+		log.Printf("[server] staleness sweep started (stale window: %d days)", cfg.LinkStaleDays)
+
+		retentionWorker := jobs.NewRetentionWorker(pool)
+		go retentionWorker.Start(sweepCtx)
+
+		sessionLifecycleSweep := jobs.NewSessionLifecycleSweep(pool)
+		go sessionLifecycleSweep.Start(sweepCtx)
+	}
+
+	log.Printf("[server] scale: syncMaxConcurrent=%d loginRPS=%.1f syncRPS=%.1f liveMaxStreams=%d dbPool=%d",
+		cfg.Scale.SyncMaxConcurrent, cfg.Scale.LoginRPS, cfg.Scale.SyncRPS,
+		cfg.LiveStream.MaxStreams, cfg.Database.MaxOpenConns)
 
 	// ────────────────
 	// Setup Echo

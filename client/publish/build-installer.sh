@@ -275,6 +275,9 @@ fi
 # Windows installer
 if [ "$BUILD_WIN" = true ]; then
   echo ""
+  echo "[Windows] Bundling VCRUNTIME140 for vpxmd (live stream)..."
+  bash "$SCRIPT_DIR/ensure-vpx-native.sh" "$PUBLISH_WIN"
+  echo ""
   echo "[Windows] Building Windows installer..."
   bash "$SCRIPT_DIR/generate-windows-vars.sh"
   if command -v iscc &>/dev/null; then

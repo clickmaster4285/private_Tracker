@@ -1,6 +1,9 @@
 package router
 
 import (
+	"strings"
+
+	"github.com/alpha-ai-tracker/server/internal/admit"
 	"github.com/alpha-ai-tracker/server/internal/config"
 	"github.com/alpha-ai-tracker/server/internal/handlers"
 	appMiddleware "github.com/alpha-ai-tracker/server/internal/middleware"
@@ -69,12 +72,21 @@ func Setup(
 	e.GET("/api/v1/server-time", timeAttendanceHandler.ServerTime)
 
 	// ─────────────────────────────
+	// Admission control (1000-agent scale)
+	// ─────────────────────────────
+	loginRL := admit.NewLimiter(cfg.Scale.LoginRPS, cfg.Scale.LoginBurst)
+	syncRL := admit.NewLimiter(cfg.Scale.SyncRPS, cfg.Scale.SyncBurst)
+	adminRL := admit.NewLimiter(cfg.Scale.AdminSearchRPS, cfg.Scale.AdminSearchBurst)
+	syncGate := admit.NewSyncGate(int64(cfg.Scale.SyncMaxConcurrent))
+	byIP := func(c echo.Context) string { return c.RealIP() }
+
+	// ─────────────────────────────
 	// Public Routes (no auth required)
 	// ─────────────────────────────
 	a := e.Group("/api/v1/auth")
-	a.POST("/login", authHandler.Login)
+	a.POST("/login", authHandler.Login, loginRL.Middleware(byIP))
 	a.POST("/refresh", authHandler.Refresh)
-	a.POST("/employee-login", authHandler.EmployeeLogin)
+	a.POST("/employee-login", authHandler.EmployeeLogin, loginRL.Middleware(byIP))
 
 	// Public releases from the server's setup folder (RELEASES_DIR).
 	// No JWT / DeviceAuth — /releases visitors and desktop updaters download without login.
@@ -91,37 +103,41 @@ func Setup(
 	if deviceRepo != nil {
 		syncGroup.Use(appMiddleware.DeviceAuth(deviceRepo, userRepo, authService))
 	}
+	// Rate-limit + gate only the *sync POST* surface (not presence WS / live push).
+	syncAdmit := e.Group("/api/v1")
+	if deviceRepo != nil {
+		syncAdmit.Use(appMiddleware.DeviceAuth(deviceRepo, userRepo, authService))
+	}
+	syncAdmit.Use(syncRL.Middleware(byIP))
+	syncAdmit.Use(syncGate.Middleware())
 
-	// Phase 1 sync endpoints
-	syncGroup.POST("/device-hardware/sync", newSchemaHandler.SyncDeviceHardware)
-	syncGroup.POST("/installed-apps/sync", newSchemaHandler.SyncInstalledApps)
-	syncGroup.POST("/installed-packages/sync", newSchemaHandler.SyncInstalledPackages)
-	syncGroup.POST("/network-info/sync", newSchemaHandler.SyncNetworkInfo)
-	syncGroup.POST("/session-events/sync", newSchemaHandler.SyncSessionEvents)
-
-	// Phase 2 sync endpoints
-	syncGroup.POST("/app-sessions/sync", newSchemaHandler.SyncAppSessions)
-	syncGroup.POST("/app-items/sync", newSchemaHandler.SyncAppItems)
-
-	// Phase 3 sync endpoints
-	syncGroup.POST("/app-status/sync", newSchemaHandler.SyncAppStatus)
-	syncGroup.POST("/hardware-devices/sync", newSchemaHandler.SyncHardwareDevices)
-	syncGroup.POST("/permission-status/sync", newSchemaHandler.SyncPermissionStatus)
-	syncGroup.POST("/storage-devices/sync", newSchemaHandler.SyncStorageDevices)
-	syncGroup.POST("/location-samples/sync", newSchemaHandler.SyncLocationSamples)
+	// Phase 1–3 sync POSTs (admission-controlled)
+	syncAdmit.POST("/device-hardware/sync", newSchemaHandler.SyncDeviceHardware)
+	syncAdmit.POST("/installed-apps/sync", newSchemaHandler.SyncInstalledApps)
+	syncAdmit.POST("/installed-packages/sync", newSchemaHandler.SyncInstalledPackages)
+	syncAdmit.POST("/network-info/sync", newSchemaHandler.SyncNetworkInfo)
+	syncAdmit.POST("/session-events/sync", newSchemaHandler.SyncSessionEvents)
+	syncAdmit.POST("/app-sessions/sync", newSchemaHandler.SyncAppSessions)
+	syncAdmit.POST("/app-items/sync", newSchemaHandler.SyncAppItems)
+	syncAdmit.POST("/app-status/sync", newSchemaHandler.SyncAppStatus)
+	syncAdmit.POST("/hardware-devices/sync", newSchemaHandler.SyncHardwareDevices)
+	syncAdmit.POST("/permission-status/sync", newSchemaHandler.SyncPermissionStatus)
+	syncAdmit.POST("/storage-devices/sync", newSchemaHandler.SyncStorageDevices)
+	syncAdmit.POST("/location-samples/sync", newSchemaHandler.SyncLocationSamples)
 	// "Remove the account" signal (R4/R5): called by the client AFTER it has drained its
 	// unsynced rows. Marks the CALLING machine 'old' and the employee untracked; the client
 	// then wipes its local DB + machine id. Lives in the DeviceAuth group because a device
 	// token (not a web-admin session) identifies the machine.
-	syncGroup.POST("/devices/self-remove", newSchemaHandler.SelfRemoveAccount)
+	syncAdmit.POST("/devices/self-remove", newSchemaHandler.SelfRemoveAccount)
+
 	syncGroup.GET("/schedules/me", timeAttendanceHandler.GetMySchedule)
 
 	// Security & DLP — device surface (policy pull, alert sync, health, removal verify)
 	if dlpHandler != nil {
 		syncGroup.GET("/dlp/policy", dlpHandler.GetPolicy)
-		syncGroup.POST("/dlp/alerts/sync", dlpHandler.SyncAlerts)
-		syncGroup.POST("/dlp/health", dlpHandler.PostHealth)
-		syncGroup.POST("/devices/removal-verify", dlpHandler.VerifyRemovalCode)
+		syncAdmit.POST("/dlp/alerts/sync", dlpHandler.SyncAlerts)
+		syncAdmit.POST("/dlp/health", dlpHandler.PostHealth)
+		syncAdmit.POST("/devices/removal-verify", dlpHandler.VerifyRemovalCode)
 	}
 
 	// Live stream — client push socket (DeviceAuth). Web watch/employees live under JWTAuth.
@@ -148,6 +164,25 @@ func Setup(
 	// ─────────────────────────────
 	protected := e.Group("/api/v1")
 	protected.Use(appMiddleware.JWTAuth(authService))
+	// Soft rate-limit admin list/search GETs (100 concurrent admins).
+	adminMW := adminRL.Middleware(byIP)
+	protected.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if c.Request().Method != echo.GET {
+				return next(c)
+			}
+			path := c.Path()
+			if strings.Contains(path, "/employees") ||
+				strings.Contains(path, "/app-sessions") ||
+				strings.Contains(path, "/app-items") ||
+				strings.Contains(path, "/attendance") ||
+				strings.Contains(path, "/dashboard") ||
+				strings.Contains(path, "/live-stream/employees") {
+				return adminMW(next)(c)
+			}
+			return next(c)
+		}
+	})
 
 	// Auth
 	protected.GET("/auth/me", authHandler.Me)

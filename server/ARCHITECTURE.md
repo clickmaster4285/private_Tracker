@@ -1,7 +1,12 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-10 (allow-app path resolve + Windows Settings)
+> **Last audited:** 2026-11-10 (scale admission + Asynq + dashboard cache)
 > **Changelog:**
+> - 2026-11-10: **Scale foundation (one Postgres).** `admit` rate limits (login/sync/admin GET) +
+>   sync concurrency gate (`503`/`429` + `Retry-After`); Redis `cache` for dashboard summary;
+>   Asynq embedded worker/scheduler (or `cmd/worker`) for session/retention/staleness with
+>   `ASYNQ_CONCURRENCY` cap; `LIVE_STREAM_MAX_STREAMS` default 100; `ScaleConfig` env knobs.
+>   Verified: `go build`/`go vet`, `go test` admit+cache.
 > - 2026-11-10: **Allow-app create resolves usable Windows paths.** `CreateAllowApp` accepts an
 >   optional path override; maps well-known Windows Settings to
 >   `C:\Windows\ImmersiveControlPanel\SystemSettings.exe` + Appx product

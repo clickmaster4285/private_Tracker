@@ -2,9 +2,33 @@
 
 Procedures that need a running server (and for DLP, an installed Windows agent). Unit/CI tests live next to the code; this file is for **lab proof**.
 
-Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
+Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./newplan.md) (1000-agent scale), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
 
-*Last audited: 2026-11-06*
+*Last audited: 2026-11-10*
+
+---
+
+## I. Scale admission (1000 agents) — smoke
+
+**Prereqs:** API with Redis; `ASYNQ_ENABLED=true`; client with `ALPHA_SYNC_LOGIN_JITTER_SEC`.
+
+1. Burst `POST /api/v1/auth/login` from one IP beyond `RATE_LIMIT_LOGIN_BURST` → **429** + `Retry-After`.
+2. Saturate sync with many concurrent DeviceAuth sync POSTs → some **503** + `Retry-After`; client leaves rows unsynced and retries.
+3. `GET /api/v1/dashboard/summary` twice within `DASHBOARD_CACHE_TTL_SEC` → second hit should be fast (Redis cache when Redis up).
+4. Server log shows asynq embedded worker **or** run `go run ./cmd/worker` when `ASYNQ_EMBED=false`.
+5. `/live-stream` network tab: employees request includes `onlineOnly` + `limit=200`.
+6. Full 1000-agent storm lab: see [newplan.md](./newplan.md) success criteria (not claimed done until measured).
+
+---
+
+## Live stream — Windows VP8 (`vpxmd` / VCRUNTIME140)
+
+**Prereqs:** Windows client **1.0.8+** (ships `vcruntime140.dll` app-local next to `vpxmd.dll`).
+
+1. Install/update on a PC that does **not** have VC++ 2015-2022 x64 installed (or rename/block system `VCRUNTIME140` only in a disposable lab VM).
+2. Confirm install dir contains `vpxmd.dll` + `vcruntime140.dll` (and usually `vcruntime140_1.dll`).
+3. Open `/live-stream`, watch the employee → tile shows real FPS (not `---`); SFU log `withTrack=true`.
+4. If broken: Device Specs / `app_status` `stream_encode_error` should name missing `vpxmd` / CRT (not a bare `DllNotFoundException` alone); `stream_ice_state=connected` with empty encode error means ICE was fine and encode failed.
 
 ---
 

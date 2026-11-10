@@ -50,8 +50,9 @@ function LiveStreamInner() {
   );
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['live-stream-employees'],
-    queryFn: () => liveStreamApi.employees(),
+    // Bound fleet poll: prefer online agents first (server truncates with limit).
+    queryKey: ['live-stream-employees', { onlineOnly: true, limit: 200 }],
+    queryFn: () => liveStreamApi.employees({ onlineOnly: true, limit: 200 }),
     // Shared queryKey with theater — same-tab components dedupe. staleTime avoids
     // back-to-back fetches when both mounts share the cache window.
     refetchInterval: 2_000,

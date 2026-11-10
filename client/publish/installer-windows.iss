@@ -46,12 +46,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: checkedonce
 
 [Files]
-Source: "windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "Platform\Linux\*;Service\*"
+Source: "windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "Platform\Linux\*;Service\*;redist\*"
 ; restartreplace: if a handle still holds Service\*.dll after stop attempts, schedule
 ; replace on reboot instead of failing the whole upgrade with DeleteFile code 5.
 Source: "windows\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace; Check: DirExists(ExpandConstant('{src}\windows\Service'))
 Source: "windows\config.enc"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist; Check: FileExists(ExpandConstant('{src}\windows\config.enc'))
 Source: "..\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion
+; Optional full VC++ redist (ALPHA_BUNDLE_VC_REDIST=1). Check: is install-time only —
+; missing Source still fails compile, so gate with ISPP FileExists.
+#if FileExists(AddBackslash(SourcePath) + "windows\redist\vc_redist.x64.exe")
+Source: "windows\redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+#endif
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocExt}\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppAssocKey}"; ValueData: ""; Flags: uninsdeletevalue
@@ -64,6 +69,8 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Install VC++ CRT system-wide when the optional redistributable was bundled.
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated; Check: FileExists(ExpandConstant('{tmp}\vc_redist.x64.exe'))
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]

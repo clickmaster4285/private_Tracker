@@ -378,6 +378,17 @@ public sealed class LiveStreamClient : BackgroundService
             LagInFrames = (uint)_config.StreamVp8LagFrames,
         };
         encoder.ForceKeyFrame();
+        if (OperatingSystem.IsWindows())
+        {
+            var vpxErr = VpxNativeBootstrap.ProbeWindowsLoadError();
+            if (vpxErr is not null)
+            {
+                _logger.LogError("LiveStreamClient VP8 native probe failed: {Err}", vpxErr);
+                await WriteStatusAsync("stream_encode_error", TruncateStatus(vpxErr));
+            }
+            else
+                await WriteStatusAsync("stream_encode_error", "");
+        }
         _logger.LogInformation(
             "LiveStreamClient VP8 encode bitrate={Kbps}kbps (uplink≈{Up}kbps) fps={Fps} maxWidth={MaxW} keyframeEvery={Kf} lag={Lag} [ScreenVp8Encoder]",
             kbps, uplinkKbps, _config.StreamFps, _config.StreamMaxWidth, keyframeEvery, _config.StreamVp8LagFrames);

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/cache"
 	"github.com/alpha-ai-tracker/server/internal/dto"
 	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/stream"
@@ -28,6 +29,8 @@ type DashboardService struct {
 	taService    *TimeAttendanceService
 	streamHub    *stream.Hub
 	presence     *ws.Hub // optional
+	cache        *cache.Cache
+	cacheTTL     time.Duration
 }
 
 // NewDashboardService constructs a DashboardService. presence may be nil.
@@ -47,6 +50,13 @@ func NewDashboardService(
 		streamHub:    streamHub,
 		presence:     presence,
 	}
+}
+
+// WithCache enables Redis caching of GetSummary (nil-safe).
+func (s *DashboardService) WithCache(c *cache.Cache, ttl time.Duration) *DashboardService {
+	s.cache = c
+	s.cacheTTL = ttl
+	return s
 }
 
 // SummaryParams are validated filter inputs for GetSummary.
@@ -79,6 +89,21 @@ func (s *DashboardService) GetSummary(ctx context.Context, p SummaryParams) (*dt
 		p.RecentLimit = dashboardMaxRecent
 	}
 
+	if s.cache != nil && s.cacheTTL > 0 {
+		key := cache.DashboardKey(p.From, p.To, p.DepartmentID, p.TopN, p.RecentLimit)
+		var cached dto.DashboardSummaryResponse
+		err := s.cache.GetOrLoad(ctx, key, s.cacheTTL, &cached, func(ctx context.Context) (any, error) {
+			return s.computeSummary(ctx, p)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &cached, nil
+	}
+	return s.computeSummary(ctx, p)
+}
+
+func (s *DashboardService) computeSummary(ctx context.Context, p SummaryParams) (*dto.DashboardSummaryResponse, error) {
 	repoParams := repository.DashboardSummaryParams{
 		From:         p.From,
 		To:           p.To,

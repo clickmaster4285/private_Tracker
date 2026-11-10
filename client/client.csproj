@@ -90,4 +90,16 @@
   <ItemGroup>
     <InternalsVisibleTo Include="client.Tests" />
   </ItemGroup>
+
+  <!-- Live-stream VP8 needs VCRUNTIME140 app-local when the PC has no VC++ redist.
+       Pass the output dir via env (TargetDir/PublishDir end with `\`, which breaks
+       quoted -OutDir under cmd.exe). -->
+  <Target Name="CopyVpxVcRuntime" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\publish\ensure-vpx-native.ps1&quot;" EnvironmentVariables="ALPHA_VPX_OUTDIR=$(TargetDir)" />
+  </Target>
+  <Target Name="CopyVpxVcRuntimeOnPublish" AfterTargets="Publish" Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\publish\ensure-vpx-native.ps1&quot;" EnvironmentVariables="ALPHA_VPX_OUTDIR=$(PublishDir)" />
+  </Target>
 </Project>
+
+

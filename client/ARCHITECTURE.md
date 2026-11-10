@@ -1,7 +1,17 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-10 (delete-block ACL + AppLocker bootstrap)
+> **Last audited:** 2026-11-10 (vpxmd + VCRUNTIME140 app-local)
 > **Changelog:**
+> - 2026-11-10: **Windows live-stream VP8 native load.** `VpxNativeBootstrap` (Program +
+>   `ScreenVp8Encoder`) preloads app-local `VCRUNTIME140` and resolves `vpxmd.dll` from
+>   `AppContext.BaseDirectory`. `publish/ensure-vpx-native.ps1` (MSBuild AfterBuild/Publish +
+>   `build-installer.sh`) copies CRT next to the exe; optional `ALPHA_BUNDLE_VC_REDIST=1` for
+>   full redist in Inno. `LiveStreamClient` probes before encode → honest `stream_encode_error`.
+>   **VERSION 1.0.8**. Verified: `dotnet build` client. Installer-Parity: next Windows installer.
+> - 2026-11-10: **Scale client half.** `ALPHA_SYNC_LOGIN_JITTER_SEC` (default 120) delays
+>   post-login / session-restore sync via `RequestImmediateSyncWithLoginJitterAsync`.
+>   `SyncService` honors `Retry-After` on HTTP 429/503 and still leaves rows `is_synced=0`.
+>   Verified: `dotnet build` client (0 warnings). Installer-Parity: re-bake `config.enc`.
 > - 2026-11-10: **Delete-block ACL + tighter AppLocker bootstrap (DlpService).** New
 >   `DeleteBlockAclEnforcer` — NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated
 >   Users on Fixed/Removable volume roots when lockdown is ON; `ALPHA_DLP_DELETE_BLOCK` (default

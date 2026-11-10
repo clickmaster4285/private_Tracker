@@ -3,6 +3,27 @@
 > **Last audited:** 2026-11-10
 > **Changelog:**
 >
+> - 2026-11-10: **Live-stream VP8 — ship VCRUNTIME140 with Windows client (vpxmd load).** Root cause
+>   of `LIVE` + SFU `withTrack=false` / `stream_encode_error` `DllNotFoundException: Unable to load
+>   DLL 'vpxmd'` on machines without VC++ 2015-2022 x64: `vpxmd.dll` was already in the install dir
+>   but LoadLibrary failed on missing `VCRUNTIME140.dll`. Fix: `publish/ensure-vpx-native.ps1` (+
+>   `.sh` / MSBuild AfterBuild+Publish) copies app-local `vcruntime140.dll` (+ `_1`) into build/
+>   publish output; Inno installs it via `windows\*`; optional `ALPHA_BUNDLE_VC_REDIST=1` downloads
+>   `vc_redist.x64.exe` for quiet system install. Runtime: `VpxNativeBootstrap` preloads CRT +
+>   resolves `vpxmd` from `AppContext.BaseDirectory`; probe clears/writes `stream_encode_error`
+>   before encode. Client **VERSION 1.0.8**. Verified: `dotnet build` client. Installer-Parity:
+>   rebuild Windows installer / drop into `server/setup/`. Lab: `TESTING.md` live-stream VP8 note.
+>
+> - 2026-11-10: **Scale foundation for ~1000 agents / 100 live watches / 100 admins (one Postgres).**
+>   Server: rate limits on login + DeviceAuth sync + admin list GETs (`Retry-After`); sync
+>   concurrency gate (`SYNC_MAX_CONCURRENT`, 503 when full); Redis dashboard summary cache +
+>   singleflight; Asynq embedded worker/scheduler for session/retention/staleness (or
+>   `cmd/worker` when `ASYNQ_EMBED=false`); `LIVE_STREAM_MAX_STREAMS` default **100**. Client:
+>   `ALPHA_SYNC_LOGIN_JITTER_SEC` (default 120) + honor `Retry-After` on 429/503 (never mark
+>   synced). Web live-stream polls `onlineOnly` + `limit=200`. Rules: *Single-Postgres* +
+>   *Scale/Admission* in §6 + `prompt.md`. Plan: `newplan.md`. Verified: `go build`/`go vet`/
+>   admit+cache tests; `dotnet build` client; `npx tsc --noEmit` as available.
+>
 > - 2026-11-10: **Delete-block ACL + stricter AppLocker bootstrap + Windows Settings allow path
 >   (client / server / web).** DlpService: new `DeleteBlockAclEnforcer` — under published
 >   `lockdown: true` (same pause/park/teardown clear as network/apps), Deny Delete +
@@ -1858,6 +1879,8 @@ flowchart LR
 | **Device lifecycle** | `employee_machines` is the canonical one-row-per-machine registry (`status` `active|old`, `first_track_at`, `last_track_at`, `wipe_requested_at`); `employee_devices` stays the rotating auth-token registry. Removal is a handshake: persist first, then instruct the client to wipe (see *Device Lifecycle Rule* below) |
 | **DLP policy versions** | Clients enforce only **published** immutable bundles (`dlp_policy_versions`); editing `dlp_rules` alone never changes the fleet until Publish (see *DLP Policy Version Rule* below) |
 | **Protected removal** | Windows stop/uninstall of the agent requires a server-issued one-time removal code (hash at rest); standard users cannot stop the SYSTEM service (see *Protected Removal Rule* below) |
+| **Single PostgreSQL** | Exactly one Postgres server for the product; all Go processes share it; never add a second DB / shard / per-service database (see *Single-Postgres Rule* below) |
+| **Scale admission** | Login/sync storms return `429`/`503` + `Retry-After`; clients keep `is_synced=0` and honor Retry-After + login jitter; Asynq workers are concurrency-capped (see *Scale/Admission Rule* below) |
 
 ### Web Infinite-Scroll Rule (mandatory)
 
@@ -1914,6 +1937,30 @@ server in the same query that returns the row — never built client-side from a
 - The hooks never touch `localStorage` / `sessionStorage`. They are URL-only.
 
 **Reference implementations:** `web/src/app/(app)/employees/page.tsx` (search + department), `web/src/app/(app)/shifts/page.tsx` (search), `web/src/app/(app)/timesheets/page.tsx` (employee + from + to), `web/src/app/(app)/attendance/page.tsx` (date + status), the three `employee-journey/*` pages (search + date preset), `web/src/components/configuration/ClassifiedItemsTable.tsx` (search + type + category + status — used by both `configuration/apps` and `configuration/websites`), `web/src/app/(app)/device-specs/software/page.tsx` (tab + per-tab search), `web/src/app/(app)/logs/comprehensive/page.tsx` (employee + search + page), `web/src/app/(app)/settings/user-management/page.tsx` (search + the existing `?create=1&edit=1` deep-link).
+
+### Single-Postgres Rule (mandatory since 2026-11-10)
+
+**The product uses exactly one PostgreSQL server.** Tracking ingest, journey reads, attendance,
+auth, DLP, Asynq workers, and streaming metadata all connect to that database.
+
+- Do **not** introduce a second Postgres, read-replica-as-SoR, per-service databases, or table sharding.
+- Every process’s `DB_MAX_OPEN_CONNS` must be budgeted so **Σ pools + reserve ≤ `max_connections`**.
+- Scale by admission control, Redis cache/queue/presence, bounded workers, and optional extra **Go**
+  processes — not by adding database servers.
+- Plan of record: [`newplan.md`](./newplan.md).
+
+### Scale / Admission Rule (mandatory since 2026-11-10)
+
+**Overload must be explicit; telemetry must not silently skip.**
+
+- DeviceAuth sync POSTs are rate-limited and concurrency-gated. When saturated the API returns
+  **`503`/`429` with `Retry-After`**. The client leaves rows `is_synced=0` and retries (never treat
+  queue-accept alone as success for mark-synced).
+- Login storms use **`ALPHA_SYNC_LOGIN_JITTER_SEC`** (default 120) so agents do not align.
+- Background sweeps (session lifecycle, retention, staleness) run via **Asynq** with a fixed
+  `ASYNQ_CONCURRENCY` — never unbounded goroutines per job.
+- Live publishers are capped by `LIVE_STREAM_MAX_STREAMS` (product target **100** watched at once).
+- Redis may cache/queue/rate-limit; Postgres remains the telemetry system of record.
 
 ### Installer-Parity Rule (mandatory)
 
