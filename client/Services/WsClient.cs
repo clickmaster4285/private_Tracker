@@ -182,9 +182,16 @@ public sealed class WsClient : BackgroundService
                     if (result.MessageType == WebSocketMessageType.Close)
                         break;
 
-                    // Keep-alive / welcome / pong — ignore payload content (control channel).
+                    // Keep-alive / welcome / pong are ignored. "policy_changed" = the admin just
+                    // published a DLP policy: wake the local DLP service so it pulls now instead
+                    // of waiting for its ALPHA_DLP_POLICY_POLL_SEC timer.
                     if (result.MessageType == WebSocketMessageType.Text)
-                        _logger.LogDebug("WsClient recv: {Json}", Encoding.UTF8.GetString(buffer, 0, result.Count));
+                    {
+                        var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                        _logger.LogDebug("WsClient recv: {Json}", json);
+                        if (IsPolicyChanged(json))
+                            _ = ForwardPolicyChangedAsync();
+                    }
                 }
             }
             finally
@@ -208,6 +215,38 @@ public sealed class WsClient : BackgroundService
                 if (ReferenceEquals(_activeWs, ws))
                     _activeWs = null;
             }
+        }
+    }
+
+    private static bool IsPolicyChanged(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("type", out var t) &&
+                   t.ValueKind == JsonValueKind.String &&
+                   t.GetString() == "policy_changed";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private async Task ForwardPolicyChangedAsync()
+    {
+        try
+        {
+            var (ok, body) = await DlpPipeClient.SendAsync(new { op = "RequestPolicyPull" });
+            if (ok)
+                _logger.LogInformation("Policy changed on server — asked DLP service to pull now");
+            else
+                _logger.LogDebug("RequestPolicyPull not delivered (service not reachable): {Body}", body);
+        }
+        catch (Exception ex)
+        {
+            // Never break the presence socket over this — the service still polls on its timer.
+            _logger.LogDebug(ex, "RequestPolicyPull failed");
         }
     }
 

@@ -3,6 +3,51 @@
 > **Last audited:** 2026-11-07
 > **Changelog:**
 >
+> - 2026-11-10: **Port blocking reliability + instant policy delivery (DlpService + server + tracker).**
+>   Root causes from testingpc (EMP-10003): (1) disabled devices were never recognised as
+>   disabled — `Get-PnpDevice` reports them as `Status=Error`, not `Disabled`, so every block
+>   was "Failed", retried forever and never recorded for Unblock; (2) a re-enabled Ethernet
+>   adapter stayed online until the next slow pass (11 rules × up to 3 PowerShell spawns);
+>   (3) rules looked "restart-only" because the policy pull interval was read once at service
+>   start and nothing woke the PC on publish. **Fix:** new `CfgMgrDevices` (native cfgmgr32:
+>   locate/status/disable-persist/enable/list-by-class/class-guid; disabled = problem code 22;
+>   veto → `Vetoed`/pending, PowerShell only as fallback in the full pass); new
+>   `PortGuardWorker` re-disables any re-enabled blocked device every 2 s (native only, 60 s
+>   back-off on veto) and raises a `device_control` / `reblocked` alert (10 min per-device
+>   rate limit). Policy delivery: server `ws.Hub.SubscribePolicy/BroadcastPolicyChanged`,
+>   presence socket writes `{"type":"policy_changed"}` after every `DlpService.Publish`;
+>   tracker `WsClient` forwards it as pipe op `RequestPolicyPull`; `DlpSignals` wakes
+>   `PolicyPullWorker` (interval now re-read each pass) and then `EnforceWorker`. Verified:
+>   `dotnet build` client + DlpService 0/0, `dotnet test` 37/37, `go build`/`go vet`,
+>   `go test ./internal/ws`; native wrapper read-only against live devices (enumeration,
+>   class GUID, problem codes match `Get-PnpDevice`). Disable/enable path needs an elevated
+>   installed-service lab run. Installer-Parity: rebuild the Windows installer; restart API.
+>
+> - 2026-11-07: **Hardware & Port Control (scan + block, server + client + DlpService + web).** New
+>   feature: scan every physical port / interface / device on each Windows PC and block/allow/alert it
+>   per employee, per machine, or fleet-wide. **Server:** migration **065** (`machine_ports` inventory,
+>   `device_control_rules` with `scope`/`scope_value`, `dlp_policy_device_control` snapshot) + **067**
+>   (idempotent re-create of those tables — 065 had been recorded applied on DBs where `machine_ports`
+>   ended up absent, causing `GET /hardware-ports` 500 `relation does not exist`). DeviceAuth
+>   `POST /hardware-ports/sync`; JWT `GET /hardware-ports`, `/device-control/rules` CRUD (auto-publish).
+>   `Publish` folds **global** rules into the bundle (`SnapshotDeviceControl`); employee/machine/
+>   department rules resolve per-device at pull (`ResolveScopedDeviceControl` → `mergeDeviceControl`).
+>   **Client tracker:** `PortDeviceCollector` (Get-PnpDevice → `machine_ports` SQLite → sync),
+>   `ALPHA_PORT_SCAN_ENABLED` (default true). **DlpService:** `PortDeviceEnforcer` (instance →
+>   `Disable-PnpDevice`; class → Device Installation Restrictions retroactive; `Clear` re-enables),
+>   wired into `EnforceWorker` + park-clear, local switch `ALPHA_DLP_PORT_BLOCK` (`DlpConfig` +
+>   `EnvBootstrap`). **Offline-first fix (root cause of "blocking never applied"):** `PolicyStore`
+>   round-trips the applied bundle through `dlp.db` relational tables and rebuilds it, but previously
+>   **dropped `deviceControl`**, so `EnforceWorker` always saw an empty block set. New
+>   `policy_device_control` table + persist on apply + emit on rebuild — port rules now survive offline
+>   and actually enforce. **Web:** `/device-specs/ports` (Device Specs → Ports Control) — inventory by
+>   category with per-device descriptions, Block/Alert/Unblock, scope selector; `portControlApi`.
+>   Video outputs + internal system disks are detect/alert-only (never hard-disabled). Verified:
+>   `go build`/`go vet`; `npx tsc --noEmit`; `dotnet build` client + DlpService (0/0); live scan on a
+>   Windows PC (52 devices classified); SQLite upsert/`is_synced` round-trip. Installer-Parity: rebuild
+>   client installer (**AlphaAITracker-Setup-1.0.5.exe**) + re-bake `config.enc` so
+>   `ALPHA_PORT_SCAN_ENABLED` / `ALPHA_DLP_PORT_BLOCK` reach installed PCs; restart API for 065/067.
+>
 > - 2026-11-07: **Local blocker switches in client `.env` (DlpService).** Four `true|false` keys decide
 >   whether this PC applies each blocker at all: `ALPHA_DLP_USB_BLOCK` (USB storage),
 >   `ALPHA_DLP_WEB_BLOCK` (Web Blocker domains), new `ALPHA_DLP_NETWORK_LOCKDOWN` (default-deny

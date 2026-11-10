@@ -1,7 +1,13 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-07 (releases copy)
+> **Last audited:** 2026-11-07 (ports control)
 > **Changelog:**
+> - 2026-11-07: **Ports Control page.** New route `/device-specs/ports` (Monitoring → Device Specs →
+>   Ports Control, module `device-specs`) — per-employee port/device inventory grouped by category with
+>   plain-language per-device descriptions, overview stats, a scope selector (this employee / this
+>   computer / everyone) and Block / Alert / Unblock. `portControlApi` (listPorts, listRules, create/
+>   remove rule) + `MachinePort` / `DeviceControlRule` types in `lib/api.ts`. Video outputs + system
+>   disks render as alert-only. Verified: `npx tsc --noEmit`.
 > - 2026-11-07: `/releases` copy no longer mentions GitHub — installers come from the API server's
 >   `setup/` folder (same `/api/v1/releases` contract). Verified: `npx tsc --noEmit`.
 > - 2026-11-05: **P3 App Allow List catalog picker.** `/allowlists/apps` selects from

@@ -33,6 +33,7 @@ func Setup(
 	logInsightsHandler *handlers.LogInsightsHandler,
 	logGraphicalHandler *handlers.LogGraphicalHandler,
 	dlpHandler *handlers.DlpHandler,
+	portHandler *handlers.PortHandler,
 	releaseHandler *handlers.ReleaseHandler,
 ) {
 	// ─────────────────────────────
@@ -109,6 +110,9 @@ func Setup(
 	syncGroup.POST("/permission-status/sync", newSchemaHandler.SyncPermissionStatus)
 	syncGroup.POST("/storage-devices/sync", newSchemaHandler.SyncStorageDevices)
 	syncGroup.POST("/location-samples/sync", newSchemaHandler.SyncLocationSamples)
+	if portHandler != nil {
+		syncGroup.POST("/hardware-ports/sync", portHandler.SyncPorts)
+	}
 	// "Remove the account" signal (R4/R5): called by the client AFTER it has drained its
 	// unsynced rows. Marks the CALLING machine 'old' and the employee untracked; the client
 	// then wipes its local DB + machine id. Lives in the DeviceAuth group because a device
@@ -272,6 +276,16 @@ func Setup(
 		protected.GET("/shadow-it/apps", dlpHandler.ListShadowIt)
 		protected.PATCH("/shadow-it/apps/:id", dlpHandler.UpdateShadowIt)
 		protected.POST("/devices/removal-code", dlpHandler.IssueRemovalCode)
+	}
+
+	// Hardware & Port Control — inventory (read) + device-control rules (CRUD, auto-publish)
+	if portHandler != nil {
+		protected.GET("/hardware-ports", portHandler.ListPorts)
+		dc := protected.Group("/device-control")
+		dc.GET("/rules", portHandler.ListRules)
+		dc.POST("/rules", portHandler.CreateRule)
+		dc.PATCH("/rules/:id", portHandler.UpdateRule)
+		dc.DELETE("/rules/:id", portHandler.DeleteRule)
 	}
 
 	// RBAC: module catalog + roles with per-submodule permissions

@@ -37,6 +37,8 @@ public class AppConfig
     // USB / peripheral hotplug tracking (synced to the server since 2026-08-11;
     // never deleted client-side)
     public bool HardwareDevicesEnabled { get; init; } = true;
+    /// <summary>Full port/interface inventory scan (Hardware & Port Control).</summary>
+    public bool PortScanEnabled { get; init; } = true;
 
     // Software inventory — 100% EVENT-DRIVEN detection via InstalledSoftwareWatcher: it watches
     // the OS install locations (.desktop dirs, dpkg state, Start Menu, /Applications, package-
@@ -148,6 +150,7 @@ public class AppConfig
             BrowserHistoryPollSec = int.TryParse(GetEnv("ALPHA_BROWSER_HISTORY_POLL_SECONDS"), out var histPoll) ? histPoll : 10,
             FileJourneyEnabled = GetEnv("ALPHA_FILE_JOURNEY_ENABLED") is not ("0" or "false" or "False"),
             HardwareDevicesEnabled = GetEnv("ALPHA_HARDWARE_DEVICES_ENABLED") is not ("0" or "false" or "False"),
+            PortScanEnabled = GetEnv("ALPHA_PORT_SCAN_ENABLED") is not ("0" or "false" or "False"),
             InventoryWatchEnabled = GetEnv("ALPHA_INVENTORY_WATCH_ENABLED") is not ("0" or "false" or "False"),
             SyncIntervalSec = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_INTERVAL_SEC"), out var syncInt) ? syncInt : 60),
             SyncMaxRows = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_MAX_ROWS"), out var syncRows) ? syncRows : 1000),

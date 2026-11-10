@@ -81,6 +81,11 @@ public interface ILogStore
     Task<IReadOnlyList<HardwareDevice>> GetUnsentHardwareDevicesAsync(int limit, CancellationToken ct);
     Task MarkHardwareDevicesSentAsync(IReadOnlyList<string> ids, CancellationToken ct);
 
+    // Hardware & Port Control — full scanned inventory (synced; client owns present).
+    Task ReplaceMachinePortScanAsync(IReadOnlyList<MachinePort> scanned, CancellationToken ct);
+    Task<IReadOnlyList<MachinePort>> GetUnsentMachinePortsAsync(int limit, CancellationToken ct);
+    Task MarkMachinePortsSentAsync(IReadOnlyList<string> ids, CancellationToken ct);
+
     // ── Location samples (Phase 3 GPS) ──
     Task StoreLocationSamplesAsync(IReadOnlyList<LocationSample> entries, CancellationToken ct);
     Task<IReadOnlyList<LocationSample>> GetUnsentLocationSamplesAsync(int limit, CancellationToken ct);

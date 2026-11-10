@@ -109,6 +109,9 @@ func (h *WsHandler) Connect(c echo.Context) error {
 	var once sync.Once
 	closeDone := func() { once.Do(func() { close(done) }) }
 
+	policyCh, unsubscribePolicy := h.hub.SubscribePolicy(gen)
+	defer unsubscribePolicy()
+
 	lifeTimer := time.AfterFunc(presenceMaxLife, func() {
 		log.Printf("[ws] max lifetime employee=%s — closing", empID)
 		_ = conn.Close()
@@ -136,6 +139,16 @@ func (h *WsHandler) Connect(c echo.Context) error {
 				writeMu.Lock()
 				_ = conn.SetWriteDeadline(time.Now().Add(presenceWriteWait))
 				err := conn.WriteMessage(websocket.PingMessage, nil)
+				writeMu.Unlock()
+				if err != nil {
+					return
+				}
+			case <-policyCh:
+				// New DLP policy published — tell the agent to pull now instead of
+				// waiting for its poll timer.
+				writeMu.Lock()
+				_ = conn.SetWriteDeadline(time.Now().Add(presenceWriteWait))
+				err := conn.WriteJSON(map[string]string{"type": "policy_changed"})
 				writeMu.Unlock()
 				if err != nil {
 					return

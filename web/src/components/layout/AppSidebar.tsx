@@ -203,6 +203,11 @@ const navSections: NavSection[] = [
             module: "device-specs",
           },
           {
+            label: "Ports Control",
+            path: "/device-specs/ports",
+            module: "device-specs",
+          },
+          {
             label: "Permissions",
             path: "/device-specs/permissions",
             module: "device-specs",

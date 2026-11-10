@@ -1,6 +1,7 @@
 package services
 
 import (
+	"log"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -35,6 +36,14 @@ type DlpService struct {
 	deviceRepo        *repository.DeviceRepo // optional; pause unlock on policy pull
 	platformHosts     []string
 	removalCodeTTLMin int
+	// policyNotifier is called after every successful Publish (e.g. presence hub
+	// broadcast "policy_changed" so connected PCs pull immediately). Optional.
+	policyNotifier func() int
+}
+
+// SetPolicyNotifier attaches the post-publish push (nil = poll-only, previous behaviour).
+func (s *DlpService) SetPolicyNotifier(fn func() int) {
+	s.policyNotifier = fn
 }
 
 func NewDlpService(repo *repository.DlpRepo, removalCodeTTLMin int) *DlpService {
@@ -406,6 +415,10 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts, allowApps); err != nil {
 		return nil, err
 	}
+	// Device/port control is fleet-wide and independent of network lockdown.
+	if err := s.repo.SnapshotDeviceControl(ctx, ver.Version); err != nil {
+		return nil, err
+	}
 	final, err := s.repo.AssembleBundleJSON(ctx, ver.Version)
 	if err != nil {
 		return nil, err
@@ -414,6 +427,11 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	finalHash := "sha256:" + hex.EncodeToString(sum[:])
 	if err := s.repo.UpdatePolicyHash(ctx, ver.Version, finalHash); err != nil {
 		return nil, err
+	}
+
+	if s.policyNotifier != nil {
+		n := s.policyNotifier()
+		log.Printf("[dlp] policy v%d published — pushed policy_changed to %d connected device(s)", ver.Version, n)
 	}
 
 	return &dto.PublishDlpPolicyResponse{
@@ -848,6 +866,17 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 	if err != nil {
 		return nil, err
 	}
+	// Overlay device-control rules scoped to THIS employee/machine/department on top
+	// of the global snapshot already in the bundle (per-device enforcement).
+	scoped, err := s.repo.ResolveScopedDeviceControl(ctx, employeeID, machineID)
+	if err != nil {
+		return nil, err
+	}
+	if len(scoped) > 0 {
+		if merged, mErr := mergeDeviceControl(bundle, scoped); mErr == nil {
+			bundle = merged
+		}
+	}
 	if sinceVersion > 0 && sinceVersion >= latest.Version {
 		return &dto.DlpPolicyPullResponse{
 			PolicyVersion:       latest.Version,
@@ -865,6 +894,30 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 		Bundle:              bundle,
 		LockdownPausedUntil: pauseUntil,
 	}, nil
+}
+
+// mergeDeviceControl appends scoped device-control entries to the bundle's
+// "deviceControl" array and re-marshals. Returns the original bundle on any error.
+func mergeDeviceControl(bundle json.RawMessage, scoped []map[string]any) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(bundle, &m); err != nil {
+		return bundle, err
+	}
+	existing := make([]map[string]any, 0)
+	if raw, ok := m["deviceControl"]; ok && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &existing)
+	}
+	existing = append(existing, scoped...)
+	encoded, err := json.Marshal(existing)
+	if err != nil {
+		return bundle, err
+	}
+	m["deviceControl"] = encoded
+	out, err := json.Marshal(m)
+	if err != nil {
+		return bundle, err
+	}
+	return out, nil
 }
 
 func (s *DlpService) Health(ctx context.Context, _ dto.DlpHealthRequest) (*dto.DlpHealthResponse, error) {

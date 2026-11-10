@@ -666,6 +666,12 @@ if (config.HardwareDevicesEnabled && !isProtectedUninstall && !isRemoveAccount)
     builder.Services.AddHostedService<HardwareDeviceWatcherService>();
 }
 
+// Hardware & Port Control — full port/interface inventory scan (synced to server)
+if (config.PortScanEnabled && !isProtectedUninstall && !isRemoveAccount)
+{
+    builder.Services.AddHostedService<client.Services.PortDeviceCollector>();
+}
+
 // Main ViewModel + the per-page ViewModels it composes (pages 4–6).
 // Transient alongside MainViewModel so each window gets its own page state.
 builder.Services.AddTransient<DashboardViewModel>();

@@ -19,9 +19,19 @@ internal sealed class PolicyBundle
     public IReadOnlyList<string> AllowHosts { get; init; } = Array.Empty<string>();
     /// <summary>Published app allow entries (path / publisher / product / sha256).</summary>
     public IReadOnlyList<AllowAppEntry> AllowApps { get; init; } = Array.Empty<AllowAppEntry>();
+    /// <summary>Published hardware/port control entries (block/allow/alert a class or instance).</summary>
+    public IReadOnlyList<DeviceControlEntry> DeviceControl { get; init; } = Array.Empty<DeviceControlEntry>();
 
     /// <summary>True unless the published bundle explicitly sets <c>lockdown: false</c>.</summary>
     public bool LockdownEnabled => Lockdown != false;
+}
+
+internal sealed class DeviceControlEntry
+{
+    public string Kind { get; init; } = "";     // "class" | "instance"
+    public string Value { get; init; } = "";     // pnp class / setup-class GUID, or instance id
+    public string PnpClass { get; init; } = "";
+    public string Action { get; init; } = "block"; // block | allow | alert
 }
 
 internal sealed class AllowAppEntry
@@ -117,6 +127,8 @@ internal static class PolicyBundleParser
             allowApps = ReadAllowApps(al2);
         }
 
+        var deviceControl = ReadDeviceControl(root);
+
         return new PolicyBundle
         {
             PolicyVersion = version,
@@ -126,8 +138,68 @@ internal static class PolicyBundleParser
             PlatformAllowHosts = platformHosts,
             AllowHosts = allowHosts,
             AllowApps = allowApps,
+            DeviceControl = deviceControl,
         };
     }
+
+    private static IReadOnlyList<DeviceControlEntry> ReadDeviceControl(JsonElement root)
+    {
+        if (!root.TryGetProperty("deviceControl", out var dc) || dc.ValueKind != JsonValueKind.Array)
+            return Array.Empty<DeviceControlEntry>();
+        var list = new List<DeviceControlEntry>();
+        foreach (var el in dc.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            var kind = (el.TryGetProperty("kind", out var k) ? k.GetString() ?? "" : "").Trim().ToLowerInvariant();
+            var value = (el.TryGetProperty("value", out var v) ? v.GetString() ?? "" : "").Trim();
+            var cls = (el.TryGetProperty("pnpClass", out var c) ? c.GetString() ?? "" : "").Trim();
+            var action = (el.TryGetProperty("action", out var a) ? a.GetString() ?? "block" : "block").Trim().ToLowerInvariant();
+            if (value.Length == 0 || (kind != "class" && kind != "instance")) continue;
+            if (action != "block" && action != "allow" && action != "alert") action = "block";
+            list.Add(new DeviceControlEntry { Kind = kind, Value = value, PnpClass = cls, Action = action });
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Instance ids the policy wants hard-blocked right now.
+    /// Instance <c>allow</c> entries win over instance <c>block</c>.
+    /// </summary>
+    public static IReadOnlyList<string> BlockedInstances(PolicyBundle bundle)
+    {
+        var allowed = AllowedInstances(bundle);
+        return bundle.DeviceControl
+            .Where(e => e.Kind == "instance" && e.Action == "block" && !allowed.Contains(e.Value))
+            .Select(e => e.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// PnP class names / setup-class GUIDs to hard-block.
+    /// Class <c>allow</c> removes that class from the deny set; instance allows are handled separately.
+    /// </summary>
+    public static IReadOnlyList<string> BlockedClasses(PolicyBundle bundle)
+    {
+        var allowedClasses = new HashSet<string>(
+            bundle.DeviceControl
+                .Where(e => e.Kind == "class" && e.Action == "allow")
+                .Select(e => e.Value),
+            StringComparer.OrdinalIgnoreCase);
+        return bundle.DeviceControl
+            .Where(e => e.Kind == "class" && e.Action == "block" && !allowedClasses.Contains(e.Value))
+            .Select(e => e.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>Instance ids exempt from class/instance blocks (allow beats block).</summary>
+    public static IReadOnlyList<string> AllowedInstances(PolicyBundle bundle) =>
+        bundle.DeviceControl
+            .Where(e => e.Kind == "instance" && e.Action == "allow")
+            .Select(e => e.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static IReadOnlyList<AllowAppEntry> ReadAllowApps(JsonElement allow)
     {
@@ -162,7 +234,43 @@ internal static class PolicyBundleParser
         bundle.Rules.Any(r =>
             r.Enabled
             && (r.Trigger is "usb_storage" or "usb_file")
-            && (r.Action is "block" or "alert_block"));
+            && (r.Action is "block" or "alert_block"))
+        || WantsUsbStorageFromDeviceControl(bundle);
+
+    /// <summary>
+    /// Port-control "Block all" on USB / USB storage / WPD / DiskDrive should also
+    /// flip the USBSTOR service (same durable lever as classic USB DLP rules).
+    /// </summary>
+    public static bool WantsUsbStorageFromDeviceControl(PolicyBundle bundle)
+    {
+        foreach (var e in bundle.DeviceControl)
+        {
+            if (e.Action != "block") continue;
+            var v = (e.Value ?? "").Trim();
+            var cls = (e.PnpClass ?? "").Trim();
+            if (IsUsbStorClassToken(v) || IsUsbStorClassToken(cls))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsUsbStorClassToken(string token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        if (token.Equals("USB", StringComparison.OrdinalIgnoreCase)) return true;
+        if (token.Equals("USBDevice", StringComparison.OrdinalIgnoreCase)) return true;
+        if (token.Equals("WPD", StringComparison.OrdinalIgnoreCase)) return true;
+        if (token.Equals("PortableDevice", StringComparison.OrdinalIgnoreCase)) return true;
+        if (token.Equals("DiskDrive", StringComparison.OrdinalIgnoreCase)) return true;
+        if (token.Equals("SCMDisk", StringComparison.OrdinalIgnoreCase)) return true;
+        // Setup-class GUIDs
+        if (token.Equals("{36fc9e60-c465-11cf-8056-444553540000}", StringComparison.OrdinalIgnoreCase)) return true; // USB
+        if (token.Equals("{88bae032-5a81-49f0-bc3d-a4ff138216d6}", StringComparison.OrdinalIgnoreCase)) return true; // USBDevice
+        if (token.Equals("{eec5ad98-8080-425f-922a-dabf3de3f69a}", StringComparison.OrdinalIgnoreCase)) return true; // WPD
+        if (token.Equals("{4d36e967-e325-11ce-bfc1-08002be10318}", StringComparison.OrdinalIgnoreCase)) return true; // DiskDrive
+        if (token.Equals("{2accfe60-c130-11d2-b082-00a0c91fef85}", StringComparison.OrdinalIgnoreCase)) return true; // SCMDisk
+        return false;
+    }
 
     public static PolicyRule? FirstUsbBlockRule(PolicyBundle bundle) =>
         bundle.Rules.FirstOrDefault(r =>
