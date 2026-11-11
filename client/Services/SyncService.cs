@@ -399,6 +399,14 @@ public class SyncService : BackgroundService
         {
             try
             {
+                if (client.Core.UpdatePriority.ShouldYield)
+                {
+                    // Silent upgrade in flight — free NIC/CPU for the installer download.
+                    CompletePass(drainedAll: true);
+                    await _syncSignal.WaitAsync(TimeSpan.FromSeconds(15), stoppingToken);
+                    continue;
+                }
+
                 if (!await RefreshEmployeeInfoAsync(stoppingToken))
                 {
                     // Not logged in yet — poll until employee credentials persist (Login flow).

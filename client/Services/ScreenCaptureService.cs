@@ -323,11 +323,19 @@ public sealed class ScreenCaptureService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (!_streamActive)
+            if (client.Core.UpdatePriority.ShouldYield || !_streamActive)
             {
+                if (client.Core.UpdatePriority.ShouldYield)
+                    _streamActive = false;
                 adaptiveFps = fps;
                 interval = TimeSpan.FromMilliseconds(1000.0 / adaptiveFps);
-                try { Task.Delay(200, stoppingToken).GetAwaiter().GetResult(); }
+                try
+                {
+                    Task.Delay(
+                            client.Core.UpdatePriority.ShouldYield ? 1000 : 200,
+                            stoppingToken)
+                        .GetAwaiter().GetResult();
+                }
                 catch (OperationCanceledException) { break; }
                 continue;
             }

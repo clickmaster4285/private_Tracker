@@ -188,6 +188,17 @@ function AppAllowListInner() {
     setDialogOpen(true);
   };
 
+  const pathTrimmed = pathOverride.trim();
+  const noteTrimmed = note.trim();
+  /** Path-only allow: no catalog row and not the Windows Settings preset. */
+  const isPathOnlyAllow =
+    !editing && !selectedCatalog && !useWindowsSettingsPreset && pathTrimmed.length > 0;
+  const canSubmitAllow =
+    !!editing ||
+    useWindowsSettingsPreset ||
+    !!selectedCatalog ||
+    (pathTrimmed.length > 0 && noteTrimmed.length > 0);
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       const wasEdit = !!editing;
@@ -199,8 +210,7 @@ function AppAllowListInner() {
           product: 'windows.immersivecontrolpanel_cw5n1h2txyewy',
           note: note || 'Windows Settings (Win10/11)',
         });
-      } else {
-        if (!selectedCatalog) throw new Error('Select an application or use Windows Settings');
+      } else if (selectedCatalog) {
         if (isLinuxSettingsBinary(selectedCatalog.binaryName) && !pathOverride.trim()) {
           throw new Error(
             'That catalog entry is Linux (cinnamon/gnome), not Windows Settings. Use “Windows Settings (Win10/11)” or enter a path like C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe',
@@ -211,6 +221,16 @@ function AppAllowListInner() {
           path: pathOverride.trim() || undefined,
           note: note || undefined,
         });
+      } else {
+        const path = pathOverride.trim();
+        const pathNote = note.trim();
+        if (!path) {
+          throw new Error('Enter an install path, pick a catalog app, or use Windows Settings');
+        }
+        if (!pathNote) {
+          throw new Error('Note is required when allowing by path only');
+        }
+        await dlpApi.lockdown.apps.create({ path, note: pathNote });
       }
       const pub = await dlpApi.rules.publish();
       return { wasEdit, pub };
@@ -541,14 +561,22 @@ function AppAllowListInner() {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">
-                    Install path override (optional)
+                    {selectedCatalog || useWindowsSettingsPreset
+                      ? 'Install path override (optional)'
+                      : 'Install path (standalone OK)'}
                   </label>
                   <Input
                     value={pathOverride}
                     onChange={(e) => setPathOverride(e.target.value)}
-                    placeholder={WIN10_SETTINGS_PATH}
+                    placeholder="C:\\Users\\…\\Downloads\\v1.4.2.exe"
                     className="mt-1 font-mono text-xs"
                   />
+                  {!selectedCatalog && !useWindowsSettingsPreset && (
+                    <p className="text-[11px] text-muted-foreground mt-1.5 leading-snug">
+                      You can allow by path alone (no catalog pick). A note is then required
+                      (e.g. one-off installers under Downloads).
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -561,11 +589,17 @@ function AppAllowListInner() {
               </p>
             )}
             <div>
-              <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>
+              <label className="text-xs font-medium text-muted-foreground">
+                {isPathOnlyAllow ? 'Note (required)' : 'Note (optional)'}
+              </label>
               <Input
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="Why this app is allowed"
+                placeholder={
+                  isPathOnlyAllow
+                    ? 'Required — why this path is allowed'
+                    : 'Why this app is allowed'
+                }
                 className="mt-1"
               />
             </div>
@@ -574,10 +608,7 @@ function AppAllowListInner() {
                 Cancel
               </Button>
               <Button
-                disabled={
-                  (!editing && !selectedCatalog && !useWindowsSettingsPreset) ||
-                  saveMutation.isPending
-                }
+                disabled={!canSubmitAllow || saveMutation.isPending}
                 onClick={() => saveMutation.mutate()}
               >
                 {saveMutation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-1" />}

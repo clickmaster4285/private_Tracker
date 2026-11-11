@@ -561,6 +561,7 @@ public class AppUpdateService : ObservableObject, IHostedService
     private async Task DownloadAndInstallAsync(
         UpdateInfo info, CancellationToken ct, bool userApprovedWindowsInstaller = false)
     {
+        client.Core.UpdatePriority.SetLocal(info.Version, "gui_download");
         try
         {
             await DownloadAsync(info, ct);
@@ -589,6 +590,14 @@ public class AppUpdateService : ObservableObject, IHostedService
             // Keep the banner + install button available for a manual retry.
             StatusText = $"Update failed: {ex.Message}";
             _logger.LogWarning(ex, "Update install failed");
+        }
+        finally
+        {
+            // Windows silent path clears via the service helper; GUI/Linux clears here.
+            if (!OperatingSystem.IsWindows())
+                client.Core.UpdatePriority.ClearLocal();
+            else
+                client.Core.UpdatePriority.Invalidate();
         }
     }
 

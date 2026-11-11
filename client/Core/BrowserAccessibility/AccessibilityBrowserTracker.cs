@@ -136,6 +136,12 @@ public sealed class AccessibilityBrowserTracker : BackgroundService
         {
             try
             {
+                if (UpdatePriority.ShouldYield)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+                    continue;
+                }
+
                 await PollOnceAsync(stoppingToken);
             }
             catch (OperationCanceledException)

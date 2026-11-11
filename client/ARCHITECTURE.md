@@ -1,7 +1,9 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-11 (silent update TTL + download jitter)
+> **Last audited:** 2026-11-11 (update-priority yield)
 > **Changelog:**
+> - 2026-11-11: **Update-priority yield.** Newer release → `update_priority` flag; tracker parks
+>   sync/live/screenshots/collectors so download+apply run first (auto jitter ≤120s). **VERSION 1.4.2**.
 > - 2026-11-11: **Silent update `update_in_progress` TTL + fleet download jitter.** Orphan/TTL
 >   clear so watchdog relaunches; clear flag if helper spawn fails; post-Inno service restart
 >   for AppLocker v6; `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` + Retry-After on downloads. **VERSION 1.3.7**.

@@ -3,6 +3,19 @@
 > **Last audited:** 2026-11-11
 > **Changelog:**
 >
+> - 2026-11-11: **Allowlists apps — path-only allow (web).** `/allowlists/apps` “Allow
+>   application” no longer requires a catalog pick or Windows Settings: enter a full EXE
+>   path alone and **Allow & publish** enables when a **note** is also filled (note stays
+>   optional for catalog / Settings preset). Posts `POST /dlp/lockdown/apps` with `path` +
+>   `note` (server already supported path-only). Verified: `npx tsc --noEmit` as available.
+>
+> - 2026-11-11: **Update-priority yield (client + DlpService).** When a newer release will
+>   auto/force install, `update_priority` is set and the tracker yields sync / live-stream /
+>   screenshots / collectors / browser a11y so download+Inno run first (auto jitter capped at
+>   120s; server `RELEASE_DOWNLOAD_MAX_CONCURRENT` still admits the fleet). Cleared on apply
+>   success/fail/TTL. Client **VERSION 1.4.2**. Verified: `dotnet build` client + DlpService.
+>   Installer-Parity: next Windows installer.
+>
 > - 2026-11-11: **Silent update stuck flag + fleet download admission (client + server).** Lab dump
 >   showed `update_in_progress` left after a second apply arm (helper never logged) → watchdog
 >   never relaunched and auto-update stayed parked; Edge AppLocker XML stayed on bad

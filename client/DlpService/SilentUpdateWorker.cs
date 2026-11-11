@@ -179,6 +179,7 @@ public sealed class SilentUpdateWorker : BackgroundService
             _state.SetVersions(current, info.Version);
             if (UpdateVersion.Compare(info.Version, current) <= 0)
             {
+                UpdatePaths.ClearUpdatePriority();
                 _state.MarkSuccess();
                 _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
                 _log.LogDebug("Silent update: already on {Ver}", current);
@@ -187,6 +188,7 @@ public sealed class SilentUpdateWorker : BackgroundService
 
             if (!_cfg.UpdateAutoInstall && !force)
             {
+                // Banner-only: do not park tracker features until the user clicks Update.
                 _state.Set("available", $"update_available:{info.Version}");
                 return;
             }
@@ -194,24 +196,30 @@ public sealed class SilentUpdateWorker : BackgroundService
             // GUI force may retry after apply_failed; automatic ticks keep the 1h guard.
             if (!force && RecentlyFailedApply(info.Version))
             {
+                UpdatePaths.ClearUpdatePriority();
                 _state.Set("available", $"apply_failed_retry_later:{info.Version}");
                 _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
                 return;
             }
 
+            // Upgrade wins: tracker yields sync/live/screenshots while we download/apply.
+            UpdatePaths.SetUpdatePriority(info.Version, force ? "force" : "auto");
+            _state.Set("priority", $"update_priority:{info.Version}");
+
             if (!await WaitDownloadJitterAsync(info.Version, force, ct))
             {
-                _state.Set("available", $"download_jitter:{info.Version}");
+                _state.Set("priority", $"download_jitter:{info.Version}");
                 return;
             }
 
             _log.LogInformation(
-                "Silent update: downloading {Asset} ({From} → {To})",
+                "Silent update: downloading {Asset} ({From} → {To}) — features yielding",
                 info.AssetName, current, info.Version);
 
             var installerPath = await DownloadChunkedAsync(info, ct);
             if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
             {
+                UpdatePaths.ClearUpdatePriority();
                 _state.MarkFailure("installer_missing_after_download");
                 ScheduleBackoff();
                 return;
@@ -341,13 +349,16 @@ public sealed class SilentUpdateWorker : BackgroundService
 
     /// <summary>
     /// Spread fleet downloads. Returns false when this tick should wait (not due yet).
-    /// Force (GUI) uses ≤30s jitter so Update stays responsive.
+    /// Force (GUI) uses ≤30s jitter. Auto priority caps at 120s so upgrade stays ahead of
+    /// other features while the server global download gate still admits the fleet.
     /// </summary>
     private async Task<bool> WaitDownloadJitterAsync(string version, bool force, CancellationToken ct)
     {
+        const int priorityAutoCapSec = 120;
+        var configured = Math.Max(0, _cfg.UpdateDownloadJitterSec);
         var windowSec = force
-            ? Math.Min(30, Math.Max(0, _cfg.UpdateDownloadJitterSec))
-            : Math.Max(0, _cfg.UpdateDownloadJitterSec);
+            ? Math.Min(30, configured)
+            : Math.Min(priorityAutoCapSec, configured);
         if (windowSec <= 0)
             return true;
 
@@ -556,11 +567,13 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine($"$newVersion = '{PsQuote(newVersion)}'");
         sb.AppendLine($"$oldVersion = '{PsQuote(oldVersion)}'");
         sb.AppendLine($"$failedFlag = '{PsQuote(UpdatePaths.ApplyFailedPath)}'");
+        sb.AppendLine($"$priorityFlag = '{PsQuote(UpdatePaths.PriorityFlag)}'");
         sb.AppendLine($"$serviceName = '{PsQuote(serviceName)}'");
         sb.AppendLine("if (-not (Test-Path -LiteralPath $installer)) {");
         sb.AppendLine("  Write-UpdateLog 'Installer file missing before launch'");
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("  Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  exit 1");
         sb.AppendLine("}");
         // Stop tracker so Program Files files unlock (Inno also CloseApplications=force).
@@ -582,12 +595,14 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("  Write-UpdateLog (\"Installer failed: {0}\" -f $_.Exception.Message)");
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("  Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  exit 1");
         sb.AppendLine("}");
         sb.AppendLine("if ($exitCode -ne 0) {");
         sb.AppendLine("  Write-UpdateLog 'Installer non-zero exit — clearing in_progress'");
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("  Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  exit $exitCode");
         sb.AppendLine("}");
         sb.AppendLine("Start-Sleep -Seconds 3");
@@ -604,6 +619,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         // No celebration toast — delete any leftover celebrate.json from older helpers.
         sb.AppendLine("Remove-Item -LiteralPath $celebrate -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $failedFlag -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Get-ChildItem -LiteralPath $updatesDir -Filter '*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue");
@@ -629,6 +645,7 @@ public sealed class SilentUpdateWorker : BackgroundService
             if (started is null)
             {
                 UpdatePaths.ClearInProgress();
+                UpdatePaths.ClearUpdatePriority();
                 _state.MarkFailure("helper_spawn_null");
                 ScheduleBackoff();
                 _log.LogError("Silent update: Process.Start returned null — cleared update_in_progress");
@@ -638,6 +655,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         catch (Exception ex)
         {
             UpdatePaths.ClearInProgress();
+            UpdatePaths.ClearUpdatePriority();
             _state.MarkFailure("helper_spawn_failed");
             ScheduleBackoff();
             _log.LogError(ex, "Silent update: helper spawn failed — cleared update_in_progress");

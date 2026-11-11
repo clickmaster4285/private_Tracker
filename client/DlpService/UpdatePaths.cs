@@ -28,6 +28,11 @@ internal static class UpdatePaths
     /// <summary>Legacy path — only cleared, never written (celebration UI removed).</summary>
     public static string CelebrateFlag => Path.Combine(RootDir, "celebrate.json");
     public static string ApplyScriptPath => Path.Combine(RootDir, "aat_update_apply.ps1");
+    /// <summary>
+    /// Written while a newer release is queued/downloading/applying so the tracker
+    /// yields CPU/bandwidth (sync/live/screenshots) until the upgrade finishes.
+    /// </summary>
+    public static string PriorityFlag => Path.Combine(RootDir, "update_priority");
 
     public static bool IsUpdateInProgress()
     {
@@ -65,6 +70,7 @@ internal static class UpdatePaths
             if (age > ttl)
             {
                 ClearInProgress();
+                ClearUpdatePriority();
                 TryDeleteApplyScript();
                 reason = $"ttl_exceeded:{age.TotalMinutes:0}m";
                 return true;
@@ -74,6 +80,7 @@ internal static class UpdatePaths
             if (!hasPayload && age > OrphanGrace)
             {
                 ClearInProgress();
+                ClearUpdatePriority();
                 TryDeleteApplyScript();
                 reason = "orphan_no_installer";
                 return true;
@@ -120,6 +127,43 @@ internal static class UpdatePaths
     public static void ClearCelebrate()
     {
         try { if (File.Exists(CelebrateFlag)) File.Delete(CelebrateFlag); } catch { /* ignore */ }
+    }
+
+    public static void SetUpdatePriority(string version, string reason)
+    {
+        try
+        {
+            EnsureRoot();
+            File.WriteAllText(
+                PriorityFlag,
+                $"{DateTime.UtcNow:o}\n{version.Trim()}\n{reason.Trim()}\n");
+        }
+        catch { /* ignore */ }
+    }
+
+    public static void ClearUpdatePriority()
+    {
+        try { if (File.Exists(PriorityFlag)) File.Delete(PriorityFlag); } catch { /* ignore */ }
+    }
+
+    public static bool IsUpdatePriorityActive()
+    {
+        try
+        {
+            if (IsUpdateInProgress()) return true;
+            if (!File.Exists(PriorityFlag)) return false;
+            // Stale priority (>2h) must not park the tracker forever.
+            if (DateTime.UtcNow - File.GetLastWriteTimeUtc(PriorityFlag) > TimeSpan.FromHours(2))
+            {
+                ClearUpdatePriority();
+                return false;
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static string? ReadInProgressVersion()
