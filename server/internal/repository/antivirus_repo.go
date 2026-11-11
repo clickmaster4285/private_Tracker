@@ -248,47 +248,125 @@ func (r *AntivirusRepo) ListStatus(ctx context.Context, f AntivirusListFilter) (
 
 // ── Remote commands ─────────────────────────────────────────────────────────
 
-// CreateCommand queues a remote action; requestedBy may be "" (SET NULL).
-func (r *AntivirusRepo) CreateCommand(ctx context.Context, employeeID, machineID, cmdType, arg, requestedBy string) (int64, error) {
+// CreateCommand queues a remote action; requestedBy may be "" (SET NULL). An identical
+// command (same machine/type/arg) that is still pending is reused instead of duplicated.
+// Returns the id and whether an existing pending command was reused.
+func (r *AntivirusRepo) CreateCommand(ctx context.Context, employeeID, machineID, cmdType, arg, requestedBy string) (int64, bool, error) {
+	arg = trimTo(arg, 1000)
+	var existing int64
+	err := r.pool.QueryRow(ctx, `
+		SELECT id FROM antivirus_commands
+		WHERE employee_id = $1 AND machine_id = $2 AND type = $3 AND arg = $4 AND status = 'pending'
+		ORDER BY created_at DESC LIMIT 1`, employeeID, machineID, cmdType, arg).Scan(&existing)
+	if err == nil && existing > 0 {
+		return existing, true, nil
+	}
 	var by any
 	if requestedBy != "" {
 		by = requestedBy
 	}
 	var id int64
-	err := r.pool.QueryRow(ctx, `
+	err = r.pool.QueryRow(ctx, `
 		INSERT INTO antivirus_commands (employee_id, machine_id, type, arg, requested_by)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id`,
-		employeeID, machineID, cmdType, trimTo(arg, 1000), by).Scan(&id)
-	return id, err
+		employeeID, machineID, cmdType, arg, by).Scan(&id)
+	return id, false, err
 }
 
-// ListCommands returns the most recent commands for one machine (admin view).
-func (r *AntivirusRepo) ListCommands(ctx context.Context, employeeID, machineID string, limit int) ([]dto.AntivirusCommandRow, error) {
-	if limit < 1 || limit > 100 {
-		limit = 25
+// MachineReports reports whether this (employee, machine) has ever sent antivirus status —
+// a command for an unknown machine would never be pulled.
+func (r *AntivirusRepo) MachineReports(ctx context.Context, employeeID, machineID string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM antivirus_status WHERE employee_id = $1 AND machine_id = $2)`,
+		employeeID, machineID).Scan(&ok)
+	return ok, err
+}
+
+// AntivirusCommandFilter — fleet / per-machine command history (URL-synced on the web).
+type AntivirusCommandFilter struct {
+	EmployeeID string
+	MachineID  string
+	Status     string
+	Type       string
+	Search     string
+	Page       int
+	PerPage    int
+}
+
+// ListCommands returns one page of command history, newest first (admin view).
+func (r *AntivirusRepo) ListCommands(ctx context.Context, f AntivirusCommandFilter) ([]dto.AntivirusCommandRow, int, error) {
+	if f.Page < 1 {
+		f.Page = 1
 	}
-	rows, err := r.pool.Query(ctx, `
-		SELECT id, employee_id, machine_id, type, arg, status, result,
-		       requested_by::text, created_at, dispatched_at, completed_at
-		FROM antivirus_commands
-		WHERE employee_id = $1 AND ($2 = '' OR machine_id = $2)
-		ORDER BY created_at DESC
-		LIMIT $3`, employeeID, machineID, limit)
+	if f.PerPage < 1 || f.PerPage > 100 {
+		f.PerPage = 30
+	}
+	conds := []string{"1=1"}
+	args := []any{}
+	add := func(cond string, v any) {
+		args = append(args, v)
+		conds = append(conds, fmt.Sprintf(cond, len(args)))
+	}
+	if v := strings.TrimSpace(f.EmployeeID); v != "" {
+		add("c.employee_id = $%d", v)
+	}
+	if v := strings.TrimSpace(f.MachineID); v != "" {
+		add("c.machine_id = $%d", v)
+	}
+	if v := strings.TrimSpace(f.Status); v != "" {
+		add("c.status = $%d", v)
+	}
+	if v := strings.TrimSpace(f.Type); v != "" {
+		add("c.type = $%d", v)
+	}
+	if q := strings.TrimSpace(f.Search); q != "" {
+		args = append(args, "%"+strings.ToLower(q)+"%")
+		n := len(args)
+		conds = append(conds, fmt.Sprintf(
+			"(LOWER(COALESCE(e.name,'')) LIKE $%d OR LOWER(c.employee_id) LIKE $%d OR LOWER(c.machine_id) LIKE $%d OR LOWER(COALESCE(h.device_name,'')) LIKE $%d OR LOWER(c.arg) LIKE $%d)",
+			n, n, n, n, n))
+	}
+	from := `
+		FROM antivirus_commands c
+		LEFT JOIN employees e ON e.employee_id = c.employee_id AND e.deleted_at IS NULL
+		LEFT JOIN users u ON u.id = c.requested_by
+		LEFT JOIN LATERAL (
+		    SELECT d.device_name FROM employee_devices d
+		    WHERE d.employee_id = c.employee_id AND d.machine_id = c.machine_id AND d.device_name <> ''
+		    ORDER BY d.last_seen_at DESC LIMIT 1
+		) h ON TRUE
+		WHERE ` + strings.Join(conds, " AND ")
+
+	var total int
+	if err := r.pool.QueryRow(ctx, "SELECT COUNT(*) "+from, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	args = append(args, f.PerPage, (f.Page-1)*f.PerPage)
+	n := len(args)
+	rows, err := r.pool.Query(ctx, fmt.Sprintf(`
+		SELECT c.id, c.employee_id, COALESCE(e.name,''), c.machine_id, COALESCE(h.device_name,''),
+		       c.type, c.arg, c.status, c.result, c.requested_by::text, COALESCE(u.name,''),
+		       c.created_at, c.dispatched_at, c.completed_at
+		%s
+		ORDER BY c.created_at DESC, c.id DESC
+		LIMIT $%d OFFSET $%d`, from, n-1, n), args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	out := make([]dto.AntivirusCommandRow, 0)
 	for rows.Next() {
 		var x dto.AntivirusCommandRow
-		if err := rows.Scan(&x.ID, &x.EmployeeID, &x.MachineID, &x.Type, &x.Arg, &x.Status,
-			&x.Result, &x.RequestedBy, &x.CreatedAt, &x.DispatchedAt, &x.CompletedAt); err != nil {
-			return nil, err
+		if err := rows.Scan(&x.ID, &x.EmployeeID, &x.EmployeeName, &x.MachineID, &x.Hostname,
+			&x.Type, &x.Arg, &x.Status, &x.Result, &x.RequestedBy, &x.RequestedByName,
+			&x.CreatedAt, &x.DispatchedAt, &x.CompletedAt); err != nil {
+			return nil, 0, err
 		}
 		out = append(out, x)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }
 
 // PullPending atomically claims up to max pending commands for the calling device
@@ -345,8 +423,9 @@ func (r *AntivirusRepo) ExpireStaleCommands(ctx context.Context, employeeID, mac
 		UPDATE antivirus_commands
 		SET status = 'expired', completed_at = NOW()
 		WHERE employee_id = $1 AND machine_id = $2
-		  AND status IN ('pending', 'running')
-		  AND created_at < NOW() - INTERVAL '6 hours'`, employeeID, machineID)
+		  AND ((status = 'pending' AND created_at < NOW() - INTERVAL '24 hours')
+		    OR (status = 'running' AND COALESCE(dispatched_at, created_at) < NOW() - INTERVAL '14 hours'))`,
+		employeeID, machineID)
 }
 
 func trimTo(s string, max int) string {

@@ -144,9 +144,12 @@ type CreateAntivirusCommandRequest struct {
 
 // AntivirusCommandRow is one queued/finished command (admin view).
 type AntivirusCommandRow struct {
-	ID           int64      `json:"id"`
-	EmployeeID   string     `json:"employeeId"`
-	MachineID    string     `json:"machineId"`
+	ID              int64      `json:"id"`
+	EmployeeID      string     `json:"employeeId"`
+	EmployeeName    string     `json:"employeeName"`
+	MachineID       string     `json:"machineId"`
+	Hostname        string     `json:"hostname"`
+	RequestedByName string     `json:"requestedByName"`
 	Type         string     `json:"type"`
 	Arg          string     `json:"arg"`
 	Status       string     `json:"status"`
@@ -158,7 +161,11 @@ type AntivirusCommandRow struct {
 }
 
 type AntivirusCommandListResponse struct {
-	Data []AntivirusCommandRow `json:"data"`
+	Data       []AntivirusCommandRow `json:"data"`
+	Total      int                   `json:"total"`
+	Page       int                   `json:"page"`
+	PerPage    int                   `json:"perPage"`
+	TotalPages int                   `json:"totalPages"`
 }
 
 // AntivirusCommandDevice is the slim shape the Windows service pulls (DeviceAuth).
@@ -178,4 +185,79 @@ type AntivirusCommandResultRequest struct {
 	ID     int64  `json:"id"`
 	Status string `json:"status"` // running | done | failed
 	Result string `json:"result"`
+}
+
+// ── Per-threat inventory (snapshot sync + admin list) ───────────────────────
+
+// AntivirusThreatEntry is one Defender threat as read on the device
+// (Get-MpThreat + newest Get-MpThreatDetection for that ThreatID).
+type AntivirusThreatEntry struct {
+	ThreatID           string     `json:"threatId"` // Int64 as string (JSON-safe)
+	ThreatName         string     `json:"threatName"`
+	Severity           string     `json:"severity"`
+	Category           string     `json:"category"`
+	Status             string     `json:"status"`
+	IsActive           bool       `json:"isActive"`
+	DidExecute         bool       `json:"didExecute"`
+	Resources          []string   `json:"resources"`
+	ProcessName        string     `json:"processName"`
+	DetectionUser      string     `json:"detectionUser"`
+	DetectionSource    string     `json:"detectionSource"`
+	InitialDetectionAt *time.Time `json:"initialDetectionAt"`
+	LastStatusChangeAt *time.Time `json:"lastStatusChangeAt"`
+}
+
+// SyncAntivirusThreatsRequest is a FULL per-machine snapshot
+// (POST /api/v1/antivirus/threats/sync). Rows missing from it are deleted for that
+// machine — unless Error is set (probe failed), in which case nothing is deleted.
+type SyncAntivirusThreatsRequest struct {
+	EmployeeID string `json:"-"`
+	MachineID  string `json:"-"`
+
+	Threats []AntivirusThreatEntry `json:"threats"`
+	Error   string                 `json:"error"`
+}
+
+// AntivirusThreatRow is one threat in the admin view. PendingCommand is server-projected
+// (latest pending/running remove_threat / restore_threat for this ThreatID).
+type AntivirusThreatRow struct {
+	ID                 int64      `json:"id"`
+	EmployeeID         string     `json:"employeeId"`
+	EmployeeName       string     `json:"employeeName"`
+	MachineID          string     `json:"machineId"`
+	Hostname           string     `json:"hostname"`
+	ThreatID           string     `json:"threatId"`
+	ThreatName         string     `json:"threatName"`
+	Severity           string     `json:"severity"`
+	Category           string     `json:"category"`
+	Status             string     `json:"status"`
+	IsActive           bool       `json:"isActive"`
+	DidExecute         bool       `json:"didExecute"`
+	Resources          []string   `json:"resources"`
+	ProcessName        string     `json:"processName"`
+	DetectionUser      string     `json:"detectionUser"`
+	DetectionSource    string     `json:"detectionSource"`
+	InitialDetectionAt *time.Time `json:"initialDetectionAt"`
+	LastStatusChangeAt *time.Time `json:"lastStatusChangeAt"`
+	FirstSyncedAt      time.Time  `json:"firstSyncedAt"`
+	SyncedAt           time.Time  `json:"syncedAt"`
+	PendingCommand     *string    `json:"pendingCommand"` // remove_threat | restore_threat | null
+}
+
+type AntivirusThreatCounts struct {
+	Total       int `json:"total"`
+	Active      int `json:"active"`
+	Quarantined int `json:"quarantined"`
+	Removed     int `json:"removed"`
+	Failed      int `json:"failed"`
+	Allowed     int `json:"allowed"`
+}
+
+type AntivirusThreatListResponse struct {
+	Data       []AntivirusThreatRow  `json:"data"`
+	Total      int                   `json:"total"`
+	Page       int                   `json:"page"`
+	PerPage    int                   `json:"perPage"`
+	TotalPages int                   `json:"totalPages"`
+	Counts     AntivirusThreatCounts `json:"counts"`
 }
