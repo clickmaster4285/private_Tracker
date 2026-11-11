@@ -68,7 +68,8 @@ internal sealed class TrackerWatchdogWorker : BackgroundService
         if (File.Exists(TeardownGate.PathIn(_cfg.DataDir)))
             return;
 
-        if (UpdatePaths.IsUpdateInProgress())
+        // Stale update_in_progress (failed helper) must not park relaunch forever.
+        if (UpdatePaths.IsUpdateInProgressBlocking())
             return;
 
         if (!DeviceCredentialStore.TryLoad(out _, out var tok) || string.IsNullOrWhiteSpace(tok))

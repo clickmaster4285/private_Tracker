@@ -260,9 +260,23 @@ internal static class AppAllowEnforcer
             appxProducts.Add(family);
     }
 
-    private static string NormalizeAppLockerPath(string path)
+    /// <summary>
+    /// Map filesystem paths to AppLocker path variables. AppLocker only understands
+    /// %WINDIR%/%SYSTEM32%/%OSDRIVE%/%PROGRAMFILES% (not %PROGRAMFILES(X86)%).
+    /// Per MS docs, %PROGRAMFILES% covers both Program Files and Program Files (x86).
+    /// Matching must use a directory boundary and check PF(x86) before PF — otherwise
+    /// <c>C:\Program Files (x86)\…</c> becomes the invalid
+    /// <c>%PROGRAMFILES% (x86)\…</c> (StartsWith "Program Files" eats the x86 root).
+    /// </summary>
+    internal static string NormalizeAppLockerPath(string path)
     {
         var p = path.Trim().Replace('/', '\\');
+        // Legacy invalid macros from older builds — rewrite so Apply re-emits valid XML.
+        if (p.StartsWith("%PROGRAMFILES(X86)%", StringComparison.OrdinalIgnoreCase))
+            p = "%PROGRAMFILES%" + p["%PROGRAMFILES(X86)%".Length..];
+        // Broken form produced when PF matched before PF(x86): "%PROGRAMFILES% (x86)\…"
+        if (p.StartsWith("%PROGRAMFILES% (x86)", StringComparison.OrdinalIgnoreCase))
+            p = "%PROGRAMFILES%" + p["%PROGRAMFILES% (x86)".Length..];
         if (p.StartsWith("%", StringComparison.Ordinal))
             return p;
 
@@ -270,15 +284,29 @@ internal static class AppAllowEnforcer
         var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrEmpty(sys) && p.StartsWith(sys, StringComparison.OrdinalIgnoreCase))
+        if (StartsWithDir(p, sys))
             return "%SYSTEM32%" + p[sys.Length..];
-        if (!string.IsNullOrEmpty(windir) && p.StartsWith(windir, StringComparison.OrdinalIgnoreCase))
+        if (StartsWithDir(p, windir))
             return "%WINDIR%" + p[windir.Length..];
-        if (!string.IsNullOrEmpty(pf) && p.StartsWith(pf, StringComparison.OrdinalIgnoreCase))
+        // PF(x86) before PF — "C:\Program Files" is a prefix of "C:\Program Files (x86)".
+        if (StartsWithDir(p, pf86))
+            return "%PROGRAMFILES%" + p[pf86.Length..];
+        if (StartsWithDir(p, pf))
             return "%PROGRAMFILES%" + p[pf.Length..];
-        if (!string.IsNullOrEmpty(pf86) && p.StartsWith(pf86, StringComparison.OrdinalIgnoreCase))
-            return "%PROGRAMFILES(X86)%" + p[pf86.Length..];
         return p;
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is <paramref name="dir"/> or <paramref name="dir"/> + '\'.
+    /// Prevents <c>C:\Program Files</c> from matching <c>C:\Program Files (x86)\…</c>.
+    /// </summary>
+    private static bool StartsWithDir(string path, string? dir)
+    {
+        if (string.IsNullOrEmpty(dir))
+            return false;
+        if (!path.StartsWith(dir, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return path.Length == dir.Length || path[dir.Length] == '\\';
     }
 
     private static string Fingerprint(
@@ -288,7 +316,7 @@ internal static class AppAllowEnforcer
         SortedSet<string> systemOnlyPaths)
     {
         var sb = new StringBuilder();
-        sb.Append("v4;");
+        sb.Append("v6;");
         foreach (var p in paths) sb.Append("P:").Append(p).Append(';');
         foreach (var p in systemOnlyPaths) sb.Append("S:").Append(p).Append(';');
         foreach (var (pub, prod) in publishers.OrderBy(x => x.Publisher + "|" + x.Product, StringComparer.OrdinalIgnoreCase))

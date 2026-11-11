@@ -142,6 +142,7 @@ $defaults = [ordered]@{
     "ALPHA_UPDATE_ENABLED"            = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_ENABLED" "true")
     "ALPHA_UPDATE_AUTO_INSTALL"       = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_AUTO_INSTALL" "true")
     "ALPHA_UPDATE_CHECK_INTERVAL_SEC" = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_CHECK_INTERVAL_SEC" "60")
+    "ALPHA_UPDATE_DOWNLOAD_JITTER_SEC" = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_DOWNLOAD_JITTER_SEC" "3600")
 }
 if ($ServerUrl) { $defaults["ALPHA_SERVER_URL"] = $ServerUrl }
 Write-Host "service.env from .env: POLICY_POLL=$($defaults['ALPHA_DLP_POLICY_POLL_SEC'])"

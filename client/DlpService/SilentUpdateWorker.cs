@@ -39,6 +39,9 @@ public sealed class SilentUpdateWorker : BackgroundService
     private DateTimeOffset _nextAllowedAttempt = DateTimeOffset.MinValue;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _wake = new(0, 1);
+    /// <summary>Version → UTC instant when download jitter elapses (stable per machine).</summary>
+    private readonly Dictionary<string, DateTimeOffset> _downloadJitterDue =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public SilentUpdateWorker(
         DlpConfig cfg,
@@ -138,6 +141,9 @@ public sealed class SilentUpdateWorker : BackgroundService
         if (!await _gate.WaitAsync(0, ct)) return;
         try
         {
+            if (UpdatePaths.TryClearStaleInProgress(UpdatePaths.InProgressTtl, out var cleared))
+                _log.LogWarning("Silent update: cleared stale update_in_progress ({Reason})", cleared);
+
             if (UpdatePaths.IsUpdateInProgress())
             {
                 _state.Set("applying", "update_in_progress");
@@ -185,10 +191,17 @@ public sealed class SilentUpdateWorker : BackgroundService
                 return;
             }
 
-            if (RecentlyFailedApply(info.Version))
+            // GUI force may retry after apply_failed; automatic ticks keep the 1h guard.
+            if (!force && RecentlyFailedApply(info.Version))
             {
                 _state.Set("available", $"apply_failed_retry_later:{info.Version}");
                 _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
+                return;
+            }
+
+            if (!await WaitDownloadJitterAsync(info.Version, force, ct))
+            {
+                _state.Set("available", $"download_jitter:{info.Version}");
                 return;
             }
 
@@ -197,9 +210,16 @@ public sealed class SilentUpdateWorker : BackgroundService
                 info.AssetName, current, info.Version);
 
             var installerPath = await DownloadChunkedAsync(info, ct);
+            if (string.IsNullOrWhiteSpace(installerPath) || !File.Exists(installerPath))
+            {
+                _state.MarkFailure("installer_missing_after_download");
+                ScheduleBackoff();
+                return;
+            }
+
             _state.Set("applying", "spawning_helper");
             SpawnApplyHelper(installerPath, info.Version, current);
-            // Helper owns the rest; do not clear in_progress here.
+            // Helper owns the rest; do not clear in_progress here on success.
             _nextAllowedAttempt = DateTimeOffset.UtcNow + CheckInterval;
         }
         finally
@@ -319,6 +339,49 @@ public sealed class SilentUpdateWorker : BackgroundService
                ?? forPlatform.FirstOrDefault();
     }
 
+    /// <summary>
+    /// Spread fleet downloads. Returns false when this tick should wait (not due yet).
+    /// Force (GUI) uses ≤30s jitter so Update stays responsive.
+    /// </summary>
+    private async Task<bool> WaitDownloadJitterAsync(string version, bool force, CancellationToken ct)
+    {
+        var windowSec = force
+            ? Math.Min(30, Math.Max(0, _cfg.UpdateDownloadJitterSec))
+            : Math.Max(0, _cfg.UpdateDownloadJitterSec);
+        if (windowSec <= 0)
+            return true;
+
+        if (!_downloadJitterDue.TryGetValue(version, out var due))
+        {
+            var offsetSec = StableJitterOffsetSec(version, windowSec);
+            due = DateTimeOffset.UtcNow.AddSeconds(offsetSec);
+            _downloadJitterDue[version] = due;
+            _log.LogInformation(
+                "Silent update: download jitter {Sec}s for {Ver} (due {Due:o})",
+                offsetSec, version, due);
+        }
+
+        var wait = due - DateTimeOffset.UtcNow;
+        if (wait <= TimeSpan.Zero)
+            return true;
+
+        // Do not block the worker gate for the whole hour — defer to next tick.
+        if (wait > TimeSpan.FromSeconds(5))
+            return false;
+
+        try { await Task.Delay(wait, ct); }
+        catch (OperationCanceledException) { return false; }
+        return true;
+    }
+
+    private static int StableJitterOffsetSec(string version, int windowSec)
+    {
+        if (windowSec <= 0) return 0;
+        var seed = $"{Environment.MachineName}|{ServiceIdentity.AppMutex}|{version}";
+        var hash = seed.GetHashCode(StringComparison.OrdinalIgnoreCase);
+        return (int)((uint)hash % (uint)(windowSec + 1));
+    }
+
     private async Task<string> DownloadChunkedAsync(PendingUpdate info, CancellationToken ct)
     {
         UpdatePaths.EnsureRoot();
@@ -332,90 +395,134 @@ public sealed class SilentUpdateWorker : BackgroundService
             return dest;
         }
 
-        long existing = 0;
-        if (File.Exists(part))
+        const int maxAttempts = 8;
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            existing = new FileInfo(part).Length;
-            if (info.Size > 0 && existing > info.Size)
+            long existing = 0;
+            if (File.Exists(part))
+            {
+                existing = new FileInfo(part).Length;
+                if (info.Size > 0 && existing > info.Size)
+                {
+                    try { File.Delete(part); } catch { /* ignore */ }
+                    existing = 0;
+                }
+            }
+
+            if (File.Exists(dest) && attempt == 1)
+            {
+                try { File.Delete(dest); } catch { /* ignore */ }
+            }
+
+            _state.Set("downloading", info.AssetName, info.Size > 0 ? existing * 100.0 / info.Size : 0);
+
+            var http = _httpFactory.CreateClient("update-download");
+            using var req = new HttpRequestMessage(HttpMethod.Get, info.DownloadUrl);
+            if (existing > 0)
+                req.Headers.Range = new RangeHeaderValue(existing, null);
+
+            using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+
+            if ((int)resp.StatusCode is 429 or 503)
+            {
+                var retryAfter = ParseRetryAfterSeconds(resp) ?? Math.Min(120, 15 * attempt);
+                _log.LogWarning(
+                    "Silent update: download {Status} — waiting {Sec}s (attempt {N}/{Max})",
+                    (int)resp.StatusCode, retryAfter, attempt, maxAttempts);
+                _state.Set("waiting", $"download_retry_after:{retryAfter}");
+                await Task.Delay(TimeSpan.FromSeconds(retryAfter), ct);
+                continue;
+            }
+
+            if (resp.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+            {
+                if (File.Exists(part))
+                {
+                    File.Move(part, dest, overwrite: true);
+                    return dest;
+                }
+            }
+
+            if (resp.StatusCode != System.Net.HttpStatusCode.PartialContent)
+                resp.EnsureSuccessStatusCode();
+
+            var append = resp.StatusCode == System.Net.HttpStatusCode.PartialContent && existing > 0;
+            if (!append && existing > 0)
             {
                 try { File.Delete(part); } catch { /* ignore */ }
                 existing = 0;
             }
-        }
 
-        if (File.Exists(dest))
-        {
-            try { File.Delete(dest); } catch { /* ignore */ }
-        }
+            var total = info.Size > 0
+                ? info.Size
+                : (resp.Content.Headers.ContentLength ?? 0) + (append ? existing : 0);
 
-        _state.Set("downloading", info.AssetName, info.Size > 0 ? existing * 100.0 / info.Size : 0);
-
-        var http = _httpFactory.CreateClient("update-download");
-        using var req = new HttpRequestMessage(HttpMethod.Get, info.DownloadUrl);
-        if (existing > 0)
-            req.Headers.Range = new RangeHeaderValue(existing, null);
-
-        using var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-        if (resp.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
-        {
-            // Server thinks we already have the whole file — treat part as complete.
-            if (File.Exists(part))
+            await using (var src = await resp.Content.ReadAsStreamAsync(ct))
+            await using (var dst = new FileStream(
+                             part,
+                             append ? FileMode.Append : FileMode.Create,
+                             FileAccess.Write,
+                             FileShare.None))
             {
-                File.Move(part, dest, overwrite: true);
-                return dest;
+                var buffer = new byte[256 * 1024];
+                long read = existing;
+                while (true)
+                {
+                    var n = await src.ReadAsync(buffer, ct);
+                    if (n == 0) break;
+                    await dst.WriteAsync(buffer.AsMemory(0, n), ct);
+                    read += n;
+                    if (total > 0)
+                        _state.Set("downloading", info.AssetName, Math.Min(100, read * 100.0 / total));
+                }
+                await dst.FlushAsync(ct);
+            }
+
+            if (info.Size > 0 && new FileInfo(part).Length != info.Size)
+            {
+                throw new InvalidOperationException(
+                    $"download_size_mismatch expected={info.Size} got={new FileInfo(part).Length}");
+            }
+
+            File.Move(part, dest, overwrite: true);
+            _state.Set("downloaded", info.AssetName, 100);
+            return dest;
+        }
+
+        throw new InvalidOperationException("download_retry_exhausted");
+    }
+
+    private static int? ParseRetryAfterSeconds(HttpResponseMessage resp)
+    {
+        if (resp.Headers.RetryAfter?.Delta is { } delta)
+            return Math.Clamp((int)Math.Ceiling(delta.TotalSeconds), 1, 600);
+        if (resp.Headers.RetryAfter?.Date is { } date)
+        {
+            var sec = (int)Math.Ceiling((date - DateTimeOffset.UtcNow).TotalSeconds);
+            return Math.Clamp(sec, 1, 600);
+        }
+        if (resp.Headers.TryGetValues("Retry-After", out var values))
+        {
+            foreach (var v in values)
+            {
+                if (int.TryParse(v, out var sec) && sec > 0)
+                    return Math.Clamp(sec, 1, 600);
             }
         }
-
-        if (resp.StatusCode != System.Net.HttpStatusCode.PartialContent)
-            resp.EnsureSuccessStatusCode();
-
-        // If server ignored Range and returned 200, restart from zero.
-        var append = resp.StatusCode == System.Net.HttpStatusCode.PartialContent && existing > 0;
-        if (!append && existing > 0)
-        {
-            try { File.Delete(part); } catch { /* ignore */ }
-            existing = 0;
-        }
-
-        var total = info.Size > 0
-            ? info.Size
-            : (resp.Content.Headers.ContentLength ?? 0) + (append ? existing : 0);
-
-        await using (var src = await resp.Content.ReadAsStreamAsync(ct))
-        await using (var dst = new FileStream(
-                         part,
-                         append ? FileMode.Append : FileMode.Create,
-                         FileAccess.Write,
-                         FileShare.None))
-        {
-            var buffer = new byte[256 * 1024];
-            long read = existing;
-            while (true)
-            {
-                var n = await src.ReadAsync(buffer, ct);
-                if (n == 0) break;
-                await dst.WriteAsync(buffer.AsMemory(0, n), ct);
-                read += n;
-                if (total > 0)
-                    _state.Set("downloading", info.AssetName, Math.Min(100, read * 100.0 / total));
-            }
-            await dst.FlushAsync(ct);
-        }
-
-        if (info.Size > 0 && new FileInfo(part).Length != info.Size)
-        {
-            throw new InvalidOperationException(
-                $"download_size_mismatch expected={info.Size} got={new FileInfo(part).Length}");
-        }
-
-        File.Move(part, dest, overwrite: true);
-        _state.Set("downloaded", info.AssetName, 100);
-        return dest;
+        return null;
     }
 
     private void SpawnApplyHelper(
         string installerPath, string newVersion, string oldVersion)
     {
+        if (!File.Exists(installerPath))
+        {
+            _log.LogWarning("Silent update: refuse spawn — installer missing at {Path}", installerPath);
+            _state.MarkFailure("installer_missing");
+            ScheduleBackoff();
+            return;
+        }
+
         UpdatePaths.EnsureRoot();
         UpdatePaths.WriteInProgress(newVersion);
 
@@ -427,6 +534,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         var logPath = UpdatePaths.LogPath;
         var inProgress = UpdatePaths.InProgressFlag;
         var updatesDir = UpdatePaths.RootDir;
+        var serviceName = ServiceIdentity.ServiceName;
 
         static string PsQuote(string value) => value.Replace("'", "''");
 
@@ -448,6 +556,13 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine($"$newVersion = '{PsQuote(newVersion)}'");
         sb.AppendLine($"$oldVersion = '{PsQuote(oldVersion)}'");
         sb.AppendLine($"$failedFlag = '{PsQuote(UpdatePaths.ApplyFailedPath)}'");
+        sb.AppendLine($"$serviceName = '{PsQuote(serviceName)}'");
+        sb.AppendLine("if (-not (Test-Path -LiteralPath $installer)) {");
+        sb.AppendLine("  Write-UpdateLog 'Installer file missing before launch'");
+        sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
+        sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("  exit 1");
+        sb.AppendLine("}");
         // Stop tracker so Program Files files unlock (Inno also CloseApplications=force).
         sb.AppendLine("Write-UpdateLog 'Stopping tracker for file replace'");
         sb.AppendLine("Get-Process -Name $procName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue");
@@ -476,6 +591,16 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("  exit $exitCode");
         sb.AppendLine("}");
         sb.AppendLine("Start-Sleep -Seconds 3");
+        // Reload DLP service so AppLocker v6 / new enforcer bits are not left in the old process.
+        sb.AppendLine("Write-UpdateLog (\"Restarting service {0} to load new binary\" -f $serviceName)");
+        sb.AppendLine("try {");
+        sb.AppendLine("  & sc.exe stop $serviceName | Out-Null");
+        sb.AppendLine("  Start-Sleep -Seconds 2");
+        sb.AppendLine("  & sc.exe start $serviceName | Out-Null");
+        sb.AppendLine("  Write-UpdateLog 'Service restart issued'");
+        sb.AppendLine("} catch {");
+        sb.AppendLine("  Write-UpdateLog (\"Service restart failed: {0}\" -f $_.Exception.Message)");
+        sb.AppendLine("}");
         // No celebration toast — delete any leftover celebrate.json from older helpers.
         sb.AppendLine("Remove-Item -LiteralPath $celebrate -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
@@ -490,15 +615,34 @@ public sealed class SilentUpdateWorker : BackgroundService
         File.WriteAllText(scriptPath, sb.ToString());
 
         // Detach so Inno can stop/delete this service without killing the helper.
-        Process.Start(new ProcessStartInfo
+        try
         {
-            FileName = "cmd.exe",
-            Arguments =
-                $"/c start \"\" /MIN powershell.exe -NoProfile -ExecutionPolicy Bypass " +
-                $"-WindowStyle Hidden -File \"{scriptPath}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        });
+            var started = Process.Start(new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments =
+                    $"/c start \"\" /MIN powershell.exe -NoProfile -ExecutionPolicy Bypass " +
+                    $"-WindowStyle Hidden -File \"{scriptPath}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            if (started is null)
+            {
+                UpdatePaths.ClearInProgress();
+                _state.MarkFailure("helper_spawn_null");
+                ScheduleBackoff();
+                _log.LogError("Silent update: Process.Start returned null — cleared update_in_progress");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            UpdatePaths.ClearInProgress();
+            _state.MarkFailure("helper_spawn_failed");
+            ScheduleBackoff();
+            _log.LogError(ex, "Silent update: helper spawn failed — cleared update_in_progress");
+            return;
+        }
 
         _state.Set("applying", $"helper_spawned:{newVersion}");
         _log.LogInformation(
@@ -514,9 +658,13 @@ public sealed class SilentUpdateWorker : BackgroundService
             if (path != null && File.Exists(path))
             {
                 var vi = FileVersionInfo.GetVersionInfo(path);
-                var raw = vi.ProductVersion ?? vi.FileVersion ?? "";
-                var n = UpdateVersion.Normalize(raw);
-                if (n != null) return n;
+                // Prefer FileVersion — ProductVersion may carry +git metadata that still
+                // normalizes, but FileVersion matches the shipped installer VERSION.
+                foreach (var raw in new[] { vi.FileVersion, vi.ProductVersion })
+                {
+                    var n = UpdateVersion.Normalize(raw ?? "");
+                    if (n != null) return n;
+                }
             }
         }
         catch { /* fall through */ }

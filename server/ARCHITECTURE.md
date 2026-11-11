@@ -1,7 +1,15 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-10 (offline-first screenshots)
+> **Last audited:** 2026-11-11 (Edge/Chrome allow path widen)
 > **Changelog:**
+> - 2026-11-11: **Browser allow paths widen to `Application\*`.** `WidenBrowserAllowPath`
+>   (repo) turns Edge/Chrome/EdgeWebView single-EXE inventory paths into
+>   `…\Application\*` so AppLocker covers versioned helpers after updates. Applied in
+>   `resolveInstallIdentity`, `ExpandEnabledAllowApps`, and `CreateAllowApp`.
+>   `wellKnownWindowsAllowPath` adds Microsoft Edge fallback
+>   `C:\Program Files (x86)\Microsoft\Edge\Application\*` when inventory has no path.
+>   Windows inventory join appends `.exe` when `binary_name` lacks an extension.
+>   Verified: `go build`/`go vet` repository+services. Restart API so Publish re-expands.
 > - 2026-11-10: **Screenshots store + API.** Migration **065** `screenshots` index. Files under
 >   `SCREENSHOTS_DIR` (`media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`). DeviceAuth
 >   `POST /screenshots/upload` (multipart WebP, size cap, `RATE_LIMIT_SCREENSHOT_*`); JWT

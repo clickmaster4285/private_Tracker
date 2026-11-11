@@ -648,6 +648,7 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 		if path == "" {
 			path = wellKnownWindowsAllowPath(resolved.BinaryName, resolved.AppName)
 		}
+		path = repository.WidenBrowserAllowPath(path)
 		if product == "" || product == resolved.AppName {
 			if pkg := wellKnownWindowsAppxProduct(resolved.BinaryName, resolved.AppName, path); pkg != "" {
 				product = pkg
@@ -681,6 +682,7 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if !ok {
 		return nil, fmt.Errorf("each allow app needs installedApplicationId, path, publisher, and/or sha256 (64 hex)")
 	}
+	rowIn.Path = repository.WidenBrowserAllowPath(rowIn.Path)
 	appName := rowIn.Product
 	if appName == "" {
 		appName = rowIn.Path
@@ -695,7 +697,8 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	return ptrAllowApp(mapAllowApp(*row)), nil
 }
 
-// wellKnownWindowsAllowPath maps common Windows Settings identities when inventory is missing.
+// wellKnownWindowsAllowPath maps common Windows identities when inventory is missing.
+// Edge uses Application\* so AppLocker covers the stub + versioned helpers after updates.
 func wellKnownWindowsAllowPath(binaryName, appName string) string {
 	key := strings.ToLower(strings.TrimSpace(binaryName) + " " + strings.TrimSpace(appName))
 	switch {
@@ -707,6 +710,11 @@ func wellKnownWindowsAllowPath(binaryName, appName string) string {
 	bin := strings.ToLower(strings.TrimSpace(binaryName))
 	if bin == "systemsettings.exe" || bin == "systemsettings" {
 		return `C:\Windows\ImmersiveControlPanel\SystemSettings.exe`
+	}
+	if bin == "msedge" || bin == "msedge.exe" ||
+		strings.Contains(key, "microsoft edge") ||
+		(strings.Contains(key, "msedge") && !strings.Contains(key, "webview")) {
+		return `C:\Program Files (x86)\Microsoft\Edge\Application\*`
 	}
 	return ""
 }

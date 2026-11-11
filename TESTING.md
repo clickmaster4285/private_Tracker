@@ -70,6 +70,7 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./n
 11. Already-open forbidden apps (pre-lockdown) may still be killed by the sweeper — backup only.
 12. `/allowlists/apps` → pick Calculator from the inventory catalog → auto-publish → Calculator launches; Task Manager still blocked.
 13. Deactivate / delete Calculator → Calculator blocked again on next launch.
+13b. **Edge under Program Files (x86) (installer 1.3.7+):** allow Microsoft Edge from catalog (or path override). Expect Edge launches (org dialog gone). On the PC, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml` must be exactly `%PROGRAMFILES%\Microsoft\Edge\Application\*` — **never** `%PROGRAMFILES(X86)%` and **never** `%PROGRAMFILES% (x86)\…` (the latter was a client bug: matching `Program Files` before `Program Files (x86)`). Silent update restarts `AlphaAITracker.Service` after Inno so v6 normalize is loaded. If `update_in_progress` is stuck, delete it (or wait TTL) so the watchdog relaunches. Publish should emit `Application\*` (not only `msedge.exe`) so versioned helpers stay allowed after Edge updates.
 14. If AppLocker apply fails / `verify=NOT_ENFORCING`: expect apply failure or ENFORCED warning; kill sweeper should still run. Check AppIDSvc, SKU, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml`, Event Log.
 15. **Delete-block (ACL):** lockdown ON + `ALPHA_DLP_DELETE_BLOCK=true` → create/edit a file on Desktop OK; Delete → Access Denied. Same on a second Fixed partition and a USB Removable volume. Explorer desktop stays stable (no ~15s blank flicker). Service log: `Delete-block ACLs ENFORCED`. Marker: `%ProgramData%\<APP_MUTEX>\dlp\delete_block_roots.json`.
 16. Lockdown Off / pause / `ALPHA_DLP_DELETE_BLOCK=false` / protected teardown → Deny Delete ACE removed; delete works again.
@@ -83,6 +84,8 @@ clears leftovers from older builds.
 **Apps:** AppLocker **Exe + Appx** Enforce (Store + Win32 default-deny), MSI empty-deny,
 bootstrap A (product + Explorer/Start/shell Appx families). Catalog picks expand to
 **path** at Publish. Broad Microsoft publisher alone is never used for inbox apps.
+AppLocker path macros: `%PROGRAMFILES%` covers both Program Files roots (do not emit
+`%PROGRAMFILES(X86)%`). Edge/Chrome publish as `…\Application\*` when possible.
 
 **Delete-block:** NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated Users
 on every Fixed/Removable volume root (create/write allowed). SYSTEM/Administrators not denied.

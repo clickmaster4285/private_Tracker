@@ -1,7 +1,25 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-10 (timedatewarning subprocess)
+> **Last audited:** 2026-11-11 (silent update TTL + download jitter)
 > **Changelog:**
+> - 2026-11-11: **Silent update `update_in_progress` TTL + fleet download jitter.** Orphan/TTL
+>   clear so watchdog relaunches; clear flag if helper spawn fails; post-Inno service restart
+>   for AppLocker v6; `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` + Retry-After on downloads. **VERSION 1.3.7**.
+> - 2026-11-11: **AppLocker PF(x86) prefix order.** `NormalizeAppLockerPath` used
+>   `StartsWith(Program Files)` before PF(x86), turning
+>   `C:\Program Files (x86)\Microsoft\Edge\Application\*` into invalid
+>   `%PROGRAMFILES% (x86)\…`. Fix: `StartsWithDir` (boundary `\`) + match PF(x86) first;
+>   rewrite broken `%PROGRAMFILES% (x86)` macros; fingerprint `v6`. **VERSION 1.3.6**.
+>   Verified: `dotnet build` DlpService. Installer-Parity: next Windows installer.
+> - 2026-11-11: **AppLocker Edge allow under Program Files (x86).**
+>   `AppAllowEnforcer.NormalizeAppLockerPath` mapped `Program Files (x86)` to
+>   `%PROGRAMFILES(X86)%`, which AppLocker does not understand (only `%PROGRAMFILES%`,
+>   covering both PF roots per MS docs). Symptom: Task Manager (`%SYSTEM32%`) unblocked;
+>   Edge stayed default-deny. Fix: both PF roots → `%PROGRAMFILES%`; rewrite legacy
+>   `(X86)` macros on apply; fingerprint `v5`. `AppProcessGuard.AddExpandedPaths` emits
+>   matchers for both Program Files roots when expanding `%PROGRAMFILES%` (and still
+>   expands legacy `%PROGRAMFILES(X86)%`). **VERSION 1.3.4**. Verified: `dotnet build`
+>   DlpService. Installer-Parity: next Windows installer.
 > - 2026-11-10: **`--timedatewarning` subprocess.** `TimeDateWarningWorker` (start + hourly):
 >   server-time skew + IP/schedule IANA TZ vs OS; spawns sibling Avalonia process when wrong.
 >   State: `%LocalAppData%/<APP>/timedatewarning/state.json`. Open Date & Time settings; Dismiss
@@ -1055,6 +1073,7 @@ Watchers (IObservableEventSource)          EventCoordinator                 Jour
 | `ALPHA_UPDATE_ENABLED` | true | master switch for self-update (background checks + auto-install + GUI); requires `ALPHA_SERVER_URL` |
 | `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background update checks against the server (min 15); service + GUI |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install when a check finds a newer version (Linux still shows the polkit password dialog) |
+| `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` | 3600 | fleet per-machine silent download delay window (fleet); GUI force ≤30s |
 | `ALPHA_STREAM_ENABLED` | false | master switch for WebRTC live-stream publisher |
 | `ALPHA_STREAM_FPS` | 12 | capture / encode cadence (1–30); may drop under ABR degrade |
 | `ALPHA_STREAM_MAX_WIDTH` | 1920 | scale cap (hard-clamped 320–1920); may drop under ABR |
@@ -1230,6 +1249,7 @@ Two consequences worth knowing before you touch either file:
 | `ALPHA_UPDATE_ENABLED` | true | master switch (service worker + GUI no-op when false) |
 | `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background checks |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install without a click |
+| `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` | 3600 | stable per-machine delay window before silent download (fleet admission); GUI force ≤30s |
 
 ⚠️ **Installers are not code-signed / checksum-verified** — the download is trusted over the API TLS
 (only size is checked against the release list). Signing is a future hardening step. First install still needs
