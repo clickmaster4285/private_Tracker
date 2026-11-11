@@ -2139,4 +2139,123 @@ export const shadowItApi = {
     request<ShadowItApp>(`/shadow-it/apps/${id}`, { method: 'PATCH', body: data }),
 };
 
+// ─── Antivirus (24/7 guard fleet view) ────────────────────────────────────────
+
+export type AntivirusHealth =
+  | 'protected'
+  | 'outdated'
+  | 'realtime_off'
+  | 'disabled'
+  | 'third_party'
+  | 'unavailable'
+  | 'unknown';
+
+export interface AntivirusStatusRow {
+  id: number;
+  employeeId: string;
+  employeeName: string;
+  machineId: string;
+  hostname: string;
+  health: AntivirusHealth;
+  productName: string;
+  runningMode: string;
+  realTimeEnabled: boolean;
+  behaviorMonitorEnabled: boolean;
+  onAccessEnabled: boolean;
+  ioavEnabled: boolean;
+  tamperProtected: boolean;
+  cloudEnabled: boolean;
+  puaEnabled: boolean;
+  networkProtectionEnabled: boolean;
+  signatureVersion: string;
+  signatureAgeDays: number;
+  signatureUpdatedAt: string | null;
+  quickScanAt: string | null;
+  fullScanAt: string | null;
+  engineVersion: string;
+  thirdPartyProducts: string;
+  exclusionCount: number;
+  /** Advanced hardening state (Phase 2). */
+  asrConfigured: number;
+  asrBlock: number;
+  controlledFolderAccess: 'off' | 'audit' | 'block';
+  networkProtectionMode: 'off' | 'audit' | 'block';
+  smartScreenEnabled: boolean;
+  memoryIntegrityEnabled: boolean;
+  credentialGuardEnabled: boolean;
+  emailScanEnabled: boolean;
+  exploitProtectionEnabled: boolean;
+  quarantinedThreatCount: number;
+  hardeningEnabled: boolean;
+  guardEnabled: boolean;
+  lastEnforceAt: string | null;
+  lastTamperAt: string | null;
+  tamperCount24h: number;
+  agentVersion: string;
+  error: string;
+  reportedAt: string;
+  syncedAt: string;
+  /** Server-projected: no report for 30 min (agent offline / PC off). */
+  isStale: boolean;
+  /** Server-projected: malware alerts on this machine in the last 24 h. */
+  threats24h: number;
+}
+
+export interface AntivirusHealthCounts {
+  total: number;
+  protected: number;
+  outdated: number;
+  realtimeOff: number;
+  disabled: number;
+  thirdParty: number;
+  unavailable: number;
+  stale: number;
+  threats24h: number;
+  tampered24h: number;
+}
+
+export interface AntivirusStatusListResponse {
+  data: AntivirusStatusRow[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+  counts: AntivirusHealthCounts;
+}
+
+export type AntivirusCommandType =
+  | 'scan_quick'
+  | 'scan_full'
+  | 'scan_custom'
+  | 'update_signatures'
+  | 'remove_threats'
+  | 'restore_threat';
+
+export interface AntivirusCommandRow {
+  id: number;
+  employeeId: string;
+  machineId: string;
+  type: AntivirusCommandType;
+  arg: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'expired';
+  result: string;
+  requestedBy: string | null;
+  createdAt: string;
+  dispatchedAt: string | null;
+  completedAt: string | null;
+}
+
+export const antivirusApi = {
+  listStatus: (params?: { search?: string; health?: string; page?: number; perPage?: number }) =>
+    request<AntivirusStatusListResponse>('/antivirus/status', {
+      params: params as Record<string, string | number | undefined>,
+    }),
+  queueCommand: (body: { employeeId: string; machineId: string; type: AntivirusCommandType; arg?: string }) =>
+    request<{ id: number; queued: boolean }>('/antivirus/commands', { method: 'POST', body }),
+  listCommands: (params: { employeeId: string; machineId?: string; limit?: number }) =>
+    request<{ data: AntivirusCommandRow[] }>('/antivirus/commands', {
+      params: params as Record<string, string | number | undefined>,
+    }),
+};
+
 export { ApiError };

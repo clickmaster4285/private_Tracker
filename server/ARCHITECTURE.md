@@ -1,7 +1,13 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-10 (offline-first screenshots)
+> **Last audited:** 2026-11-11 (24/7 antivirus guard)
 > **Changelog:**
+> - 2026-11-11: **Antivirus fleet status.** Migration **068** `antivirus_status` (UNIQUE
+>   employee+machine) + `idx_dlp_alerts_type_machine_occurred`. DeviceAuth
+>   `POST /antivirus/status/sync` (syncAdmit) → upsert; JWT `GET /antivirus/status` (search / health /
+>   `stale`, paginated, health counts, projected `isStale` + `threats24h`). Detections/tamper are DLP
+>   alerts (`malware`, `av_tamper`). RBAC `security-dlp/antivirus` seeded. Files:
+>   `antivirus_{dto,repo,service,handler}.go`.
 > - 2026-11-10: **Screenshots store + API.** Migration **065** `screenshots` index. Files under
 >   `SCREENSHOTS_DIR` (`media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`). DeviceAuth
 >   `POST /screenshots/upload` (multipart WebP, size cap, `RATE_LIMIT_SCREENSHOT_*`); JWT

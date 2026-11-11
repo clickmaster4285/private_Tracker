@@ -4,7 +4,34 @@ Procedures that need a running server (and for DLP, an installed Windows agent).
 
 Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./newplan.md) (1000-agent scale), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
 
-*Last audited: 2026-11-10*
+*Last audited: 2026-11-11*
+
+---
+
+## 24/7 antivirus guard (Windows DlpService)
+
+Needs: installed Windows build with `ALPHA_AV_ENFORCE=true` (default), tracker logged in, API with
+migration **068**. Use a **lab VM** — the guard removes Defender exclusions it was not told about.
+
+1. **Status:** within ~5 min the PC appears on web **Security & DLP → Antivirus** (`/antivirus`) as
+   *Protected* with signature version / last quick scan. API: `GET /api/v1/antivirus/status`.
+2. **Detection (safe):** save the standard **EICAR test file** (eicar.org) to the Desktop. Defender
+   blocks + quarantines it; within ~1 min a `malware` alert (*Malware blocked*, action *Blocked*,
+   evidence threat name/path) shows in `/dlp-alerts?type=malware` and *Threats blocked · 24h* rises.
+3. **Tamper revert:** as admin, `Set-MpPreference -DisableRealtimeMonitoring $true` (only works with
+   Tamper Protection OFF). Within ~30 s real-time is ON again (`Get-MpComputerStatus`), an `av_tamper`
+   alert (*Antivirus tampering*, action *Blocked*) appears and the row shows a *Tampering* time.
+4. **Exclusion bypass:** `Add-MpPreference -ExclusionPath C:\evil` → removed within ~30 s
+   (`(Get-MpPreference).ExclusionPath`); the `av_tamper` alert lists `exclusion_path:C:\evil`.
+   Paths listed in `ALPHA_AV_ALLOWED_EXCLUSIONS` stay.
+5. **GPO bypass:** create `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` DWORD
+   `DisableAntiSpyware=1` → value deleted on the next pass.
+6. **Windows refused:** with Tamper Protection ON and real-time turned off in the Windows Security UI,
+   the guard cannot force it back → `av_tamper` *critical* / *Block failed* alert (≤ 1 per 30 min).
+7. **Third-party AV:** with another AV registered (Defender passive) the row shows *Third-party AV*;
+   the guard does not touch Defender.
+8. **Service logs:** `AntivirusGuardWorker running …`, `Antivirus guard reverted …`;
+   `%ProgramData%\<APP_MUTEX>\dlp\service.env` carries `ALPHA_AV_*`.
 
 ---
 

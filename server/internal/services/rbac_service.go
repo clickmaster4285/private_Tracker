@@ -90,6 +90,7 @@ var rbacCatalog = []moduleSeed{
 			{Key: "dlp-rules", Name: "DLP Rules", Route: "/dlp-rules"},
 			{Key: "web-blocker", Name: "Web Blocker", Route: "/web-blocker"},
 			{Key: "shadow-it", Name: "Shadow IT", Route: "/shadow-it"},
+			{Key: "antivirus", Name: "Antivirus", Route: "/antivirus"},
 		},
 	},
 	{

@@ -93,6 +93,7 @@ func main() {
 		WithPlatformAllow(services.CompilePlatformAllowHosts(cfg)).
 		WithDeviceRepo(deviceRepo)
 	portRepo := repository.NewPortRepo(pool)
+	antivirusService := services.NewAntivirusService(repository.NewAntivirusRepo(pool))
 	portService := services.NewPortService(portRepo, dlpService)
 	rbacService := services.NewRBACService(rbacRepo)
 	shiftService := services.NewShiftService(shiftRepo, cfg.DefaultShiftTimezone)
@@ -112,6 +113,7 @@ func main() {
 	monitoringHandler := handlers.NewMonitoringHandler(monitoringService)
 	dlpHandler := handlers.NewDlpHandler(dlpService, employeeRepo)
 	portHandler := handlers.NewPortHandler(portService)
+	antivirusHandler := handlers.NewAntivirusHandler(antivirusService)
 	rbacHandler := handlers.NewRBACHandler(rbacService)
 	shiftHandler := handlers.NewShiftHandler(shiftService)
 	timeAttendanceHandler := handlers.NewTimeAttendanceHandler(timeAttendanceService)
@@ -301,7 +303,7 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, portHandler, releaseHandler, screenshotHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, portHandler, releaseHandler, screenshotHandler, antivirusHandler)
 
 	// ────────────────
 	// Graceful Shutdown

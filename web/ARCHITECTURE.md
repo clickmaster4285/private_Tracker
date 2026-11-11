@@ -1,7 +1,11 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-10 (screenshots lazy grid)
+> **Last audited:** 2026-11-11 (24/7 antivirus guard)
 > **Changelog:**
+> - 2026-11-11: **`/antivirus` page.** `antivirusApi.listStatus` + types; infinite scroll;
+>   URL-synced `search`/`health` chips (`useUrlQueryState`); tiles link to
+>   `/dlp-alerts?type=malware|av_tamper`. Sidebar Security & DLP → Antivirus (`module:"antivirus"`,
+>   catalog parity), page title in `AppLayout`; `ALERT_TYPE_LABELS` gains `malware` / `av_tamper`.
 > - 2026-11-10: **`/screenshots` live grid.** `screenshotsApi` + `ScreenshotGrid` infinite scroll
 >   with per-card IntersectionObserver lazy `<img>` (never bulk-loads blobs). URL filters via
 >   `useUrlActivityFilter` + employee picker. Journey `/employee-journey/screenshots` reuses the

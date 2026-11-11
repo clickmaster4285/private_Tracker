@@ -717,6 +717,43 @@ public sealed class PolicyStore : IAsyncDisposable
         }
     }
 
+    /// <summary>Generic policy_kv read (null when absent).</summary>
+    public async Task<string?> GetKvAsync(string key, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            EnsureOpen();
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = "SELECT value FROM policy_kv WHERE key = $k";
+            cmd.Parameters.AddWithValue("$k", key);
+            return await cmd.ExecuteScalarAsync(ct) as string;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Generic policy_kv upsert.</summary>
+    public async Task SetKvAsync(string key, string value, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            EnsureOpen();
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = "INSERT OR REPLACE INTO policy_kv (key, value) VALUES ($k, $v)";
+            cmd.Parameters.AddWithValue("$k", key);
+            cmd.Parameters.AddWithValue("$v", value);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     private const string KeyLockdownPausedUntil = "lockdown_paused_until";
 
     /// <summary>

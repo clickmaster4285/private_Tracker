@@ -1,7 +1,15 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-10 (timedatewarning subprocess)
+> **Last audited:** 2026-11-11 (24/7 antivirus guard)
 > **Changelog:**
+> - 2026-11-11: **24/7 antivirus guard (DlpService).** `DefenderGuard` (status via
+>   `Get-MpComputerStatus`/`Get-MpPreference`/SecurityCenter2; one-process drift-only enforce script;
+>   GPO disable/exclusion registry cleanup; Defender Operational `EventLogReader`) +
+>   `AntivirusGuardWorker` (30 s guard; events → `malware`/`av_tamper` DLP alerts with deterministic
+>   ids + `policy_kv` bookmark; signature update / periodic quick scan; `POST /antivirus/status/sync`).
+>   Runs when `ALPHA_AV_ENFORCE=true` (default) regardless of `ALPHA_DLP_ENABLED`; third-party AV is
+>   reported, not fought. `PolicyStore.GetKvAsync/SetKvAsync`; `AppProcessGuard` denies `SecHealthUI`.
+>   Env `ALPHA_AV_*` baked via `generate-windows-vars.sh` → `service.env`.
 > - 2026-11-10: **`--timedatewarning` subprocess.** `TimeDateWarningWorker` (start + hourly):
 >   server-time skew + IP/schedule IANA TZ vs OS; spawns sibling Avalonia process when wrong.
 >   State: `%LocalAppData%/<APP>/timedatewarning/state.json`. Open Date & Time settings; Dismiss

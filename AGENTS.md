@@ -1,8 +1,42 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-10
+> **Last audited:** 2026-11-11
 > **Changelog:**
 >
+> - 2026-11-11: **24/7 antivirus guard (Windows DlpService + server + web).** Real-time scanning is
+>   Microsoft Defender's on-access engine (every file scanned on open/run/download/copy; malicious →
+>   blocked + quarantined). The tracker now keeps it ON at full strength and reverts tampering.
+>   **DlpService:** new `DefenderGuard` + `AntivirusGuardWorker` (independent of web policy and of
+>   `ALPHA_DLP_ENABLED`; local switch `ALPHA_AV_ENFORCE`, default `true`). Every `ALPHA_AV_GUARD_SEC`
+>   (30 s) it reverts: real-time / behaviour / download / script / archive / removable scanning off,
+>   Block-at-First-Sight off, cloud (MAPS Advanced, CloudBlockLevel High, 50 s timeout), PUA + network
+>   protection off, threat default action Allow/NoAction, per-threat allow overrides, exclusions not in
+>   `ALPHA_AV_ALLOWED_EXCLUSIONS`, and `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` disable /
+>   exclusion GPO values; restarts `WinDefend`. Only drifted settings are written; what Windows refuses
+>   (Tamper Protection) is reported, not looped. Defender Operational 1116/1006 → `malware` alert
+>   (*blocked*), 1118/1119/1008 → *blocked_failed*, 5001/5010/5012 → `av_tamper` critical, 5013 →
+>   `av_tamper`; deterministic alert ids per record + `policy_kv` bookmark (first run baselines to now).
+>   Signatures ≥ 1 day → `Update-MpSignature` (≥ 4 h apart); no quick scan in
+>   `ALPHA_AV_QUICK_SCAN_HOURS` (24) → background `Start-MpScan`. A registered third-party AV that owns
+>   protection is reported, never fought. `AppProcessGuard` also kills the Windows Security app
+>   (`SecHealthUI`) for interactive users under lockdown. Pipe `Health.avEnforce`.
+>   **Server:** migration **068** `antivirus_status` (one row per employee+machine) + index on
+>   `dlp_alerts(type, machine_id, occurred_at)`; DeviceAuth `POST /antivirus/status/sync` (admission
+>   group); JWT `GET /antivirus/status?search=&health=&page=&perPage=` with server-projected `isStale`
+>   (30 min) / `threats24h` + health counts. Detections + tamper ride the existing `dlp_alerts` inbox.
+>   RBAC submodule `antivirus` under `security-dlp`. **Web:** `/antivirus` (infinite scroll, URL-synced
+>   `search`/`health`; tiles link to `/dlp-alerts?type=malware|av_tamper`); sidebar
+>   `module:"antivirus"`; alert labels `malware` / `av_tamper`. Env `ALPHA_AV_ENFORCE / GUARD_SEC /
+>   STATUS_SEC / QUICK_SCAN_HOURS / ALLOWED_EXCLUSIONS` → `.env(.example)` → `generate-windows-vars.sh`
+>   → Inno `service.env` + `EnvBootstrap` seeds. Verified: `dotnet build` DlpService 0/0; `go build ./...`
+>   + `go vet` (handlers/repository/services/router/cmd); `npx tsc --noEmit` (only a pre-existing stale
+>   `.next/types` port-control error); status probe run live against the dev PC's Defender; enforce
+>   script parse-checked only (not executed — it would rewrite the dev PC's Defender). NOT verified:
+>   migration 068 + endpoints on a live DB (no Postgres/Redis running), installer build/install, EICAR
+>   lab (`TESTING.md` § 24/7 antivirus guard). Honest limit: a local Administrator with Tamper
+>   Protection ON can still turn real-time off in the Windows Security UI (guard raises a critical
+>   alert); offline / Safe Mode stays possible. Installer-Parity: re-bake `config.enc` + rebuild the
+>   Windows installer; restart API for **068**.
 > - 2026-11-10: **Merge amircode + sohaib (`marged-11-10-2026`).** Keeps screenshots / scale /
 >   timedatewarning / delete-block from amircode and Port Control + same-site API proxy from
 >   sohaib. Port migrations renumbered to **066** / **067** (after screenshots **065**).

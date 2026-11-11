@@ -350,6 +350,7 @@ public sealed class NamedPipeHost : BackgroundService
             appBlock = _cfg.AppBlock,
             deleteBlock = _cfg.DeleteBlock,
             loginReboot = _cfg.LoginReboot,
+            avEnforce = _cfg.AvEnforce,
             update = _updateState.Snapshot(),
         });
     }

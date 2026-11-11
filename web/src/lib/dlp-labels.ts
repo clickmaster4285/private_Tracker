@@ -22,6 +22,8 @@ export const ALERT_TYPE_LABELS: Record<string, string> = {
   screenshot: 'Screenshot',
   print: 'Print',
   document: 'Document',
+  malware: 'Malware blocked',
+  av_tamper: 'Antivirus tampering',
 };
 
 /** What the client actually did when it raised the alert. */

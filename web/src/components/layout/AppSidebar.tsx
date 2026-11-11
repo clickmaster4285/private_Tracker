@@ -363,6 +363,11 @@ const navSections: NavSection[] = [
             path: "/shadow-it",
             module: "shadow-it",
           },
+          {
+            label: "Antivirus",
+            path: "/antivirus",
+            module: "antivirus",
+          },
         ],
       },
       {

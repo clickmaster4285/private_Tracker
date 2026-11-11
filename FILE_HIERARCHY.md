@@ -4,7 +4,7 @@ Annotated node tree for the whole monorepo. Every directory that holds source is
 
 **How to read it:** ⭐ marks an entry point or a single-source-of-truth file — start there. 🔒 marks a file with a rule attached; changing it without reading the rule breaks something in the field. Generated / vendored trees are marked and should never be edited by hand.
 
-*Last audited: 2026-10-30 (roaming Start/Stop UX through client 2.3.12 — `newplan.md`). Companion docs: [AGENTS.md](./AGENTS.md), [WORKFLOW.md](./WORKFLOW.md), [TESTING.md](./TESTING.md), [plan.md](./plan.md), [newplan.md](./newplan.md) (Fixed/Roaming), [doc/plan.md](./doc/plan.md), [client/ARCHITECTURE.md](./client/ARCHITECTURE.md), [client/UI_ARCHITECTURE.md](./client/UI_ARCHITECTURE.md), [server/ARCHITECTURE.md](./server/ARCHITECTURE.md), [web/ARCHITECTURE.md](./web/ARCHITECTURE.md).*
+*Last audited: 2026-11-11 (24/7 antivirus guard). Previously 2026-10-30 (roaming Start/Stop UX through client 2.3.12 — `newplan.md`). Companion docs: [AGENTS.md](./AGENTS.md), [WORKFLOW.md](./WORKFLOW.md), [TESTING.md](./TESTING.md), [plan.md](./plan.md), [newplan.md](./newplan.md) (Fixed/Roaming), [doc/plan.md](./doc/plan.md), [client/ARCHITECTURE.md](./client/ARCHITECTURE.md), [client/UI_ARCHITECTURE.md](./client/UI_ARCHITECTURE.md), [server/ARCHITECTURE.md](./server/ARCHITECTURE.md), [web/ARCHITECTURE.md](./web/ARCHITECTURE.md).*
 
 ---
 
@@ -110,6 +110,8 @@ client/
 │   ├── LockdownNetworkEnforcer.cs   P1 default-deny 80/443 (AlphaAI-DLP-LOCK-*)
 │   ├── AppAllowEnforcer.cs · AppProcessGuard.cs   P3 AppLocker Exe+Appx + kill sweeper
 │   ├── DeleteBlockAclEnforcer.cs    NTFS Deny Delete on Fixed/Removable roots (ALPHA_DLP_DELETE_BLOCK)
+│   ├── DefenderGuard.cs · AntivirusGuardWorker.cs   24/7 AV guard: Defender always-on, tamper revert,
+│   │                            detections → DLP alerts, status → /antivirus/status/sync (ALPHA_AV_*)
 │   ├── DomainBlockEnforcer · TcpConnectionKiller · DnsCacheReader
 │   ├── AlertSyncWorker · PolicyStore · NamedPipeHost · ServiceAclHardener · TrackerWatchdogWorker
 │   └── DeviceCredentialStore · TeardownGate · UserSessionProcessLauncher · DlpConfig · WebBlockState · EnvBootstrap
@@ -217,6 +219,8 @@ server/
 │   │                            status_tables · rbac · refresh_token · dlp.go
 │   ├── dto/                     wire shapes: user_dto · employee_dto · new_schema_dto · rbac_dto · dlp_dto · releases_dto
 │   ├── handlers/ · services/    … + dlp_handler.go / dlp_service.go (+ dlp_publish_smoke_test.go)
+│   │                            + antivirus_handler.go / antivirus_service.go / repository/antivirus_repo.go
+│   │                            (migration 068 antivirus_status; dto/antivirus_dto.go)
 │   ├── jobs/                    staleness_sweep.go (stale catalog links)
 │   │                            · retention_sweep.go (hourly data purge, RETENTION_DAYS)
 │   │                            · session_lifecycle_sweep.go (1-min ACTIVE→STALE→CLOSED sweep)
@@ -262,6 +266,7 @@ web/
     │       ├── charts (activity · productivity) · reports · ai-summary
     │       ├── attendance · shifts · timesheets · hours-insights
     │       ├── dlp-alerts · dlp-rules · web-blocker (domains/paths/schedule) · audit-log · emails
+    │       ├── antivirus (24/7 AV guard fleet health; threats → /dlp-alerts?type=malware)
     │       ├── goals · kpis · projects · productivity-scoring
     │       ├── screenshots · live-stream (WebRTC SFU; FPS; Open theater → /live-stream/theater) · gps-location
     │       └── settings (billing · compliance · notifications · security ·
