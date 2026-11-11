@@ -118,6 +118,20 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 4. Auto-update: install an older build on a Windows lab PC, drop a newer `vX.Y.Z.exe` in the setup folder → within ~1–2 min `%ProgramData%\<APP_MUTEX>\updates\update.log` shows the SYSTEM silent apply and the tracker relaunches on the new version. A failed apply writes `updates\apply_failed.txt` and that version is not retried for 1 hour.
 5. Negative: unknown `assetId` → 404; non-numeric → 400; missing setup folder → empty list (200).
 
+### Troubleshooting: older client polls `/releases` but never installs (e.g. 1.0.13 → 1.2.0)
+
+**Symptom:** API access log shows `GET /api/v1/releases` every ~60s (200) but **no** `GET /api/v1/downloads/...`. Discovery works; download/apply does not.
+
+**Why:** On Windows only `AlphaAITracker.Service` (`SilentUpdateWorker`) downloads and runs Inno. The GUI **Check updates / Install** only pipes `RequestUpdateCheck` — it does not download itself. Version compare `1.2.0 > 1.0.13` is fine; `v1.2.0.exe` in `setup/` is fine.
+
+Check on the stuck PC:
+
+1. `service.env` (under `%ProgramData%\<APP_MUTEX>\dlp\`) has `ALPHA_SERVER_URL` pointing at this API and `ALPHA_UPDATE_ENABLED=true` / `ALPHA_UPDATE_AUTO_INSTALL=true`. Missing URL → worker state `no_server_url`.
+2. Pipe/Health update fields (`GetUpdateStatus`) — look for `no_server_url`, `update_disabled`, `apply_failed_retry_later`, `update_in_progress`, `unknown_op` (service too old).
+3. `%ProgramData%\<APP_MUTEX>\updates\`: `update.log`, `apply_failed.txt` (1h cooldown for that version), stuck `update_in_progress`, staged `v*.exe`.
+4. After fixing env, restart `AlphaAITracker.Service` and watch the API log for `/downloads/{assetId}`.
+5. Dev `dotnet run` without the installed service can poll `/releases` forever and never install on Windows.
+
 ---
 
 ## Security & DLP (Windows lab — P0+P1+P2 domain)

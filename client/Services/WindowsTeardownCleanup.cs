@@ -57,17 +57,12 @@ internal static class WindowsTeardownCleanup
             $"hostsDirty={!IsWebDomainBlockCleared()}");
 
         // Clear hosts/FW BEFORE killing the service — the service's own Clear() is
-        // fire-and-forget and often loses the race to sc stop / taskkill.
+        // fire-and-forget and often loses the race to stop / kill.
         TryClearWebDomainBlockDirect(steps);
 
-        // Clear SCM failure actions so stop/kill is not undone by restart/5s.
-        RunLogged(steps, "sc-failure-clear", "sc.exe",
-            $"failure {svc} reset= 0 actions= //", ProcessTimeoutMs);
-
-        // Direct attempts (work after ApplyTeardownGate opened the DACL, if elevated).
-        RunLogged(steps, "sc-stop-direct", "sc.exe", $"stop \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "sc-delete-direct", "sc.exe", $"delete \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "taskkill-direct", "taskkill.exe", $"/F /IM \"{exe}\"", ProcessTimeoutMs);
+        // Prefer in-process SCM / Process APIs — AppLocker blocks sc.exe / taskkill.exe
+        // for interactive users under app allowlist lockdown.
+        TryScmCleanupNative(steps, svc, exe);
         TryRestoreUsbStorDirect(steps);
         TryClearWebDomainBlockDirect(steps);
 
@@ -81,14 +76,12 @@ internal static class WindowsTeardownCleanup
                 "verified_direct", steps);
         }
 
-        // SYSTEM one-shot (requires ability to create schtasks — usually admin).
+        // SYSTEM one-shot (Task Scheduler COM first — no schtasks.exe; then schtasks fallback).
         var systemOk = TrySystemCleanupTask(steps, svc, exe);
         Thread.Sleep(SystemTaskSettleMs);
 
-        // Re-try direct after SYSTEM task may have opened/stopped the service.
-        RunLogged(steps, "sc-stop-retry", "sc.exe", $"stop \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "sc-delete-retry", "sc.exe", $"delete \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "taskkill-retry", "taskkill.exe", $"/F /IM \"{exe}\"", ProcessTimeoutMs);
+        // Re-try after SYSTEM task may have opened/stopped the service.
+        TryScmCleanupNative(steps, svc, exe, labelPrefix: "retry-");
         TryRestoreUsbStorDirect(steps);
         TryClearWebDomainBlockDirect(steps);
 
@@ -123,15 +116,21 @@ internal static class WindowsTeardownCleanup
     {
         try
         {
+            // Native OpenService — does not spawn sc.exe (AppLocker-safe).
+            var native = WindowsScmNative.QueryServiceState(serviceName);
+            if (!native.StartsWith("query_failed", StringComparison.Ordinal))
+                return native;
+
+            // Legacy fallback when native OpenSCManager itself fails.
             var (exit, stdout, stderr) = RunCapture("sc.exe", $"query \"{serviceName}\"", ProcessTimeoutMs);
-            var text = (stdout + "\n" + stderr);
+            var text = stdout + "\n" + stderr;
             if (exit == 1060 || text.Contains("1060", StringComparison.Ordinal) ||
                 text.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
                 return "absent";
             if (text.Contains("RUNNING", StringComparison.OrdinalIgnoreCase)) return "RUNNING";
             if (text.Contains("STOPPED", StringComparison.OrdinalIgnoreCase)) return "STOPPED";
             if (text.Contains("STOP_PENDING", StringComparison.OrdinalIgnoreCase)) return "STOP_PENDING";
-            if (exit != 0) return $"query_failed:{exit}";
+            if (exit != 0) return $"query_failed:{exit};native={native}";
             return "present";
         }
         catch (Exception ex)
@@ -201,11 +200,56 @@ internal static class WindowsTeardownCleanup
         }
     }
 
+    private static void TryScmCleanupNative(
+        List<string> steps, string svc, string exe, string labelPrefix = "")
+    {
+        var fail = WindowsScmNative.TryClearFailureActions(svc);
+        steps.Add($"{labelPrefix}scm-failure-clear ok={fail.Ok} {fail.Detail}");
+
+        var stop = WindowsScmNative.TryStop(svc);
+        steps.Add($"{labelPrefix}scm-stop ok={stop.Ok} {stop.Detail}");
+
+        var del = WindowsScmNative.TryDelete(svc);
+        steps.Add($"{labelPrefix}scm-delete ok={del.Ok} {del.Detail}");
+
+        var kill = WindowsScmNative.TryKillByImageName(exe);
+        steps.Add($"{labelPrefix}proc-kill killed={kill.Killed} {kill.Detail}");
+
+        // If native delete failed with access denied (locked DACL) and sc.exe is still
+        // allowed on this machine, try the legacy shell path once.
+        if (!del.Ok && WindowsScmNative.IsAccessDeniedDetail(del.Detail))
+        {
+            RunLogged(steps, $"{labelPrefix}sc-stop-fallback", "sc.exe", $"stop \"{svc}\"", ProcessTimeoutMs);
+            RunLogged(steps, $"{labelPrefix}sc-delete-fallback", "sc.exe", $"delete \"{svc}\"", ProcessTimeoutMs);
+        }
+    }
+
     private static void TryRestoreUsbStorDirect(List<string> steps)
     {
-        RunLogged(steps, "reg-usbstor", "reg.exe",
-            "add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR\" /v Start /t REG_DWORD /d 3 /f",
-            ProcessTimeoutMs);
+        // Registry API — no reg.exe (AppLocker-safe).
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\USBSTOR", writable: true);
+            if (key is null)
+            {
+                steps.Add("reg-usbstor native missing_key");
+            }
+            else
+            {
+                key.SetValue("Start", UsbStorStartManual, RegistryValueKind.DWord);
+                steps.Add("reg-usbstor native ok");
+            }
+        }
+        catch (Exception ex)
+        {
+            steps.Add("reg-usbstor native error=" + ex.Message);
+            RunLogged(steps, "reg-usbstor", "reg.exe",
+                "add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR\" /v Start /t REG_DWORD /d 3 /f",
+                ProcessTimeoutMs);
+        }
+
+        // Prefer native ChangeServiceConfig if we ever need it; sc config is best-effort.
         RunLogged(steps, "sc-usbstor-demand", "sc.exe",
             "config USBSTOR start= demand", ProcessTimeoutMs);
     }
@@ -459,9 +503,18 @@ internal static class WindowsTeardownCleanup
                 $"taskkill /F /IM \"{exe}\" >nul 2>&1\r\n");
 
             var task = AppInfo.WindowsServiceMaintTask + "Teardown";
-            // Match Inno: single-quoted /TR payload that runs cmd /c <script>.
-            var tr = $"cmd.exe /c \\\"{script}\\\"";
+            // Prefer Task Scheduler COM (no schtasks.exe — AppLocker cannot block COM).
+            var com = WindowsScmNative.TryRunSystemCmdViaTaskScheduler(task, $"\"{script}\"");
+            steps.Add($"tasksched-com ok={com.Ok} {com.Detail}");
+            if (com.Ok)
+            {
+                Thread.Sleep(SystemTaskSettleMs);
+                WindowsScmNative.TryDeleteScheduledTask(task);
+                return true;
+            }
 
+            // Legacy schtasks.exe fallback (blocked under AppLocker lockdown for users).
+            var tr = $"cmd.exe /c \\\"{script}\\\"";
             var create = RunLogged(steps, "schtasks-create", "schtasks.exe",
                 $"/Create /TN \"{task}\" /TR \"{tr}\" /SC ONCE /ST 00:00 /RU SYSTEM /F",
                 ProcessTimeoutMs);

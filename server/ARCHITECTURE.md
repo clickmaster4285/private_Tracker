@@ -392,7 +392,7 @@ server/
 │   └── 032_app_sessions_usage_index.sql # composite index (employee_id, started_at DESC, app_display_name) for /app-sessions/usage aggregation
 │
 └── internal/
-    ├── config/config.go         # Loads env vars, builds Config struct (incl. LINK_STALE_DAYS, DEFAULT_SHIFT_TIMEZONE, GitHubConfig)
+    ├── config/config.go         # Loads env vars, builds Config struct (incl. LINK_STALE_DAYS, DEFAULT_SHIFT_TIMEZONE, ReleasesConfig)
     ├── database/postgres.go     # pgxpool creation, migration runner
     ├── redis/
     │   ├── redis.go             # Secrets: StoreSecret / ValidateSecret / DeleteSecret

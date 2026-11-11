@@ -18,7 +18,7 @@ Alpha-AI-TrackerV2.0/
 ├── WORKFLOW.md               dev loop, rebrand, add-a-page, release pipeline, DLP installer knobs
 ├── plan.md                   Security & DLP phased roadmap (P0+P1 shipped; P2 Web Blocker largely done)
 ├── newplan.md                Fixed/Roaming + Start/Stop + hourly control (P0 spine shipped source-build)
-├── doc/plan.md               feature plans (public releases / private GitHub download bridge)
+├── doc/plan.md               feature plans (historical; releases now use local setup/)
 ├── newplan.md                Scale plan (~1000 agents / one Postgres / Asynq)
 ├── client/                   .NET 10 / Avalonia desktop agent + Windows DlpService
 ├── server/                   Go API + Postgres + Redis (the collector of record)
@@ -196,7 +196,7 @@ server/
 │   │   ├── department_handler.go
 │   │   ├── monitoring_handler.go    types/categories/apps/websites classification
 │   │   ├── rbac_handler.go          GET /modules + roles CRUD
-│   │   ├── release_handler.go       public GET /releases + GET|HEAD /downloads/:assetId (private GitHub bridge)
+│   │   ├── release_handler.go       public GET /releases + GET|HEAD /downloads/:assetId (local setup/)
 │   │   └── new_schema_handler.go    the client-ingest surface (sessions, apps, packages, hardware) +
 │   │                                 ListAppSessions + ListAppSessionsUsage (per-app aggregate for /employee-journey/apps) +
 │   │                                 ListAppSessionsForApp (per-app paginated list, fired on chevron expand)
@@ -204,7 +204,7 @@ server/
 │   ├── services/                business rules — the only layer allowed to orchestrate repos
 │   │   ├── auth_service.go · user_service.go · employee_service.go
 │   │   ├── department_service.go · new_schema_service.go · monitoring_service.go · rbac_service.go
-│   │   ├── github_release_service.go  private-repo Releases API + streaming download bridge (+ tests)
+│   │   ├── local_release_service.go   scans RELEASES_DIR (setup/) for .exe/.deb/.dmg (+ tests)
 │   │   └── redis_interface.go       seam that keeps services testable without a live Redis
 │   │
 │   ├── repository/              SQL only — one file per aggregate
@@ -326,4 +326,4 @@ web/
 | New API endpoint | `server/internal/router/router.go` + `handlers/` + `services/` + `repository/` (+ `dto/`, + a new numbered migration if the schema moves) |
 | New dashboard page | `web/src/app/(app)/<route>/` + `lib/api.ts` + a sidebar entry in `components/layout/AppSidebar.tsx` + a module in `lib/permissions.tsx`; per-employee pages reuse the `EmployeePage` shell + `EmployeeSelector` |
 | Public (no-login) page | `web/src/app/(public)/<route>/` — **not** under `(app)`; no sidebar RBAC module |
-| Public installer download | `server` `GITHUB_*` env + `github_release_service` / `release_handler` + web `lib/releases.ts` — never put the token in `NEXT_PUBLIC_*` |
+| Public installer download | `server` `RELEASES_DIR` (default `setup/`) + `local_release_service` / `release_handler` + web `lib/releases.ts` |

@@ -471,7 +471,7 @@
 - **No ORM** — raw parameterized SQL via `SqliteCommand`
 - **Sparse tests** — `client/client.Tests` covers a few DLP/teardown helpers; collectors largely untested
 - **No structured logging beyond ILogger** — console (dev) + `FileLoggerProvider` → `dotnetrunlog.txt`
-- **No third-party auto-updater library** — the built-in `AppUpdateService` (2026-08-12, §16) self-updates from GitHub Releases; installers are still published via `release.sh`
+- **No third-party auto-updater library** — the built-in `AppUpdateService` + Windows `SilentUpdateWorker` self-update from the API `setup/` folder (`GET /api/v1/releases` + `/downloads`); publish via `release.sh`
 
 ---
 
@@ -496,7 +496,7 @@ client/
 ├── APP_IDENTIFIERS_README.md       # How to re-brand; lists every consumer
 ├── VERSION_README.md               # How to bump the version
 ├── appsettings.json                # Logging config (largely unused — level comes from ALPHA_LOG_LEVEL)
-├── .env / .env.example             # Dev plaintext config template (REPO key is NOT read by client)
+├── .env / .env.example             # Dev plaintext config template (ALPHA_SERVER_URL + ALPHA_UPDATE_*)
 │
 ├── Configuration/
 │   ├── AppConfig.cs                # Reads all ALPHA_* env vars into typed config (see §14)
@@ -561,7 +561,7 @@ client/
 ├── Services/
 │   ├── LogCollectorService.cs      # ⭐ main BackgroundService: collect → resolve → sessions/items → heartbeat (no network I/O since 2026-08-11)
 │   ├── SyncService.cs              # ⭐ dedicated sync engine: drains unsent rows in byte-bounded chunks (gzip, polite pauses, exponential backoff)
-│   ├── AppUpdateService.cs         # ⭐ self-updater (2026-08-12): GitHub latest-release check → platform asset → download to user data dir → pkexec dpkg / silent Inno / dmg; ObservableObject state bound by the GUI; 24h auto-check loop
+│   ├── AppUpdateService.cs         # ⭐ self-updater: GET /api/v1/releases + /downloads; Windows queues SilentUpdateWorker; Linux pkexec dpkg / macOS dmg; ObservableObject for GUI Check updates
 │   ├── LiveStreamClient.cs         # ⭐ WebRTC VP8 publisher → GET /live-stream/push; ABR; send after PC connected
 │   ├── NetProbeService.cs          # Uplink probe → POST /live-stream/uplink-probe; SelectBitrateKbps ladder
 │   ├── ScreenCaptureService.cs     # Win GDI BitBlt + Linux portal/PipeWire → BGRA (DropOldest)
@@ -1142,7 +1142,7 @@ Two consequences worth knowing before you touch either file:
 | Gap | Severity | Details |
 |---|---|---|
 | **No crash handling** | 🔴 High | No `AppDomain.UnhandledException` subscription, no crash dumps, no telemetry. |
-| ~~**No auto-update**~~ (resolved 2026-08-12) | — | `AppUpdateService` checks GitHub Releases on a 24h cadence + on demand (GUI **Check updates**), auto-installs (Linux polkit / Windows silent Inno / macOS dmg) and relaunches itself. |
+| ~~**No auto-update**~~ (resolved 2026-08-12; local setup 2026-11-07) | — | `AppUpdateService` + Windows `SilentUpdateWorker` poll `GET /api/v1/releases` every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s); Windows silent Inno via LocalSystem; Linux polkit / macOS dmg. |
 | **SQLite unencrypted** | 🟠 Medium | `ALPHA_DB_ENCRYPTION_KEY` exists but sqlcipher is not wired in. |
 | **macOS CPU = 0%** | 🟠 Medium | macOS collector does not measure CPU. |
 | **macOS window capture limited** | 🟢 Low | Only foreground window via osascript; no EnumWindows equivalent. |
@@ -1217,7 +1217,7 @@ Two consequences worth knowing before you touch either file:
 
 ### Background loop
 
-- **Windows service:** `SilentUpdateWorker` 30-min tick + `ALPHA_UPDATE_AUTO_CHECK_HOURS` gate;
+- **Windows service:** `SilentUpdateWorker` every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s);
   independent of `ALPHA_DLP_ENABLED`; pipe ops `GetUpdateStatus` / `RequestUpdateCheck` always
   available on Windows.
 - **Client:** still auto-checks; on Windows auto-install defers to the service pipe.

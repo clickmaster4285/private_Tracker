@@ -139,9 +139,9 @@ $defaults = [ordered]@{
     "ALPHA_DLP_WATCHDOG"           = (Read-EnvKey $clientEnvPath "ALPHA_DLP_WATCHDOG" "true")
     "ALPHA_DLP_WATCHDOG_POLL_SEC"  = (Read-EnvKey $clientEnvPath "ALPHA_DLP_WATCHDOG_POLL_SEC" "8")
     "ALPHA_DLP_PIPE_NAME"          = $PipeName
-    "ALPHA_UPDATE_ENABLED"         = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_ENABLED" "true")
-    "ALPHA_UPDATE_AUTO_INSTALL"    = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_AUTO_INSTALL" "true")
-    "ALPHA_UPDATE_AUTO_CHECK_HOURS"= (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_AUTO_CHECK_HOURS" "24")
+    "ALPHA_UPDATE_ENABLED"            = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_ENABLED" "true")
+    "ALPHA_UPDATE_AUTO_INSTALL"       = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_AUTO_INSTALL" "true")
+    "ALPHA_UPDATE_CHECK_INTERVAL_SEC" = (Read-EnvKey $clientEnvPath "ALPHA_UPDATE_CHECK_INTERVAL_SEC" "60")
 }
 if ($ServerUrl) { $defaults["ALPHA_SERVER_URL"] = $ServerUrl }
 Write-Host "service.env from .env: POLICY_POLL=$($defaults['ALPHA_DLP_POLICY_POLL_SEC'])"

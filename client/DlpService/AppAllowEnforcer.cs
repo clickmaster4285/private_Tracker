@@ -214,13 +214,22 @@ internal static class AppAllowEnforcer
     }
 
     /// <summary>
-    /// PowerShell for LOCAL SYSTEM only — required to call Set-AppLockerPolicy.
-    /// Interactive users (Everyone) stay default-deny until allow.apps publishes a path.
+    /// LOCAL SYSTEM only — PowerShell (Set-AppLockerPolicy) plus the System32
+    /// maintenance tools teardown / silent-update helpers need. Interactive users
+    /// stay default-deny until allow.apps publishes a path (AppLocker self-lockout
+    /// for user-spawned sc/taskkill is intentional; SYSTEM helpers must still run).
     /// </summary>
     internal static IEnumerable<string> SystemOnlyBootstrapPaths()
     {
         yield return @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell.exe";
         yield return @"%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe";
+        yield return @"%SYSTEM32%\cmd.exe";
+        yield return @"%SYSTEM32%\sc.exe";
+        yield return @"%SYSTEM32%\reg.exe";
+        yield return @"%SYSTEM32%\taskkill.exe";
+        yield return @"%SYSTEM32%\schtasks.exe";
+        yield return @"%SYSTEM32%\ipconfig.exe";
+        yield return @"%SYSTEM32%\netsh.exe";
     }
 
     private static bool IsBroadMicrosoftPublisher(string publisher)
@@ -279,7 +288,7 @@ internal static class AppAllowEnforcer
         SortedSet<string> systemOnlyPaths)
     {
         var sb = new StringBuilder();
-        sb.Append("v3;");
+        sb.Append("v4;");
         foreach (var p in paths) sb.Append("P:").Append(p).Append(';');
         foreach (var p in systemOnlyPaths) sb.Append("S:").Append(p).Append(';');
         foreach (var (pub, prod) in publishers.OrderBy(x => x.Publisher + "|" + x.Product, StringComparer.OrdinalIgnoreCase))

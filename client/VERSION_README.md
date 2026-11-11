@@ -67,10 +67,9 @@ bash publish/release.sh v1.2.3
 ```
 
 The release script will:
-1. Read version from `VERSION` file, prefixed with "v" (currently `v0.2.0`)
+1. Read version from `VERSION` file, prefixed with "v"
 2. Build all installers with that version
-3. Create a git tag with the version
-4. Create a GitHub release with the installers
+3. Copy them into `server/setup/` as `v{VERSION}.exe` / `.deb` / `.dmg` for the API auto-update bridge
 
 ## Changing the Version
 
@@ -113,7 +112,7 @@ Examples:
 2. **`publish/build-deb.sh`** — Linux .deb package version
 3. **`publish/build-dmg.sh`** — macOS app bundle version (CFBundleVersion)
 4. **`publish/generate-windows-vars.sh`** → **`publish/installer-windows.iss`** — Windows installer version
-5. **`publish/release.sh`** — Git tag and GitHub release version
+5. **`publish/release.sh`** — builds installers and copies them into `server/setup/`
 
 **Runtime** — the version is read back out of the assembly, not re-read from disk:
 
