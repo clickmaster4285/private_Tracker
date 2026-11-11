@@ -1,7 +1,18 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-11 (update-priority yield)
+> **Last audited:** 2026-11-11 (silent apply AppLocker updates\* + pre-stop)
 > **Changelog:**
+> - 2026-11-11: **Protected-uninstall AppLocker + pipe.** Teardown IPC not gated on DLP
+>   enable; longer ApplyTeardownGate timeouts; `AppAllowEnforcer.Clear` deletes SrpV2;
+>   `WindowsTeardownCleanup` AppLocker + FW COM + browser clear (SYSTEM task). **VERSION 1.4.7**.
+> - 2026-11-11: **Lab leftover wipe doc.** See repo [`removeTracker.md`](../removeTracker.md)
+>   (AppLocker/SRP purge + hosts/FW after protected uninstall). Linked from TESTING §C.
+> - 2026-11-11: **Silent apply AppLocker + pre-stop.** SYSTEM-only allow
+>   `%ProgramData%\<mutex>\updates\*`; fingerprint `v7`; helper stops service before Inno;
+>   after success clear flags + `relaunch_tracker`, `sc start` only if not RUNNING (Inno
+>   already starts service). **VERSION 1.4.6**.
+> - 2026-11-11: **Post-auto-update restart.** Apply helper clears gates, restarts DLP service
+>   (wait RUNNING), sets `relaunch_tracker`; watchdog starts `--background --restart`. **VERSION 1.4.5**.
 > - 2026-11-11: **Update-priority yield.** Newer release → `update_priority` flag; tracker parks
 >   sync/live/screenshots/collectors so download+apply run first (auto jitter ≤120s). **VERSION 1.4.2**.
 > - 2026-11-11: **Silent update `update_in_progress` TTL + fleet download jitter.** Orphan/TTL
@@ -1216,9 +1227,11 @@ Two consequences worth knowing before you touch either file:
    Linux arch preference (`_amd64.deb` / `_arm64.deb`). No asset → "No installer for this platform".
 4. Compare vs installed version. Newer → proceed.
 5. **Windows (service that understands the pipe):** Range-download to `%ProgramData%\<APP_MUTEX>\updates\`
-   while the tracker runs; a detached SYSTEM PowerShell helper runs Inno `/VERYSILENT` (no `RunAs`)
-   and clears `update_in_progress` (no celebration toast). The GUI polls `GetUpdateStatus` and does
-   not elevate.
+   while the tracker runs; a detached SYSTEM PowerShell helper pre-stops the DLP service, runs Inno
+   `/VERYSILENT` (no `RunAs`; AppLocker SYSTEM allow for `updates\*`), clears `update_in_progress`,
+   writes `relaunch_tracker`, and `sc start`s only if Inno did not leave the service RUNNING
+   (Inno `InstallDlpService` normally creates+starts; watchdog relaunches the tracker). No
+   celebration toast. The GUI polls `GetUpdateStatus` and does not elevate.
    **Windows (installed service that answers `unknown_op`):** the GUI downloads the same bridge
    asset, requires the file length to match `asset.size` when that size is non-zero, then
    `Start-Process -Verb RunAs` (explicit UAC, not a silent bypass). `update_disabled`,

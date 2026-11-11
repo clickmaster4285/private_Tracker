@@ -280,8 +280,11 @@ public sealed class NamedPipeHost : BackgroundService
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
-                "AuthorizeTeardown" => await RequireDlp(() => AuthorizeTeardownJson(doc.RootElement, ct)),
-                "ApplyTeardownGate" => RequireDlpSync(() => ApplyTeardownGateJson(doc.RootElement)),
+                // Teardown unlock must work even when ALPHA_DLP_ENABLED=false (pipe still
+                // listens for update IPC). RequireDlp would return dlp_disabled and leave
+                // AppLocker / USB / hosts stuck after --protected-uninstall.
+                "AuthorizeTeardown" => await AuthorizeTeardownJson(doc.RootElement, ct),
+                "ApplyTeardownGate" => ApplyTeardownGateJson(doc.RootElement),
                 _ => JsonSerializer.Serialize(new { ok = false, error = "unknown_op" }),
             };
         }

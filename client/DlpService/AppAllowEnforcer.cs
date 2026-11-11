@@ -131,8 +131,9 @@ internal static class AppAllowEnforcer
         Interlocked.Increment(ref _generation);
         lock (Gate)
         {
-            if (!_policyMaybePresent && _lastFingerprint == "")
-                return new Result(false, true, "already_clear");
+            // Always wipe the local AppLocker store — fingerprint short-circuit left Exe
+            // Enforce in AppID memory after protected-uninstall when pipe unlock raced.
+            TryDeleteLocalAppLockerStore();
 
             var xml = BuildEmptyPolicyXml();
             var apply = SetAppLockerPolicy(xml);
@@ -144,6 +145,24 @@ internal static class AppAllowEnforcer
             _lastFingerprint = "";
             _policyMaybePresent = false;
             return new Result(changed, true, "cleared");
+        }
+    }
+
+    /// <summary>
+    /// Delete <c>HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2</c> so NotConfigured
+    /// is not layered on top of a leftover Enforce tree.
+    /// </summary>
+    private static void TryDeleteLocalAppLockerStore()
+    {
+        try
+        {
+            Microsoft.Win32.Registry.LocalMachine.DeleteSubKeyTree(
+                @"SOFTWARE\Policies\Microsoft\Windows\SrpV2",
+                throwOnMissingSubKey: false);
+        }
+        catch
+        {
+            // Best-effort — Set-AppLockerPolicy still runs.
         }
     }
 
@@ -230,6 +249,14 @@ internal static class AppAllowEnforcer
         yield return @"%SYSTEM32%\schtasks.exe";
         yield return @"%SYSTEM32%\ipconfig.exe";
         yield return @"%SYSTEM32%\netsh.exe";
+        // Silent updater stages Inno under ProgramData\<mutex>\updates\; without this
+        // allow, Exe Enforce default-deny blocks Start-Process of the downloaded EXE.
+        // SYSTEM-only so interactive users cannot run arbitrary EXEs from that folder.
+        yield return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            ServiceIdentity.DataFolderName,
+            "updates",
+            "*");
     }
 
     private static bool IsBroadMicrosoftPublisher(string publisher)
@@ -316,7 +343,7 @@ internal static class AppAllowEnforcer
         SortedSet<string> systemOnlyPaths)
     {
         var sb = new StringBuilder();
-        sb.Append("v6;");
+        sb.Append("v7;");
         foreach (var p in paths) sb.Append("P:").Append(p).Append(';');
         foreach (var p in systemOnlyPaths) sb.Append("S:").Append(p).Append(';');
         foreach (var (pub, prod) in publishers.OrderBy(x => x.Publisher + "|" + x.Product, StringComparer.OrdinalIgnoreCase))

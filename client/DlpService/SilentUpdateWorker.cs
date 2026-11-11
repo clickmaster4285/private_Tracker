@@ -546,6 +546,8 @@ public sealed class SilentUpdateWorker : BackgroundService
         var inProgress = UpdatePaths.InProgressFlag;
         var updatesDir = UpdatePaths.RootDir;
         var serviceName = ServiceIdentity.ServiceName;
+        var serviceExeName = serviceName + ".exe";
+        var serviceProcName = serviceName;
 
         static string PsQuote(string value) => value.Replace("'", "''");
 
@@ -569,6 +571,8 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine($"$failedFlag = '{PsQuote(UpdatePaths.ApplyFailedPath)}'");
         sb.AppendLine($"$priorityFlag = '{PsQuote(UpdatePaths.PriorityFlag)}'");
         sb.AppendLine($"$serviceName = '{PsQuote(serviceName)}'");
+        sb.AppendLine($"$serviceProcName = '{PsQuote(serviceProcName)}'");
+        sb.AppendLine($"$serviceExeName = '{PsQuote(serviceExeName)}'");
         sb.AppendLine("if (-not (Test-Path -LiteralPath $installer)) {");
         sb.AppendLine("  Write-UpdateLog 'Installer file missing before launch'");
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
@@ -582,6 +586,30 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("for ($i = 0; $i -lt 60; $i++) {");
         sb.AppendLine("  if (-not (Get-Process -Name $procName -ErrorAction SilentlyContinue)) { break }");
         sb.AppendLine("  Start-Sleep -Seconds 1");
+        sb.AppendLine("}");
+        // Pre-stop DLP service so Service\\*.dll unlock before Inno file copy.
+        // Helper is already detached SYSTEM; Inno still re-creates + starts in ssPostInstall.
+        sb.AppendLine("Write-UpdateLog (\"Pre-stopping service {0} before Inno\" -f $serviceName)");
+        sb.AppendLine("try {");
+        sb.AppendLine("  & sc.exe stop $serviceName 2>$null | Out-Null");
+        sb.AppendLine("  for ($i = 0; $i -lt 45; $i++) {");
+        sb.AppendLine("    $q = & sc.exe query $serviceName 2>$null | Out-String");
+        sb.AppendLine("    if ($q -match 'STOPPED' -or $q -match 'does not exist') { break }");
+        sb.AppendLine("    if (-not (Get-Process -Name $serviceProcName -ErrorAction SilentlyContinue)) { break }");
+        sb.AppendLine("    Start-Sleep -Seconds 1");
+        sb.AppendLine("  }");
+        sb.AppendLine("  for ($i = 0; $i -lt 5; $i++) {");
+        sb.AppendLine("    if (-not (Get-Process -Name $serviceProcName -ErrorAction SilentlyContinue)) { break }");
+        sb.AppendLine("    & taskkill.exe /F /IM $serviceExeName 2>$null | Out-Null");
+        sb.AppendLine("    Start-Sleep -Seconds 1");
+        sb.AppendLine("  }");
+        sb.AppendLine("  if (Get-Process -Name $serviceProcName -ErrorAction SilentlyContinue) {");
+        sb.AppendLine("    Write-UpdateLog 'Service process still present after pre-stop — Inno PrepareToInstall will retry'");
+        sb.AppendLine("  } else {");
+        sb.AppendLine("    Write-UpdateLog 'Service process gone before Inno'");
+        sb.AppendLine("  }");
+        sb.AppendLine("} catch {");
+        sb.AppendLine("  Write-UpdateLog (\"Pre-stop service failed: {0}\" -f $_.Exception.Message)");
         sb.AppendLine("}");
         sb.AppendLine("Write-UpdateLog 'Launching silent Inno (SYSTEM — no RunAs)'");
         sb.AppendLine("$exitCode = 1");
@@ -606,17 +634,10 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("  exit $exitCode");
         sb.AppendLine("}");
         sb.AppendLine("Start-Sleep -Seconds 3");
-        // Reload DLP service so AppLocker v6 / new enforcer bits are not left in the old process.
-        sb.AppendLine("Write-UpdateLog (\"Restarting service {0} to load new binary\" -f $serviceName)");
-        sb.AppendLine("try {");
-        sb.AppendLine("  & sc.exe stop $serviceName | Out-Null");
-        sb.AppendLine("  Start-Sleep -Seconds 2");
-        sb.AppendLine("  & sc.exe start $serviceName | Out-Null");
-        sb.AppendLine("  Write-UpdateLog 'Service restart issued'");
-        sb.AppendLine("} catch {");
-        sb.AppendLine("  Write-UpdateLog (\"Service restart failed: {0}\" -f $_.Exception.Message)");
-        sb.AppendLine("}");
-        // No celebration toast — delete any leftover celebrate.json from older helpers.
+        sb.AppendLine($"$relaunchFlag = '{PsQuote(UpdatePaths.RelaunchRequestFlag)}'");
+        // Clear apply gates so the (new) service watchdog may relaunch the tracker.
+        // Do NOT sc stop here — Inno InstallDlpService already created+started the service.
+        sb.AppendLine("Write-UpdateLog 'Clearing update flags before client relaunch'");
         sb.AppendLine("Remove-Item -LiteralPath $celebrate -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
@@ -625,7 +646,30 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("Get-ChildItem -LiteralPath $updatesDir -Filter '*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Get-ChildItem -LiteralPath $updatesDir -Filter '*.part' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("Remove-Item -LiteralPath (Join-Path $updatesDir 'celebrate_payload.json') -Force -ErrorAction SilentlyContinue");
-        sb.AppendLine("Write-UpdateLog 'SYSTEM silent apply done'");
+        sb.AppendLine("Set-Content -LiteralPath $relaunchFlag -Value ((Get-Date).ToUniversalTime().ToString('o')) -ErrorAction SilentlyContinue");
+        sb.AppendLine("Write-UpdateLog (\"Ensuring service {0} is RUNNING (Inno should have started it)\" -f $serviceName)");
+        sb.AppendLine("try {");
+        sb.AppendLine("  $running = $false");
+        sb.AppendLine("  for ($i = 0; $i -lt 45; $i++) {");
+        sb.AppendLine("    $q = & sc.exe query $serviceName 2>$null | Out-String");
+        sb.AppendLine("    if ($q -match 'RUNNING') { $running = $true; break }");
+        sb.AppendLine("    Start-Sleep -Seconds 1");
+        sb.AppendLine("  }");
+        sb.AppendLine("  if (-not $running) {");
+        sb.AppendLine("    Write-UpdateLog 'Service not RUNNING after Inno — attempting sc start'");
+        sb.AppendLine("    & sc.exe start $serviceName 2>$null | Out-Null");
+        sb.AppendLine("    for ($i = 0; $i -lt 45; $i++) {");
+        sb.AppendLine("      $q = & sc.exe query $serviceName 2>$null | Out-String");
+        sb.AppendLine("      if ($q -match 'RUNNING') { $running = $true; break }");
+        sb.AppendLine("      Start-Sleep -Seconds 1");
+        sb.AppendLine("    }");
+        sb.AppendLine("  }");
+        sb.AppendLine("  if ($running) { Write-UpdateLog 'Service RUNNING — watchdog will relaunch tracker' }");
+        sb.AppendLine("  else { Write-UpdateLog 'Service start did not report RUNNING in time' }");
+        sb.AppendLine("} catch {");
+        sb.AppendLine("  Write-UpdateLog (\"Service ensure-start failed: {0}\" -f $_.Exception.Message)");
+        sb.AppendLine("}");
+        sb.AppendLine("Write-UpdateLog 'SYSTEM silent apply done (service ensure + tracker relaunch requested)'");
         sb.AppendLine("Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue");
         var scriptPath = UpdatePaths.ApplyScriptPath;
         File.WriteAllText(scriptPath, sb.ToString());

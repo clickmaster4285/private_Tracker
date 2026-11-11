@@ -14,7 +14,7 @@ Current client version: see [`client/VERSION`](./client/VERSION). Release histor
 
 **Public downloads:** drop installers in `server/setup/` (e.g. `v1.2.0.exe`; set `RELEASES_DIR` if needed). The API lists them on `GET /api/v1/releases` and streams them on `GET /api/v1/downloads/:assetId` (no GitHub). Publish with `bash client/publish/release.sh`. See `server/.env.example`.
 
-Deep docs: [`AGENTS.md`](./AGENTS.md) (rules) · [`WORKFLOW.md`](./WORKFLOW.md) · [`TESTING.md`](./TESTING.md) · [`plan.md`](./plan.md) · [`FILE_HIERARCHY.md`](./FILE_HIERARCHY.md).
+Deep docs: [`AGENTS.md`](./AGENTS.md) (rules) · [`WORKFLOW.md`](./WORKFLOW.md) · [`TESTING.md`](./TESTING.md) · [`removeTracker.md`](./removeTracker.md) (Windows AppLocker / DLP leftover cleanup) · [`plan.md`](./plan.md) · [`FILE_HIERARCHY.md`](./FILE_HIERARCHY.md).
 
 ---
 
@@ -191,6 +191,7 @@ alpha-ai-tracker/
 ├── AGENTS.md        Architecture + mandatory rules
 ├── WORKFLOW.md      Daily loop, packaging, release procedure
 ├── TESTING.md       Lab playbooks (DLP, USB, Web Blocker, …)
+├── removeTracker.md Windows protected-uninstall leftovers (AppLocker / hosts / FW / USB)
 ├── plan.md          Security & DLP roadmap
 └── RELEASE_NOTES.md Version history
 ```

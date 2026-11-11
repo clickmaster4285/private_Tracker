@@ -33,6 +33,11 @@ internal static class UpdatePaths
     /// yields CPU/bandwidth (sync/live/screenshots) until the upgrade finishes.
     /// </summary>
     public static string PriorityFlag => Path.Combine(RootDir, "update_priority");
+    /// <summary>
+    /// Written by the silent-apply helper after a successful Inno so the restarted
+    /// service watchdog relaunches <c>client.exe --background</c> immediately.
+    /// </summary>
+    public static string RelaunchRequestFlag => Path.Combine(RootDir, "relaunch_tracker");
 
     public static bool IsUpdateInProgress()
     {
@@ -144,6 +149,30 @@ internal static class UpdatePaths
     public static void ClearUpdatePriority()
     {
         try { if (File.Exists(PriorityFlag)) File.Delete(PriorityFlag); } catch { /* ignore */ }
+    }
+
+    public static void RequestTrackerRelaunch()
+    {
+        try
+        {
+            EnsureRoot();
+            File.WriteAllText(RelaunchRequestFlag, $"{DateTime.UtcNow:o}\n");
+        }
+        catch { /* ignore */ }
+    }
+
+    public static bool ConsumeTrackerRelaunchRequest()
+    {
+        try
+        {
+            if (!File.Exists(RelaunchRequestFlag)) return false;
+            File.Delete(RelaunchRequestFlag);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool IsUpdatePriorityActive()

@@ -3,6 +3,37 @@
 > **Last audited:** 2026-11-11
 > **Changelog:**
 >
+> - 2026-11-11: **Protected-uninstall pipe unlock + AppLocker leftover fix (client + DlpService).**
+>   `ApplyTeardownGate` / `AuthorizeTeardown` no longer gated on `ALPHA_DLP_ENABLED` (was returning
+>   `dlp_disabled` / racing write_timeout while AppLocker stayed Enforce). Pipe teardown timeouts
+>   raised; `AppAllowEnforcer.Clear` deletes `SrpV2` then NotConfigured. Elevated
+>   `WindowsTeardownCleanup` clears AppLocker + browser policies + firewall via **HNetCfg COM**
+>   (netsh often AppLocker-denied); SYSTEM task runs AppLocker clear. UAC elevate also triggers
+>   when AppLocker still Enabled. Client **VERSION 1.4.7**. Lab: [`removeTracker.md`](removeTracker.md).
+>   Verified: `dotnet build` client + DlpService; teardown unit tests. Installer-Parity: next Windows
+>   installer.
+>
+> - 2026-11-11: **Lab playbook [`removeTracker.md`](removeTracker.md).** Windows leftover wipe +
+>   diagnostics after protected uninstall (AppLocker/SRP/WDAC, hosts, `AlphaAI-DLP-*` FW/PIN via
+>   COM, USBSTOR, delete-block ACL). Linked from `README.md` + `TESTING.md` §C. Use when
+>   `pipeUnlock=False` / Error 1260 / apps still blocked after product remove.
+>
+> - 2026-11-11: **Silent apply — AppLocker updates path + pre-stop service (DlpService).** Staged
+>   installer under `%ProgramData%\<APP_MUTEX>\updates\` was default-denied under Exe Enforce
+>   (EXE left on disk). Fix: SYSTEM-only AppLocker allow for that folder; fingerprint `v7`.
+>   Helper pre-stops DLP service before Inno (unlock `Service\*.dll`); after success clears
+>   flags + `relaunch_tracker`, and `sc start` only if not RUNNING (Inno `InstallDlpService`
+>   already restarts the service; watchdog relaunches client — main dual-restart parity).
+>   Client **VERSION 1.4.6**. Verified: `dotnet build` DlpService. Installer-Parity: next
+>   Windows installer.
+>
+> - 2026-11-11: **Post-auto-update restart service + tracker (DlpService).** Silent apply helper
+>   clears `update_in_progress` / priority **before** `sc stop/start` of
+>   `AlphaAITracker.Service` (wait until RUNNING), writes `relaunch_tracker`, and the
+>   watchdog launches `client.exe --background --restart` in the user session. Client
+>   **VERSION 1.4.5**. Verified: `dotnet build` DlpService. Installer-Parity: next Windows
+>   installer.
+>
 > - 2026-11-11: **Allowlists apps — path-only allow (web).** `/allowlists/apps` “Allow
 >   application” no longer requires a catalog pick or Windows Settings: enter a full EXE
 >   path alone and **Allow & publish** enables when a **note** is also filled (note stays

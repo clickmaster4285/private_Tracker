@@ -38,7 +38,9 @@ internal sealed class TrackerWatchdogWorker : BackgroundService
             return;
         }
 
-        try { await Task.Delay(TimeSpan.FromSeconds(20), stoppingToken); }
+        // Short settle; post-update relaunch_tracker must not wait a full 20s if the
+        // service just came back from a silent apply.
+        try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
         catch (OperationCanceledException) { return; }
 
         var poll = TimeSpan.FromSeconds(Math.Clamp(_cfg.WatchdogPollSec, 3, 60));
@@ -84,6 +86,23 @@ internal sealed class TrackerWatchdogWorker : BackgroundService
 
         // Celebration UI removed — never launch --celebrate-update; clear leftover flag.
         UpdatePaths.ClearCelebrate();
+
+        // Post-silent-update: helper cleared in_progress and asked us to bring the tracker back.
+        var afterUpdate = UpdatePaths.ConsumeTrackerRelaunchRequest();
+        if (afterUpdate)
+        {
+            if (UserSessionProcessLauncher.IsNamedMutexPresent(TrackerMutexName))
+            {
+                _log.LogInformation("Watchdog: post-update relaunch skipped — tracker already running");
+                return;
+            }
+
+            _log.LogWarning(
+                "Watchdog: post-update relaunch — starting --background --restart {Path}", path);
+            UserSessionProcessLauncher.TryLaunch(path, "--background --restart", _log);
+            _lastLaunchAttempt = DateTimeOffset.UtcNow;
+            return;
+        }
 
         if (UserSessionProcessLauncher.IsNamedMutexPresent(TrackerMutexName))
             return;
