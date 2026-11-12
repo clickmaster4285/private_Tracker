@@ -3,7 +3,8 @@
   "private": true,
   "version": "1.1.0",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node ./scripts/dev-https.mjs",
+    "dev:http": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

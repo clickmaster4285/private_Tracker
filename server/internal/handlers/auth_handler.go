@@ -21,13 +21,21 @@ const (
 	authCookiePath    = "/"
 )
 
+// authCookieSecure is set from config (COOKIE_SECURE / TLS) before routes serve traffic.
+var authCookieSecure bool
+
+// ConfigureAuthCookies sets Secure on auth_token / refresh_token (required for HTTPS).
+func ConfigureAuthCookies(secure bool) {
+	authCookieSecure = secure
+}
+
 func setAuthCookies(c echo.Context, accessValue string, accessExpiry time.Time, refreshValue string, refreshExpiry time.Time) {
 	access := &http.Cookie{
 		Name:     authCookieName,
 		Value:    accessValue,
 		Path:     authCookiePath,
 		HttpOnly: true,
-		Secure:   false, // Set to true in production with HTTPS
+		Secure:   authCookieSecure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  accessExpiry,
 	}
@@ -39,7 +47,7 @@ func setAuthCookies(c echo.Context, accessValue string, accessExpiry time.Time, 
 			Value:    refreshValue,
 			Path:     authCookiePath,
 			HttpOnly: true,
-			Secure:   false, // Set to true in production with HTTPS
+			Secure:   authCookieSecure,
 			SameSite: http.SameSiteLaxMode,
 			Expires:  refreshExpiry,
 		}
@@ -54,7 +62,7 @@ func ClearAuthCookie(c echo.Context) {
 			Value:    "",
 			Path:     authCookiePath,
 			HttpOnly: true,
-			Secure:   false,
+			Secure:   authCookieSecure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   -1,
 			Expires:  time.Unix(0, 0),

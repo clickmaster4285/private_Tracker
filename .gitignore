@@ -6,3 +6,6 @@
 /.junie/
 /.claude/
 /.kilo/
+# Local mkcert TLS material (regenerate with mkcert)
+/certs/*.pem
+

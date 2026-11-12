@@ -143,6 +143,13 @@ type ServerConfig struct {
 	// (scheme://host:port, no trailing slash). Used for Redis-driven watch
 	// redirects if a second API instance ever exists. Empty → redirect disabled.
 	InstancePublicURL string
+	// TLSCertFile / TLSKeyFile enable HTTPS via Echo StartTLS when both are set
+	// (paths relative to process cwd or absolute). Empty = plain HTTP.
+	TLSCertFile string
+	TLSKeyFile  string
+	// CookieSecure forces Secure on auth_token / refresh_token cookies.
+	// Defaults to true when TLS cert+key are configured.
+	CookieSecure bool
 }
 
 type DatabaseConfig struct {
@@ -191,6 +198,11 @@ func (c *Config) ServerAddr() string {
 	return fmt.Sprintf("%s:%d", c.Server.Host, c.Server.Port)
 }
 
+// TLSEnabled is true when both cert and key paths are configured.
+func (c *Config) TLSEnabled() bool {
+	return strings.TrimSpace(c.Server.TLSCertFile) != "" && strings.TrimSpace(c.Server.TLSKeyFile) != ""
+}
+
 func (c *DatabaseConfig) DSN() string {
 	return fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
@@ -203,12 +215,19 @@ func Load() (*Config, error) {
 	// Load .env file if it exists (don't fail if it doesn't)
 	_ = godotenv.Load()
 
+	tlsCertFile := strings.TrimSpace(getEnv("TLS_CERT_FILE", ""))
+	tlsKeyFile := strings.TrimSpace(getEnv("TLS_KEY_FILE", ""))
+	cookieSecure := getEnvBool("COOKIE_SECURE", tlsCertFile != "" && tlsKeyFile != "")
+
 	cfg := &Config{
 		Server: ServerConfig{
 			Host:              getEnv("SERVER_HOST", "0.0.0.0"),
 			Port:              getEnvInt("SERVER_PORT", 8080),
 			InstanceID:        strings.TrimSpace(getEnv("INSTANCE_ID", "")),
 			InstancePublicURL: strings.TrimRight(strings.TrimSpace(getEnv("INSTANCE_PUBLIC_URL", "")), "/"),
+			TLSCertFile:       tlsCertFile,
+			TLSKeyFile:        tlsKeyFile,
+			CookieSecure:      cookieSecure,
 		},
 		Database: DatabaseConfig{
 			Host:            getEnv("DB_HOST", "localhost"),

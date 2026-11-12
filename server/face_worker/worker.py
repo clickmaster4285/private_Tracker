@@ -82,6 +82,17 @@ def env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or default).strip()
 
 
+def resolve_path(raw: str) -> Path | None:
+    """Resolve a path from server/.env relative to server/ when not absolute."""
+    value = (raw or "").strip()
+    if not value:
+        return None
+    p = Path(value)
+    if not p.is_absolute():
+        p = (SERVER_ROOT / p).resolve()
+    return p if p.is_file() else None
+
+
 def resolve_server_url() -> str:
     explicit = env("ALPHA_SERVER_URL")
     if explicit:
@@ -90,7 +101,17 @@ def resolve_server_url() -> str:
     if host in ("0.0.0.0", "::", "[::]"):
         host = "localhost"
     port = env("SERVER_PORT", "8080") or "8080"
-    return f"http://{host}:{port}"
+    scheme = "https" if env("TLS_CERT_FILE") and env("TLS_KEY_FILE") else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+def resolve_tls_verify() -> bool | str:
+    """Trust mkcert/local CA when TLS_CA_FILE or REQUESTS_CA_BUNDLE points at a PEM."""
+    for key in ("TLS_CA_FILE", "REQUESTS_CA_BUNDLE"):
+        found = resolve_path(env(key))
+        if found is not None:
+            return str(found)
+    return True
 
 
 def resolve_listen() -> tuple[str, int]:
@@ -418,6 +439,9 @@ def main() -> int:
         EMBEDDER = None
 
     HTTP = requests.Session()
+    HTTP.verify = resolve_tls_verify()
+    if isinstance(HTTP.verify, str):
+        print(f"[FaceWorker] TLS verify CA={HTTP.verify}", flush=True)
     HTTP.headers.update(
         {
             "X-Face-Worker-Key": API_KEY,

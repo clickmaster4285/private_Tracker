@@ -36,7 +36,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("[server] failed to load config: %v", err)
 	}
-	log.Printf("[server] configured for %s", cfg.ServerAddr())
+	if cfg.TLSEnabled() {
+		log.Printf("[server] configured for https://%s (cert=%s)", cfg.ServerAddr(), cfg.Server.TLSCertFile)
+	} else {
+		log.Printf("[server] configured for http://%s", cfg.ServerAddr())
+	}
+	handlers.ConfigureAuthCookies(cfg.Server.CookieSecure)
 
 	// ────────────────
 	// Database
@@ -333,8 +338,16 @@ func main() {
 	// Graceful Shutdown
 	// ────────────────
 	go func() {
-		log.Printf("[server] listening on %s", cfg.ServerAddr())
-		if err := e.Start(cfg.ServerAddr()); err != nil {
+		addr := cfg.ServerAddr()
+		if cfg.TLSEnabled() {
+			log.Printf("[server] listening on https://%s", addr)
+			if err := e.StartTLS(addr, cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile); err != nil {
+				log.Printf("[server] server stopped: %v", err)
+			}
+			return
+		}
+		log.Printf("[server] listening on http://%s", addr)
+		if err := e.Start(addr); err != nil {
 			log.Printf("[server] server stopped: %v", err)
 		}
 	}()

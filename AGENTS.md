@@ -3,6 +3,15 @@
 > **Last audited:** 2026-11-12
 > **Changelog:**
 >
+> - 2026-11-12: **Local HTTPS (mkcert) for API + Next web.** Repo `certs/local.pem` +
+>   `local-key.pem` (+ `rootCA.pem`); `TLS_CERT_FILE` / `TLS_KEY_FILE` / `TLS_CA_FILE` /
+>   `COOKIE_SECURE` in `server/.env` → Echo `StartTLS` + Secure auth cookies; CORS /
+>   `INSTANCE_PUBLIC_URL` / face_worker `ALPHA_SERVER_URL` use `https`/`wss`. Web
+>   `npm run dev` → `scripts/dev-https.mjs` with same certs; `API_PROXY_TARGET` +
+>   `NODE_EXTRA_CA_CERTS`; `NEXT_PUBLIC_WS_URL=wss://…`. One-time: `mkcert -install`
+>   (UAC) so browsers/Node trust the CA. Per-machine steps: [`certs.md`](certs.md)
+>   (Windows + Linux). Restart API + `npm run dev` + face_worker.
+>
 > - 2026-11-12: **Face embeddings persist (AdaFace path + DeviceAuth download).** Go
 >   `POST /internal/face-worker/jobs/:id/embeddings` AES-GCM → `employee_face_embeddings`,
 >   activates profile; DeviceAuth `GET /face-profiles/me/embeddings`. Python worker aligns
