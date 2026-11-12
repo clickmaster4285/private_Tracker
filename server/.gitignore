@@ -35,6 +35,12 @@ vendor/
 /out/
 
 # ── Screenshot media (ops-owned disk; not source) ──
-/media/screenshots/**
-!/media/screenshots/.gitkeep
+/media/**
+
+# ── face_worker (Python) ──────────
+/face_worker/.venv/
+/face_worker/cascades/
+/face_worker/models/
+/face_worker/__pycache__/
+/face_worker/*.pyc
 

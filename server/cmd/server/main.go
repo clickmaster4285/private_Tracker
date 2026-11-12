@@ -230,6 +230,24 @@ func main() {
 	}
 	screenshotHandler := handlers.NewScreenshotHandler(screenshotService)
 
+	faceRepo := repository.NewFaceRepo(pool)
+	faceService := services.NewFaceService(
+		faceRepo, employeeRepo, cfg.Face.Dir, cfg.Face.MaxUploadBytes, cfg.Face.MaxFilesPerJob,
+	)
+	faceService.SetWorkerPush(cfg.Face.WorkerURL, cfg.Face.WorkerAPIKey)
+	if err := os.MkdirAll(faceService.RootDir(), 0o750); err != nil {
+		log.Printf("[server] WARNING: could not create face media dir %s: %v", faceService.RootDir(), err)
+	} else {
+		log.Printf("[server] face media store %s (max %d bytes/file, max %d files/job)",
+			faceService.RootDir(), faceService.MaxBytes(), faceService.MaxFiles())
+	}
+	faceHandler := handlers.NewFaceHandler(faceService, cfg.Face.WorkerAPIKey)
+	if cfg.Face.WorkerAPIKey == "" {
+		log.Printf("[server] FACE_WORKER_API_KEY empty — /api/v1/internal/face-worker/* rejects until set")
+	} else if cfg.Face.WorkerURL != "" {
+		log.Printf("[server] face_worker push → %s/v1/process", cfg.Face.WorkerURL)
+	}
+
 	// ────────────────
 	// Seed RBAC catalog (modules, submodules, system role) — idempotent
 	// ────────────────
@@ -306,7 +324,7 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, portHandler, releaseHandler, screenshotHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, portHandler, releaseHandler, screenshotHandler, faceHandler)
 
 	// ────────────────
 	// Graceful Shutdown

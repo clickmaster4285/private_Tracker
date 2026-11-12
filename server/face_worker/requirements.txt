@@ -1,0 +1,4 @@
+# Server-side FaceWorker only (not shipped with the Avalonia employee agent).
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+requests>=2.31,<3

@@ -46,9 +46,23 @@ type Config struct {
 	// Screenshots configures offline-first WebP storage (no retention purge yet).
 	Screenshots ScreenshotsConfig
 
+	// Face configures biometric enrollment media + FaceWorker shared secret.
+	Face FaceConfig
+
 	// Scale holds admission-control / Asynq / cache knobs for ~1000-agent fleets.
 	// All Go processes still share ONE PostgreSQL — pools must fit max_connections.
 	Scale ScaleConfig
+}
+
+// FaceConfig points at media/faces/{employeeId}/{jobId}/….
+type FaceConfig struct {
+	Dir            string
+	MaxUploadBytes int64
+	MaxFilesPerJob int
+	// WorkerAPIKey authenticates POST /internal/face-worker/* (empty = worker endpoints disabled).
+	WorkerAPIKey string
+	// WorkerURL is the face_worker HTTP base (e.g. http://127.0.0.1:8010). API pushes jobs here.
+	WorkerURL string
 }
 
 // ScreenshotsConfig points at media/screenshots/{emp}/{yyyy}/{MM}/{dd}/….
@@ -257,6 +271,14 @@ func Load() (*Config, error) {
 		Screenshots: ScreenshotsConfig{
 			Dir:            strings.TrimSpace(getEnv("SCREENSHOTS_DIR", "media/screenshots")),
 			MaxUploadBytes: getEnvInt64("SCREENSHOTS_MAX_UPLOAD_BYTES", 2<<20),
+		},
+
+		Face: FaceConfig{
+			Dir:            strings.TrimSpace(getEnv("FACE_MEDIA_DIR", "media/faces")),
+			MaxUploadBytes: getEnvInt64("FACE_MAX_UPLOAD_BYTES", 3<<20),
+			MaxFilesPerJob: getEnvInt("FACE_MAX_FILES_PER_JOB", 16),
+			WorkerAPIKey:   strings.TrimSpace(getEnv("FACE_WORKER_API_KEY", "")),
+			WorkerURL:      strings.TrimRight(strings.TrimSpace(getEnv("FACE_WORKER_URL", "http://127.0.0.1:8010")), "/"),
 		},
 
 		Scale: ScaleConfig{

@@ -39,6 +39,7 @@ func Setup(
 	portHandler *handlers.PortHandler,
 	releaseHandler *handlers.ReleaseHandler,
 	screenshotHandler *handlers.ScreenshotHandler,
+	faceHandler *handlers.FaceHandler,
 ) {
 	// ─────────────────────────────
 	// Global Middleware
@@ -72,6 +73,17 @@ func Setup(
 		})
 	})
 	e.GET("/api/v1/server-time", timeAttendanceHandler.ServerTime)
+
+	// FaceWorker internal claim API (shared secret; disabled when FACE_WORKER_API_KEY empty).
+	if faceHandler != nil {
+		internalFace := e.Group("/api/v1/internal/face-worker")
+		internalFace.POST("/claim", faceHandler.WorkerClaimJob)
+		internalFace.POST("/jobs/:jobId/lease", faceHandler.WorkerLeaseJob)
+		internalFace.POST("/jobs/:jobId/fail", faceHandler.WorkerFailJob)
+		internalFace.POST("/jobs/:jobId/complete", faceHandler.WorkerCompleteJob)
+		internalFace.POST("/jobs/:jobId/samples/:sampleId/result", faceHandler.WorkerSampleResult)
+		internalFace.GET("/samples/:sampleId/image", faceHandler.WorkerSampleImage)
+	}
 
 	// ─────────────────────────────
 	// Admission control (1000-agent scale)
@@ -137,6 +149,11 @@ func Setup(
 	syncAdmit.POST("/devices/self-remove", newSchemaHandler.SelfRemoveAccount)
 
 	syncGroup.GET("/schedules/me", timeAttendanceHandler.GetMySchedule)
+	if faceHandler != nil {
+		syncGroup.GET("/face-profiles/me", faceHandler.GetMyFaceProfile)
+		syncGroup.POST("/face-profiles/sync-ack", faceHandler.SyncAck)
+		syncGroup.GET("/face-models/manifest", faceHandler.ModelManifest)
+	}
 
 	// Security & DLP — device surface (policy pull, alert sync, health, removal verify)
 	if dlpHandler != nil {
@@ -225,6 +242,16 @@ func Setup(
 	employees.PUT("/:id", employeeHandler.UpdateEmployee)
 	employees.DELETE("/:id", employeeHandler.DeleteEmployee)
 	employees.POST("/:id/generate-secret", employeeHandler.GenerateSecret)
+	if faceHandler != nil {
+		employees.POST("/:id/face-enrollment", faceHandler.CreateEnrollment)
+		employees.POST("/:id/face-enrollment/:jobId/retry", faceHandler.RetryEnrollment)
+		// Static "samples" segment before :jobId so image URLs never bind jobId="samples".
+		employees.GET("/:id/face-enrollment/samples/:sampleId/image", faceHandler.GetEnrollmentSampleImage)
+		employees.GET("/:id/face-enrollment/:jobId", faceHandler.GetEnrollmentJob)
+		employees.GET("/:id/face-profile/samples", faceHandler.ListProfileSamples)
+		employees.GET("/:id/face-profile", faceHandler.GetFaceProfile)
+		employees.DELETE("/:id/face-profile", faceHandler.DeleteFaceProfile)
+	}
 
 	// Device Revocation
 	protected.POST("/devices/:id/revoke", authHandler.RevokeDevice)

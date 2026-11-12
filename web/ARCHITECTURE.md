@@ -1,7 +1,22 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-10 (screenshots lazy grid)
+> **Last audited:** 2026-11-12 (face enrollment gallery + retry UX)
 > **Changelog:**
+>
+> - 2026-11-12: **Face gallery + per-image Verified/Retry.** `/employees/face` (RBAC
+>   `users/face-enrollment`) lists enrollment thumbs with status chips; Enroll dialog polls
+>   job samples live (Checking / Verified / Retry) and `retryFaceEnrollment` replaces rejected
+>   poses only. Sidebar entry under HR. Plan: `doc/face-attendance-plan.md`.
+>
+> - 2026-11-12: **Employees face enrollment dialog.** `/employees` ⋮ → **Enroll Face…** opens
+>   `EnrollFaceDialog` (multi-angle webcam, quality heuristics, multipart original-image upload via
+>   `employeesApi.createFaceEnrollment`). No client-side authoritative embeddings. Helpers in
+>   `lib/face-enrollment.ts`. Plan: `doc/face-attendance-plan.md`.
+>
+> - Prior: 2026-11-10 (screenshots lazy grid)
+>
+> **Last audited (prior):** 2026-11-10 (screenshots lazy grid)
+> **Changelog (continued):**
 > - 2026-11-10: **`/screenshots` live grid.** `screenshotsApi` + `ScreenshotGrid` infinite scroll
 >   with per-card IntersectionObserver lazy `<img>` (never bulk-loads blobs). URL filters via
 >   `useUrlActivityFilter` + employee picker. Journey `/employee-journey/screenshots` reuses the

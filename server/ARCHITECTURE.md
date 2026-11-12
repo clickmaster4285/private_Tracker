@@ -1,7 +1,27 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-11 (Edge/Chrome allow path widen)
+> **Last audited:** 2026-11-12 (face enrollment UX + server FaceWorker)
 > **Changelog:**
+>
+> - 2026-11-12: **face_worker is Python** under `server/face_worker` (`worker.py`, OpenCV).
+>   Same internal claim/result/complete HTTP contract; not the Avalonia agent.
+>
+> - 2026-11-12: **Face enrollment retry + gallery + face_worker under `server/face_worker`.**
+>   JWT `POST /employees/:id/face-enrollment/:jobId/retry`, `GET …/face-profile/samples`;
+>   per-sample `process_status` (069). Worker is server-side only (not Avalonia).
+>   RBAC route `users/face-enrollment` → `/employees/face`. Embeddings still deferred
+>   (`embeddings_deferred`) until AdaFace ONNX license (`doc/face-preprocess-v1.md`).
+>
+> - 2026-11-12: **Face enrollment APIs + migration 068.** JWT multipart enrollment uploads original
+>   images to `FACE_MEDIA_DIR`; `face_enrollment_jobs` queue; FaceWorker claim/fail under
+>   `/api/v1/internal/face-worker/*` (`FACE_WORKER_API_KEY`). DeviceAuth `GET /face-profiles/me`,
+>   `POST /face-profiles/sync-ack`, `GET /face-models/manifest`. RBAC `users/face-enrollment`.
+>   ONNX embedding generation still blocked on license gate (`doc/face-preprocess-v1.md`).
+>
+> - Prior: 2026-11-11 (Edge/Chrome allow path widen)
+>
+> **Last audited (prior):** 2026-11-11 (Edge/Chrome allow path widen)
+> **Changelog (continued):**
 > - 2026-11-11: **Browser allow paths widen to `Application\*`.** `WidenBrowserAllowPath`
 >   (repo) turns Edge/Chrome/EdgeWebView single-EXE inventory paths into
 >   `…\Application\*` so AppLocker covers versioned helpers after updates. Applied in

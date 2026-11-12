@@ -3,13 +3,14 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff, PauseCircle } from 'lucide-react';
+import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff, PauseCircle, ScanFace } from 'lucide-react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { employeesApi, departmentsApi, usersApi, shiftsApi, dlpApi, type Employee, type CreateEmployeePayload, type UpdateEmployeePayload, type ImportEmployeeRow, type ImportEmployeesResponse, type Shift, type RemoveEmployeeDeviceResponse, type IssueRemovalCodeResponse, type EmployeeDevice } from '@/lib/api';
 import { removeAccountCommands, protectedUninstallCommands } from '@/lib/client-commands';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { EnrollFaceDialog } from '@/components/employees/EnrollFaceDialog';
 import { useUrlQueryState } from '@/hooks/use-url-query-state';
 import {
   DropdownMenu,
@@ -78,6 +79,7 @@ function UsersListInner() {
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState<Employee | null>(null);
+  const [showEnrollFace, setShowEnrollFace] = useState<Employee | null>(null);
   const [showRemove, setShowRemove] = useState<Employee | null>(null);
   const [secretValue, setSecretValue] = useState('');
   const [copied, setCopied] = useState(false);
@@ -694,6 +696,13 @@ function UsersListInner() {
                           <Pencil className="w-4 h-4 text-muted-foreground" />
                           Edit Details
                         </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => setShowEnrollFace(emp)}
+                          className="cursor-pointer gap-2.5 px-2.5 py-2"
+                        >
+                          <ScanFace className="w-4 h-4 text-muted-foreground" />
+                          Enroll Face…
+                        </DropdownMenuItem>
                         {!emp.hasUserLogin && (
                           <DropdownMenuItem asChild className="cursor-pointer gap-2.5 px-2.5 py-2">
                             <Link href={`/settings/user-management?create=1&employeeId=${encodeURIComponent(emp.employeeId)}&name=${encodeURIComponent(emp.name)}&email=${encodeURIComponent(emp.email)}`}>
@@ -1273,6 +1282,12 @@ function UsersListInner() {
       </Dialog>
 
       {/* Secret Dialog */}
+      <EnrollFaceDialog
+        employee={showEnrollFace}
+        open={showEnrollFace !== null}
+        onOpenChange={(open) => { if (!open) setShowEnrollFace(null); }}
+      />
+
       <Dialog open={showSecret !== null} onOpenChange={(open) => { if (!open) { setShowSecret(null); setSecretValue(''); setCopied(false); } }}>
         <DialogContent className="bg-card sm:max-w-[460px]">
           <DialogHeader>

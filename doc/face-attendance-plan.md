@@ -1,10 +1,12 @@
 # Alpha AI Tracker — Face Recognition Enrollment & Local Engine Plan
 
-> **Status:** Planning only (no implementation in this document’s delivery).  
+> **Status:** Implementation in progress (Phases 1–3 + enroll UX / gallery landed 2026-11-12).  
 > **Branch audited:** `agentAttendance` (filesystem-verified).  
 > **Last updated:** 2026-11-12  
 > **Scope:** Multi-angle browser enrollment → server embedding generation → DeviceAuth biometric package + ONNX model download → local storage → local recognition engine ready.  
 > **Out of scope (future):** clock-in/out, breaks, attendance state machine, attendance dashboards/policies/reporting, continuous presence monitoring, automatic clock-out. Liveness/anti-spoofing is documented only as a future security extension.
+>
+> **Shipped so far:** migrations **068**/**069**; JWT enrollment + **retry** + profile sample list; DeviceAuth profile meta + model manifest (packages gated); web Enroll Face dialog with live Checking/Verified/Retry + retake-only; `/employees/face` gallery; **server/face_worker** (**Python** OpenCV face-count; embeddings deferred until AdaFace ONNX license). **Not yet:** embedding persistence, signed model packages, desktop sync/engine.
 
 ---
 
@@ -15,7 +17,7 @@ This plan introduces **centralized face enrollment and biometric management** wi
 ### Required end-to-end workflow (canonical)
 
 1. Admin opens `/employees`, starts multi-angle webcam enrollment, and uploads **original images** (not client-generated embeddings).
-2. Go API accepts the job; a dedicated **.NET FaceWorker** (ONNX Runtime) detects, aligns, embeds with **AdaFace IR-50** (subject to commercial licensing approval), and persists embeddings + metadata in PostgreSQL.
+2. Go API accepts the job; a dedicated **Python FaceWorker** (server-side; OpenCV today, ONNX Runtime for AdaFace IR-50 when licensed) detects, aligns, embeds, and persists embeddings + metadata in PostgreSQL.
 3. Employee logs into the Avalonia client; DeviceAuth identifies them.
 4. Client downloads **only that employee’s** biometric package (original enrollment images + embeddings + profile/model metadata) and the required ONNX model package (if missing/outdated).
 5. Client stores data locally (SQLite + encrypted files), validates, and activates atomically.
@@ -344,7 +346,7 @@ sequenceDiagram
   API-->>Admin: active or failed detail
 ```
 
-FaceWorker may live as `server/cmd/faceworker` or `client/FaceWorker` project referenced from server deploy docs — **.NET + Microsoft.ML.OnnxRuntime**, same preprocess library shared as a NuGet/project with the desktop agent to guarantee parity.
+face_worker lives at **`server/face_worker`** (Python; server ops only — never merge into the Avalonia employee agent). Deploy beside the API — **OpenCV face-check today; `onnxruntime` when AdaFace is licensed**. Desktop agent recognition remains .NET/ONNX later — run a numerical parity harness so server Python embeddings match the agent.
 
 ---
 

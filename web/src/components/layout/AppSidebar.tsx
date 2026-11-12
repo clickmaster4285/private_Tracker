@@ -69,6 +69,11 @@ const navSections: NavSection[] = [
             module: "users",
           },
           {
+            label: "Face Enrollment",
+            path: "/employees/face",
+            module: "users/face-enrollment",
+          },
+          {
             label: "Departments",
             path: "/departments",
             module: "departments",

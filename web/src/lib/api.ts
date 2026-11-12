@@ -129,6 +129,47 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
   return JSON.parse(text) as T;
 }
 
+/** Multipart upload (do not set Content-Type — browser adds boundary). */
+async function requestFormData<T>(endpoint: string, form: FormData, options: { _retried?: boolean } = {}): Promise<T> {
+  const url = `${API_BASE}${endpoint}`;
+  let response = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+
+  if (response.status === 401 && !options._retried) {
+    if (!refreshInFlight) {
+      refreshInFlight = performRefresh().finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    const refreshed = await refreshInFlight;
+    if (refreshed) {
+      return requestFormData<T>(endpoint, form, { _retried: true });
+    }
+    forceLoginRedirect();
+  }
+
+  if (!response.ok) {
+    let errorData: { message?: string; detail?: string } = {};
+    try {
+      errorData = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new ApiError(
+      errorData.message || `Request failed with status ${response.status}`,
+      response.status,
+      errorData.detail,
+    );
+  }
+
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
+}
+
 // ──────────────────────────
 // Auth API
 // ──────────────────────────
@@ -396,7 +437,96 @@ export const employeesApi = {
 
   // All non-deleted employees as flat rows for the Excel download.
   export: () => request<EmployeeExportRow[]>('/employees/export'),
+
+  // Face enrollment (original images → server job; embeddings via FaceWorker).
+  createFaceEnrollment: (id: string, form: FormData) =>
+    requestFormData<FaceEnrollmentCreateResponse>('/employees/' + id + '/face-enrollment', form),
+
+  retryFaceEnrollment: (id: string, jobId: string, form: FormData) =>
+    requestFormData<FaceEnrollmentJobResponse>(
+      '/employees/' + id + '/face-enrollment/' + jobId + '/retry',
+      form,
+    ),
+
+  getFaceEnrollmentJob: (id: string, jobId: string) =>
+    request<FaceEnrollmentJobResponse>('/employees/' + id + '/face-enrollment/' + jobId),
+
+  getFaceProfileSamples: (id: string) =>
+    request<FaceProfileSamplesResponse>('/employees/' + id + '/face-profile/samples'),
+
+  getFaceProfile: (id: string) =>
+    request<FaceProfile>('/employees/' + id + '/face-profile'),
+
+  revokeFaceProfile: (id: string) =>
+    request<{ revoked: boolean }>('/employees/' + id + '/face-profile', { method: 'DELETE' }),
+
+  /** Same-origin image path for an enrollment sample (cookies via rewrite). */
+  faceSampleImagePath: (employeeId: string, sampleId: string) =>
+    '/api/v1/employees/' + employeeId + '/face-enrollment/samples/' + sampleId + '/image',
 };
+
+export interface FaceEnrollmentJob {
+  id: string;
+  employeeId: string;
+  profileId?: string;
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'needs_more_samples' | string;
+  attemptCount: number;
+  errorCode?: string;
+  errorMessage?: string;
+  sampleCount?: number;
+  processedSamples?: number;
+  rejectedSamples?: number;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+export interface FaceEnrollmentSample {
+  id: string;
+  jobId: string;
+  employeeId?: string;
+  poseId: string;
+  contentType: string;
+  byteSize: number;
+  qualityScore: number;
+  clientSampleId?: string;
+  processStatus?: 'uploaded' | 'processing' | 'validated' | 'embedded' | 'rejected' | string;
+  rejectReason?: string;
+  faceCount?: number;
+  imageUrl?: string;
+  createdAt?: string;
+}
+
+export interface FaceProfile {
+  id: string;
+  employeeId: string;
+  status: string;
+  profileVersion: number;
+  enrollmentVersion: number;
+  modelId: string;
+  modelVersion: string;
+  preprocessVersion: string;
+  embeddingDims: number;
+  activatedAt?: string;
+  revokedAt?: string;
+  lastError?: string;
+  embeddingCount?: number;
+}
+
+export interface FaceEnrollmentCreateResponse {
+  job: FaceEnrollmentJob;
+  profile: FaceProfile;
+  samples: FaceEnrollmentSample[];
+}
+
+export interface FaceEnrollmentJobResponse {
+  job: FaceEnrollmentJob;
+  samples: FaceEnrollmentSample[];
+}
+
+export interface FaceProfileSamplesResponse {
+  job?: FaceEnrollmentJob;
+  samples: FaceEnrollmentSample[];
+}
 
 // ──────────────────────────
 // Shifts API (relational CRUD)

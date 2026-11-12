@@ -85,6 +85,8 @@ client/
 │   ├── NetProbeService.cs           Uplink probe → POST /live-stream/uplink-probe; bitrate ladder
 │   ├── ScreenCaptureService.cs      Windows multi-path GDI BitBlt → BGRA (+ CaptureStill for screenshots)
 │   └── Screenshots/                 Offline capture + sync workers (WebP pending/ → DeviceAuth upload)
+│   ├── Face/                        (Phase 5+ biometric sync/engine — directory reserved)
+│   ├── face_worker/README.md        → relocated to server/face_worker (not the employee agent)
 │   ├── TimeDateWarning/             Hourly clock/TZ health → spawn `--timedatewarning` Avalonia window
 │   ├── ClientIdentityHeaders.cs     X-Client-Version / X-Client-Platform on DeviceAuth HTTP+WS
 │   ├── WsClient.cs                  presence WS → /api/v1/ws (Online/Offline; not media)
@@ -224,10 +226,17 @@ server/
 │   ├── scale/instance.go        INSTANCE_ID resolution
 │   └── stream/                  live preview WebRTC SFU — hub.go + sfu.go (preview only; no DB frames)
 │
-├── migrations/               ⭐ sequential SQL files (001…052+). Append-only: never edit applied migrations.
-│                                051_dlp_security.sql · 052_dlp_alert_history.sql
+├── migrations/               ⭐ sequential SQL files (001…068+). Append-only: never edit applied migrations.
+│                                … · 065_screenshots.sql · 066/067_port_control · 068_face_enrollment.sql
+├── media/faces/              Protected enrollment originals (FACE_MEDIA_DIR)
+├── face_worker/              Server-side Python face worker (OpenCV face-check; ONNX later)
+├── cmd/faceworker/README.md  Deploy pointer → server/face_worker
 └── bin/                      ⚠️ build output
 ```
+
+Plan docs: `doc/face-attendance-plan.md`, `doc/face-preprocess-v1.md`.
+Web enroll UI: `web/src/components/employees/EnrollFaceDialog.tsx`, `web/src/lib/face-enrollment.ts`,
+`web/src/app/(app)/employees/face/page.tsx` (gallery).
 
 **The `new_schema_*` triple** (`handler` / `service` / `repo` / `dto`) is the client-facing ingest path — that is where a client-side contract change lands on the server, not in the employee/user files. Live-stream signaling lands in `internal/stream/` + the stream handler from `router.go`.
 

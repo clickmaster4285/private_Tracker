@@ -41,6 +41,7 @@ var rbacCatalog = []moduleSeed{
 		Key: "hr", Name: "HR", SortOrder: 2,
 		Submodules: []submodulesSeed{
 			{Key: "users", Name: "Employees", Route: "/employees"},
+			{Key: "users/face-enrollment", Name: "Face Enrollment", Route: "/employees/face"},
 			{Key: "departments", Name: "Departments", Route: "/departments"},
 			{Key: "roles", Name: "Roles", Route: "/roles"},
 			{Key: "kpis", Name: "KPIs & KRAs", Route: "/kpis"},

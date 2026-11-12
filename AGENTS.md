@@ -1,7 +1,48 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-11
+> **Last audited:** 2026-11-12
 > **Changelog:**
+>
+> - 2026-11-12: **face_worker push mode (no 2s poll).** Python HTTP on `FACE_WORKER_LISTEN`
+>   (default `:8010`); Go API `FACE_WORKER_URL` POSTs `/v1/process` after enroll/retry;
+>   worker leases via `POST /internal/face-worker/jobs/:id/lease`. Restart API + `python worker.py`.
+>
+> - 2026-11-12: **Face sample image 500/404 for WA-44/LIN-1.** `ResolveEmployeeID` queried
+>   `employees.id` (uuid) with business codes → Postgres error before `employee_id` fallback;
+>   enroll dialog thumbs broke. Fixed UUID-vs-code branch; sample image uses `ServeContent`.
+>   Restart API.
+>
+> - 2026-11-12: **face_worker YuNet detector (angled poses).** Haar frontal cascade falsely
+>   rejected left/right/up/down enrollments (`no_face`). Switched to OpenCV **YuNet** ONNX
+>   (`server/face_worker`, download-on-first-run under `models/`). Verified on LIN-1 job
+>   samples: all 8 poses → `faces=1`. Restart `python worker.py` to pick up.
+>
+> - 2026-11-12: **face_worker renamed + Python (server-only).** Directory
+>   [`server/face_worker`](server/face_worker) (`worker.py` + OpenCV/requests; auto-loads
+>   `server/.env`). Same `/api/v1/internal/face-worker/*` contract. Not part of the Avalonia
+>   agent. Verified: `python -m py_compile worker.py`; Go API unchanged.
+>
+> - 2026-11-12: **Face enrollment — server face_worker + per-image Verified/Retry UX + gallery.**
+>   Worker under [`server/face_worker`](server/face_worker) (server-side only; not the Avalonia
+>   agent). Per-sample face-check → `validated` / `rejected`; job may finish `succeeded` +
+>   `embeddings_deferred` until AdaFace ONNX is licensed. JWT
+>   `POST …/face-enrollment/:jobId/retry` (replace rejected poses only) +
+>   `GET …/face-profile/samples`. Web enroll dialog shows server thumbnails with live
+>   Checking/Verified/Retry badges and retake-only flow; new `/employees/face` gallery
+>   (RBAC `users/face-enrollment`). Migrations **068**/**069**. Env unchanged
+>   (`FACE_WORKER_API_KEY` required to claim).
+>
+> - 2026-11-12: **Face enrollment Phase 1–3 foundation (server + web + FaceWorker skeleton).**
+>   Plan: [`doc/face-attendance-plan.md`](doc/face-attendance-plan.md) + preprocess pin
+>   [`doc/face-preprocess-v1.md`](doc/face-preprocess-v1.md). Migration **068** face jobs/samples/
+>   profiles/embeddings/audit/model_versions. JWT multipart `POST /employees/:id/face-enrollment`
+>   stores originals under `FACE_MEDIA_DIR` (default `media/faces/`); jobs stay `pending` until
+>   FaceWorker claims via `FACE_WORKER_API_KEY` (`/api/v1/internal/face-worker/*`).
+>   DeviceAuth `GET /face-profiles/me` + `GET /face-models/manifest` (packages gated on license).
+>   Web `/employees` → **Enroll Face…** multi-angle webcam dialog uploads originals only (no
+>   browser embeddings). RBAC submodule `users/face-enrollment`. Attendance punches still out of
+>   scope. Env: `FACE_MEDIA_DIR`, `FACE_MAX_UPLOAD_BYTES`, `FACE_MAX_FILES_PER_JOB`,
+>   `FACE_WORKER_API_KEY`.
 >
 > - 2026-11-11: **Protected-uninstall pipe unlock + AppLocker leftover fix (client + DlpService).**
 >   `ApplyTeardownGate` / `AuthorizeTeardown` no longer gated on `ALPHA_DLP_ENABLED` (was returning
