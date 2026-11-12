@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/facecrypto"
 	"github.com/alpha-ai-tracker/server/internal/models"
 	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/google/uuid"
@@ -39,6 +40,7 @@ type FaceService struct {
 	maxFiles     int
 	workerURL    string
 	workerAPIKey string
+	embedKey     []byte
 	httpClient   *http.Client
 }
 
@@ -62,6 +64,16 @@ func NewFaceService(repo *repository.FaceRepo, empRepo *repository.EmployeeRepo,
 func (s *FaceService) SetWorkerPush(workerURL, apiKey string) {
 	s.workerURL = strings.TrimRight(strings.TrimSpace(workerURL), "/")
 	s.workerAPIKey = strings.TrimSpace(apiKey)
+}
+
+// SetEmbeddingKeySecret configures AES-GCM key material for embedding_ciphertext.
+func (s *FaceService) SetEmbeddingKeySecret(secret string) error {
+	key, err := facecrypto.KeyFromSecret(strings.TrimSpace(secret))
+	if err != nil {
+		return err
+	}
+	s.embedKey = key
+	return nil
 }
 
 func (s *FaceService) RootDir() string  { return s.rootDir }
@@ -592,7 +604,200 @@ func (s *FaceService) CompleteJobFinalizes(ctx context.Context, jobID, status, c
 	default:
 		return fmt.Errorf("invalid job status")
 	}
+	job, err := s.repo.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if job != nil && job.ProfileID != nil && status == "failed" {
+		_ = s.repo.MarkProfileFailed(ctx, *job.ProfileID, message)
+	}
 	return s.repo.CompleteJob(ctx, jobID, status, code, message)
+}
+
+// WorkerEmbeddingItem is one sample vector from face_worker.
+type WorkerEmbeddingItem struct {
+	SampleID     string    `json:"sampleId"`
+	PoseID       string    `json:"poseId"`
+	QualityScore float64   `json:"qualityScore"`
+	Vector       []float32 `json:"vector"`
+}
+
+// SubmitJobEmbeddingsRequest is POSTed by face_worker after AdaFace ONNX.
+type SubmitJobEmbeddingsRequest struct {
+	ModelID           string                `json:"modelId"`
+	ModelVersion      string                `json:"modelVersion"`
+	PreprocessVersion string                `json:"preprocessVersion"`
+	EmbeddingDims     int                   `json:"embeddingDims"`
+	PackageSHA256     string                `json:"packageSha256"`
+	PackageRelPath    string                `json:"packageRelPath"`
+	Embeddings        []WorkerEmbeddingItem `json:"embeddings"`
+}
+
+// SubmitJobEmbeddings encrypts vectors, persists them, activates the profile, completes the job.
+func (s *FaceService) SubmitJobEmbeddings(ctx context.Context, jobID string, req SubmitJobEmbeddingsRequest) error {
+	if len(s.embedKey) == 0 {
+		return fmt.Errorf("embedding encryption key not configured")
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return fmt.Errorf("job id required")
+	}
+	req.ModelID = strings.TrimSpace(req.ModelID)
+	req.ModelVersion = strings.TrimSpace(req.ModelVersion)
+	req.PreprocessVersion = strings.TrimSpace(req.PreprocessVersion)
+	if req.ModelID == "" {
+		req.ModelID = "adaface-ir50"
+	}
+	if req.ModelVersion == "" {
+		return fmt.Errorf("modelVersion required")
+	}
+	if req.PreprocessVersion == "" {
+		req.PreprocessVersion = "face-preprocess-v1"
+	}
+	if req.EmbeddingDims <= 0 {
+		req.EmbeddingDims = 512
+	}
+	if len(req.Embeddings) == 0 {
+		return fmt.Errorf("embeddings required")
+	}
+
+	job, err := s.repo.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("job not found")
+	}
+	if job.ProfileID == nil || strings.TrimSpace(*job.ProfileID) == "" {
+		return fmt.Errorf("job has no profile")
+	}
+	profileID := *job.ProfileID
+
+	samples, err := s.repo.ListSamplesByJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]models.FaceEnrollmentSample, len(samples))
+	for _, sample := range samples {
+		byID[sample.ID] = sample
+	}
+
+	for _, item := range req.Embeddings {
+		sid := strings.TrimSpace(item.SampleID)
+		if sid == "" {
+			return fmt.Errorf("embedding sampleId required")
+		}
+		sample, ok := byID[sid]
+		if !ok {
+			return fmt.Errorf("sample %s not in job", sid)
+		}
+		if sample.ProcessStatus == "rejected" {
+			return fmt.Errorf("sample %s is rejected", sid)
+		}
+		if len(item.Vector) != req.EmbeddingDims {
+			return fmt.Errorf("sample %s vector length %d != dims %d", sid, len(item.Vector), req.EmbeddingDims)
+		}
+	}
+
+	if err := s.repo.DeleteEmbeddingsByProfile(ctx, profileID); err != nil {
+		return err
+	}
+
+	for _, item := range req.Embeddings {
+		sid := strings.TrimSpace(item.SampleID)
+		sample := byID[sid]
+		pose := strings.TrimSpace(item.PoseID)
+		if pose == "" {
+			pose = sample.PoseID
+		}
+		ct, nonce, err := facecrypto.EncryptVector(s.embedKey, item.Vector)
+		if err != nil {
+			return fmt.Errorf("encrypt sample %s: %w", sid, err)
+		}
+		if _, err := s.repo.InsertEmbedding(
+			ctx, profileID, job.EmployeeID, sid,
+			req.ModelID, req.ModelVersion, req.PreprocessVersion, req.EmbeddingDims,
+			ct, nonce, item.QualityScore, pose,
+		); err != nil {
+			return err
+		}
+		if err := s.repo.UpdateSampleProcessResult(ctx, sid, "embedded", "", sample.FaceCount); err != nil {
+			return err
+		}
+	}
+	_ = s.repo.BumpJobProgress(ctx, jobID)
+
+	modelRowID := req.ModelID + "@" + req.ModelVersion
+	_ = s.repo.UpsertRecognitionModel(
+		ctx, modelRowID, req.ModelID, req.ModelVersion, req.PreprocessVersion,
+		strings.TrimSpace(req.PackageSHA256), strings.TrimSpace(req.PackageRelPath), req.EmbeddingDims,
+	)
+
+	if err := s.repo.ActivateProfile(
+		ctx, profileID, job.EmployeeID,
+		req.ModelID, req.ModelVersion, req.PreprocessVersion, req.EmbeddingDims,
+	); err != nil {
+		return err
+	}
+
+	_ = s.repo.InsertAudit(ctx, job.EmployeeID, "face_worker", "embeddings_stored", map[string]any{
+		"jobId":       jobID,
+		"profileId":   profileID,
+		"count":       len(req.Embeddings),
+		"modelId":     req.ModelID,
+		"modelVersion": req.ModelVersion,
+	})
+
+	return s.repo.CompleteJob(ctx, jobID, "succeeded", "", fmt.Sprintf(
+		"Stored %d AdaFace embeddings; profile active", len(req.Embeddings),
+	))
+}
+
+// ListMyEmbeddingTemplates decrypts active-profile templates for DeviceAuth download.
+func (s *FaceService) ListMyEmbeddingTemplates(ctx context.Context, deviceEmployeeID string) (*models.EmployeeFaceProfile, []models.FaceEmbeddingTemplate, error) {
+	deviceEmployeeID = strings.TrimSpace(deviceEmployeeID)
+	if deviceEmployeeID == "" {
+		return nil, nil, fmt.Errorf("missing employee")
+	}
+	if len(s.embedKey) == 0 {
+		return nil, nil, fmt.Errorf("embedding encryption key not configured")
+	}
+	profile, err := s.repo.GetActiveProfile(ctx, deviceEmployeeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if profile == nil {
+		return nil, nil, nil
+	}
+	rows, err := s.repo.ListEncryptedEmbeddingsByEmployee(ctx, deviceEmployeeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make([]models.FaceEmbeddingTemplate, 0, len(rows))
+	for _, row := range rows {
+		vec, err := facecrypto.DecryptVector(s.embedKey, row.Ciphertext, row.Nonce)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt embedding %s: %w", row.ID, err)
+		}
+		out = append(out, models.FaceEmbeddingTemplate{
+			FaceEmbeddingMeta: models.FaceEmbeddingMeta{
+				ID:                row.ID,
+				ProfileID:         row.ProfileID,
+				EmployeeID:        row.EmployeeID,
+				SampleID:          row.SampleID,
+				ModelID:           row.ModelID,
+				ModelVersion:      row.ModelVersion,
+				PreprocessVersion: row.PreprocessVersion,
+				EmbeddingDims:     row.EmbeddingDims,
+				QualityScore:      row.QualityScore,
+				PoseID:            row.PoseID,
+				CreatedAt:         row.CreatedAt,
+			},
+			Vector: vec,
+		})
+	}
+	profile.EmbeddingCount = len(out)
+	return profile, out, nil
 }
 
 func normalizeContentType(ct string) string {

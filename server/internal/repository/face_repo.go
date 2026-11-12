@@ -422,6 +422,140 @@ func (r *FaceRepo) ReopenJobPending(ctx context.Context, jobID string) error {
 	return r.BumpJobProgress(ctx, jobID)
 }
 
+// DeleteEmbeddingsByProfile removes all templates for a profile (before re-embed).
+func (r *FaceRepo) DeleteEmbeddingsByProfile(ctx context.Context, profileID string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM employee_face_embeddings WHERE profile_id = $1::uuid`, profileID)
+	return err
+}
+
+// InsertEmbedding stores one encrypted template row.
+func (r *FaceRepo) InsertEmbedding(ctx context.Context, profileID, employeeID, sampleID, modelID, modelVersion, preprocess string, dims int, ciphertext, nonce []byte, quality float64, poseID string) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO employee_face_embeddings (
+			profile_id, employee_id, sample_id, model_id, model_version, preprocess_version,
+			embedding_dims, embedding_ciphertext, embedding_nonce, quality_score, pose_id
+		) VALUES (
+			$1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11
+		)
+		RETURNING id::text
+	`, profileID, employeeID, sampleID, modelID, modelVersion, preprocess,
+		dims, ciphertext, nonce, quality, poseID).Scan(&id)
+	return id, err
+}
+
+// ActivateProfile revokes prior active profiles for the employee and marks this one active.
+func (r *FaceRepo) ActivateProfile(ctx context.Context, profileID, employeeID, modelID, modelVersion, preprocess string, dims int) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		UPDATE employee_face_profiles
+		SET status = 'revoked', revoked_at = now(), updated_at = now()
+		WHERE employee_id = $1 AND status = 'active' AND id <> $2::uuid
+	`, employeeID, profileID)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE employee_face_profiles
+		SET status = 'active',
+		    model_id = $3,
+		    model_version = $4,
+		    preprocess_version = $5,
+		    embedding_dims = $6,
+		    activated_at = now(),
+		    revoked_at = NULL,
+		    last_error = '',
+		    updated_at = now()
+		WHERE id = $1::uuid AND employee_id = $2
+	`, profileID, employeeID, modelID, modelVersion, preprocess, dims)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("profile not found")
+	}
+	return tx.Commit(ctx)
+}
+
+// MarkProfileFailed sets pending/processing profile to failed with an error message.
+func (r *FaceRepo) MarkProfileFailed(ctx context.Context, profileID, message string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE employee_face_profiles
+		SET status = 'failed', last_error = $2, updated_at = now()
+		WHERE id = $1::uuid AND status IN ('pending', 'processing')
+	`, profileID, message)
+	return err
+}
+
+// ListEncryptedEmbeddingsByEmployee returns ciphertext rows for DeviceAuth decrypt+download.
+func (r *FaceRepo) ListEncryptedEmbeddingsByEmployee(ctx context.Context, employeeID string) ([]EncryptedEmbeddingRow, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT e.id::text, e.profile_id::text, e.employee_id, e.sample_id::text,
+		       e.model_id, e.model_version, e.preprocess_version, e.embedding_dims,
+		       e.embedding_ciphertext, e.embedding_nonce, e.quality_score, e.pose_id, e.created_at
+		FROM employee_face_embeddings e
+		INNER JOIN employee_face_profiles p ON p.id = e.profile_id
+		WHERE e.employee_id = $1 AND p.status = 'active'
+		ORDER BY e.created_at ASC
+	`, employeeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []EncryptedEmbeddingRow
+	for rows.Next() {
+		var row EncryptedEmbeddingRow
+		if err := rows.Scan(
+			&row.ID, &row.ProfileID, &row.EmployeeID, &row.SampleID,
+			&row.ModelID, &row.ModelVersion, &row.PreprocessVersion, &row.EmbeddingDims,
+			&row.Ciphertext, &row.Nonce, &row.QualityScore, &row.PoseID, &row.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// UpsertRecognitionModel updates/inserts the recognition model catalog row used at activate time.
+func (r *FaceRepo) UpsertRecognitionModel(ctx context.Context, id, modelID, modelVersion, preprocess, sha256, relPath string, dims int) error {
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO face_model_versions (
+			id, model_id, model_version, role, embedding_dims,
+			preprocess_version, normalization, package_sha256, signature, package_rel_path
+		) VALUES ($1, $2, $3, 'recognition', $4, $5, 'l2', $6, '', $7)
+		ON CONFLICT (id) DO UPDATE SET
+			model_version = EXCLUDED.model_version,
+			embedding_dims = EXCLUDED.embedding_dims,
+			preprocess_version = EXCLUDED.preprocess_version,
+			package_sha256 = EXCLUDED.package_sha256,
+			package_rel_path = EXCLUDED.package_rel_path
+	`, id, modelID, modelVersion, dims, preprocess, sha256, relPath)
+	return err
+}
+
+// EncryptedEmbeddingRow is the DB shape before AES-GCM decrypt.
+type EncryptedEmbeddingRow struct {
+	ID                string
+	ProfileID         string
+	EmployeeID        string
+	SampleID          string
+	ModelID           string
+	ModelVersion      string
+	PreprocessVersion string
+	EmbeddingDims     int
+	Ciphertext        []byte
+	Nonce             []byte
+	QualityScore      float64
+	PoseID            string
+	CreatedAt         time.Time
+}
+
 func (r *FaceRepo) ListModelManifest(ctx context.Context) ([]models.FaceModelVersion, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, model_id, model_version, role, embedding_dims, preprocess_version,

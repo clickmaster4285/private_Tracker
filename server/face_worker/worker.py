@@ -5,8 +5,9 @@ Server-side face_worker (NOT the Avalonia employee agent).
 Runs an HTTP server (default :8010). The Go API pushes new enrollment jobs:
   POST /v1/process  {"jobId":"..."}  header X-Face-Worker-Key
 
-Worker then leases the job from the API, validates each sample (YuNet),
-reports results, and completes. No 2s polling loop.
+Worker leases the job, validates each sample (YuNet), and when FACE_ADAFACE_ONNX
+is configured runs AdaFace IR-50 → POST embeddings (AES-GCM stored by API).
+Without the ONNX file, jobs still complete as succeeded/embeddings_deferred.
 """
 
 from __future__ import annotations
@@ -23,8 +24,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 import cv2
-import numpy as np
 import requests
+
+from embed import (
+    AdaFaceEmbedder,
+    detect_faces_detail,
+    embed_single_face,
+    try_load_embedder,
+)
 
 YUNET_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/"
@@ -44,6 +51,7 @@ API_BASE = ""
 API_KEY = ""
 WORKER_ID = ""
 DETECTOR: cv2.FaceDetectorYN | None = None
+EMBEDDER: AdaFaceEmbedder | None = None
 HTTP: requests.Session | None = None
 PROCESS_LOCK = threading.Lock()
 
@@ -122,26 +130,6 @@ def create_yunet_detector(model_path: Path) -> cv2.FaceDetectorYN:
     )
 
 
-def count_faces(detector: cv2.FaceDetectorYN, jpeg_bytes: bytes) -> int:
-    arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-    mat = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if mat is None or mat.size == 0:
-        return 0
-    h, w = mat.shape[:2]
-    if h < 16 or w < 16:
-        return 0
-    detector.setInputSize((w, h))
-    _retval, faces = detector.detect(mat)
-    if faces is None or len(faces) == 0:
-        return 0
-    kept = 0
-    for row in faces:
-        if max(float(row[2]), float(row[3])) < YUNET_MIN_FACE_PX:
-            continue
-        kept += 1
-    return kept
-
-
 def report(job_id: str, sample_id: str, status: str, reject_reason: str, face_count: int) -> None:
     assert HTTP is not None
     HTTP.post(
@@ -158,6 +146,17 @@ def complete(job_id: str, status: str, code: str, message: str) -> None:
         json={"status": status, "code": code, "message": message},
         timeout=60,
     )
+
+
+def submit_embeddings(job_id: str, payload: dict[str, Any]) -> None:
+    assert HTTP is not None
+    resp = HTTP.post(
+        f"{API_BASE}/api/v1/internal/face-worker/jobs/{job_id}/embeddings",
+        json=payload,
+        timeout=120,
+    )
+    if resp.status_code >= 300:
+        raise RuntimeError(f"embeddings HTTP {resp.status_code}: {resp.text[:400]}")
 
 
 def process_job(job_id: str) -> dict[str, Any]:
@@ -177,13 +176,15 @@ def process_job(job_id: str) -> dict[str, Any]:
             return {"ok": False, "error": "no_samples", "jobId": job_id}
 
         print(
-            f"[FaceWorker] processing job {job_id} samples={len(samples)}",
+            f"[FaceWorker] processing job {job_id} samples={len(samples)} "
+            f"adaface={'on' if EMBEDDER else 'off'}",
             flush=True,
         )
 
         rejected = 0
         validated = 0
         reject_notes: list[str] = []
+        embedding_items: list[dict[str, Any]] = []
 
         for sample in samples:
             sample_id = sample.get("id") or ""
@@ -191,7 +192,7 @@ def process_job(job_id: str) -> dict[str, Any]:
             client_id = sample.get("clientSampleId") or ""
             process_status = sample.get("processStatus") or ""
 
-            if process_status in ("validated", "embedded"):
+            if process_status in ("validated", "embedded") and EMBEDDER is None:
                 validated += 1
                 print(
                     f"[FaceWorker] sample {sample_id} pose={pose_id} already {process_status} — skip",
@@ -205,21 +206,43 @@ def process_job(job_id: str) -> dict[str, Any]:
                 timeout=120,
             )
             img_resp.raise_for_status()
-            face_count = count_faces(DETECTOR, img_resp.content)
+            bgr, faces = detect_faces_detail(DETECTOR, img_resp.content, YUNET_MIN_FACE_PX)
+            face_count = len(faces)
             print(
                 f"[FaceWorker] sample {sample_id} pose={pose_id} faces={face_count}",
                 flush=True,
             )
 
             label = pose_id or client_id or sample_id
-            if face_count == 0:
+            if bgr is None or face_count == 0:
                 rejected += 1
                 reject_notes.append(f"{label}: no face")
                 report(job_id, sample_id, "rejected", "no_face", face_count)
-            elif face_count > 1:
+                continue
+            if face_count > 1:
                 rejected += 1
                 reject_notes.append(f"{label}: multiple faces ({face_count})")
                 report(job_id, sample_id, "rejected", "multiple_faces", face_count)
+                continue
+
+            if EMBEDDER is not None:
+                result = embed_single_face(EMBEDDER, bgr, faces[0])
+                if result is None:
+                    rejected += 1
+                    reject_notes.append(f"{label}: align_failed")
+                    report(job_id, sample_id, "rejected", "align_failed", face_count)
+                    continue
+                vector, quality = result
+                embedding_items.append(
+                    {
+                        "sampleId": sample_id,
+                        "poseId": pose_id,
+                        "qualityScore": quality,
+                        "vector": vector,
+                    }
+                )
+                validated += 1
+                report(job_id, sample_id, "validated", "", face_count)
             else:
                 validated += 1
                 report(job_id, sample_id, "validated", "", face_count)
@@ -242,20 +265,53 @@ def process_job(job_id: str) -> dict[str, Any]:
                 "rejected": rejected,
             }
 
-        complete(
+        if EMBEDDER is None:
+            complete(
+                job_id,
+                "succeeded",
+                "embeddings_deferred",
+                "All images passed single-face checks. "
+                "Place AdaFace ONNX at FACE_ADAFACE_ONNX (or models/adaface_ir50_webface4m.onnx) "
+                "and restart face_worker to persist embeddings.",
+            )
+            print(f"[FaceWorker] job {job_id} face-check OK; embeddings_deferred", flush=True)
+            return {
+                "ok": True,
+                "jobId": job_id,
+                "status": "succeeded",
+                "validated": validated,
+                "rejected": 0,
+                "embeddings": "deferred",
+            }
+
+        if not embedding_items:
+            complete(job_id, "failed", "no_embeddings", "No embeddings produced")
+            return {"ok": False, "error": "no_embeddings", "jobId": job_id}
+
+        meta = EMBEDDER.meta
+        submit_embeddings(
             job_id,
-            "succeeded",
-            "embeddings_deferred",
-            "All images passed single-face checks. "
-            "AdaFace IR-50 embeddings deferred until ONNX is configured.",
+            {
+                "modelId": meta["modelId"],
+                "modelVersion": meta["modelVersion"],
+                "preprocessVersion": meta["preprocessVersion"],
+                "embeddingDims": EMBEDDER.dims,
+                "packageSha256": meta["packageSha256"],
+                "packageRelPath": meta["packageRelPath"],
+                "embeddings": embedding_items,
+            },
         )
-        print(f"[FaceWorker] job {job_id} face-check OK; embeddings_deferred", flush=True)
+        print(
+            f"[FaceWorker] job {job_id} stored {len(embedding_items)} embeddings; profile activated",
+            flush=True,
+        )
         return {
             "ok": True,
             "jobId": job_id,
             "status": "succeeded",
             "validated": validated,
             "rejected": 0,
+            "embeddings": len(embedding_items),
         }
 
 
@@ -288,7 +344,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path in ("/healthz", "/v1/healthz", "/"):
-            self._send(200, {"ok": True, "service": "face_worker"})
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "service": "face_worker",
+                    "adaface": EMBEDDER is not None,
+                    "modelVersion": EMBEDDER.meta["modelVersion"] if EMBEDDER else "",
+                },
+            )
             return
         self._send(404, {"ok": False, "error": "not_found"})
 
@@ -315,11 +379,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(code, result)
         except Exception as ex:  # noqa: BLE001
             print(f"[FaceWorker] process error job={job_id}: {ex}", flush=True)
+            try:
+                complete(job_id, "failed", "worker_error", str(ex)[:500])
+            except Exception:  # noqa: BLE001
+                pass
             self._send(500, {"ok": False, "error": str(ex), "jobId": job_id})
 
 
 def main() -> int:
-    global API_BASE, API_KEY, WORKER_ID, DETECTOR, HTTP
+    global API_BASE, API_KEY, WORKER_ID, DETECTOR, EMBEDDER, HTTP
 
     loaded = load_server_dotenv()
     if loaded:
@@ -343,6 +411,12 @@ def main() -> int:
         print(f"Failed to init YuNet: {ex}", file=sys.stderr)
         return 1
 
+    try:
+        EMBEDDER = try_load_embedder()
+    except Exception as ex:  # noqa: BLE001
+        print(f"[FaceWorker] AdaFace init failed (continuing face-check only): {ex}", flush=True)
+        EMBEDDER = None
+
     HTTP = requests.Session()
     HTTP.headers.update(
         {
@@ -356,6 +430,18 @@ def main() -> int:
         f"[FaceWorker] YuNet ready score>={YUNET_SCORE_THRESHOLD} minFacePx={YUNET_MIN_FACE_PX} model={model_path.name}",
         flush=True,
     )
+    if EMBEDDER:
+        print(
+            f"[FaceWorker] AdaFace ready dims={EMBEDDER.dims} "
+            f"version={EMBEDDER.meta['modelVersion']} path={EMBEDDER.path.name}",
+            flush=True,
+        )
+    else:
+        print(
+            "[FaceWorker] AdaFace OFF — set FACE_ADAFACE_ONNX or place "
+            "models/adaface_ir50_webface4m.onnx (embeddings_deferred until then)",
+            flush=True,
+        )
     print(
         f"[FaceWorker] listening http://{listen_host}:{listen_port}/v1/process "
         f"(API={API_BASE}, id={WORKER_ID}) — push mode, no poll",

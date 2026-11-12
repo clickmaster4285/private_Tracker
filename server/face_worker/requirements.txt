@@ -2,3 +2,5 @@
 opencv-python-headless>=4.10,<5
 numpy>=1.26,<3
 requests>=2.31,<3
+# Required only when FACE_ADAFACE_ONNX is set (AdaFace IR-50 embeddings).
+onnxruntime>=1.16,<2

@@ -408,6 +408,49 @@ func (h *FaceHandler) WorkerCompleteJob(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
+// WorkerSubmitEmbeddings POST /internal/face-worker/jobs/:jobId/embeddings
+func (h *FaceHandler) WorkerSubmitEmbeddings(c echo.Context) error {
+	if !h.authorizeWorker(c) {
+		return echo.NewHTTPError(http.StatusUnauthorized, "worker auth required")
+	}
+	var body services.SubmitJobEmbeddingsRequest
+	if err := c.Bind(&body); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+	}
+	if err := h.svc.SubmitJobEmbeddings(c.Request().Context(), c.Param("jobId"), body); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "not found") {
+			return echo.NewHTTPError(http.StatusNotFound, msg)
+		}
+		return echo.NewHTTPError(http.StatusUnprocessableEntity, msg)
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
+// GetMyEmbeddings handles DeviceAuth GET /face-profiles/me/embeddings
+func (h *FaceHandler) GetMyEmbeddings(c echo.Context) error {
+	empID, _ := c.Get("employee_id").(string)
+	profile, templates, err := h.svc.ListMyEmbeddingTemplates(c.Request().Context(), empID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	if profile == nil {
+		return c.JSON(http.StatusOK, map[string]any{
+			"profile":    nil,
+			"embeddings": []any{},
+			"status":     "none",
+		})
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"profile":            profile,
+		"embeddings":         templates,
+		"status":             profile.Status,
+		"preprocessVersion":  profile.PreprocessVersion,
+		"normalization":      "l2",
+		"packagesAvailable":  false,
+	})
+}
+
 // WorkerSampleImage GET /internal/face-worker/samples/:sampleId/image
 func (h *FaceHandler) WorkerSampleImage(c echo.Context) error {
 	if !h.authorizeWorker(c) {

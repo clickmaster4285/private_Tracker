@@ -63,6 +63,9 @@ type FaceConfig struct {
 	WorkerAPIKey string
 	// WorkerURL is the face_worker HTTP base (e.g. http://127.0.0.1:8010). API pushes jobs here.
 	WorkerURL string
+	// EmbeddingKeySecret seals embedding_ciphertext (AES-GCM). Prefer FACE_EMBEDDING_KEY;
+	// falls back to JWT_SECRET when empty so lab boots without a second secret.
+	EmbeddingKeySecret string
 }
 
 // ScreenshotsConfig points at media/screenshots/{emp}/{yyyy}/{MM}/{dd}/….
@@ -274,11 +277,12 @@ func Load() (*Config, error) {
 		},
 
 		Face: FaceConfig{
-			Dir:            strings.TrimSpace(getEnv("FACE_MEDIA_DIR", "media/faces")),
-			MaxUploadBytes: getEnvInt64("FACE_MAX_UPLOAD_BYTES", 3<<20),
-			MaxFilesPerJob: getEnvInt("FACE_MAX_FILES_PER_JOB", 16),
-			WorkerAPIKey:   strings.TrimSpace(getEnv("FACE_WORKER_API_KEY", "")),
-			WorkerURL:      strings.TrimRight(strings.TrimSpace(getEnv("FACE_WORKER_URL", "http://127.0.0.1:8010")), "/"),
+			Dir:                strings.TrimSpace(getEnv("FACE_MEDIA_DIR", "media/faces")),
+			MaxUploadBytes:     getEnvInt64("FACE_MAX_UPLOAD_BYTES", 3<<20),
+			MaxFilesPerJob:     getEnvInt("FACE_MAX_FILES_PER_JOB", 16),
+			WorkerAPIKey:       strings.TrimSpace(getEnv("FACE_WORKER_API_KEY", "")),
+			WorkerURL:          strings.TrimRight(strings.TrimSpace(getEnv("FACE_WORKER_URL", "http://127.0.0.1:8010")), "/"),
+			EmbeddingKeySecret: strings.TrimSpace(getEnv("FACE_EMBEDDING_KEY", "")),
 		},
 
 		Scale: ScaleConfig{
@@ -314,6 +318,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.JWT.Secret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
+	}
+	if cfg.Face.EmbeddingKeySecret == "" {
+		cfg.Face.EmbeddingKeySecret = cfg.JWT.Secret
 	}
 
 	return cfg, nil

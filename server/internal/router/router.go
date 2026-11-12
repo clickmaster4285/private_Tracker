@@ -81,6 +81,7 @@ func Setup(
 		internalFace.POST("/jobs/:jobId/lease", faceHandler.WorkerLeaseJob)
 		internalFace.POST("/jobs/:jobId/fail", faceHandler.WorkerFailJob)
 		internalFace.POST("/jobs/:jobId/complete", faceHandler.WorkerCompleteJob)
+		internalFace.POST("/jobs/:jobId/embeddings", faceHandler.WorkerSubmitEmbeddings)
 		internalFace.POST("/jobs/:jobId/samples/:sampleId/result", faceHandler.WorkerSampleResult)
 		internalFace.GET("/samples/:sampleId/image", faceHandler.WorkerSampleImage)
 	}
@@ -151,6 +152,7 @@ func Setup(
 	syncGroup.GET("/schedules/me", timeAttendanceHandler.GetMySchedule)
 	if faceHandler != nil {
 		syncGroup.GET("/face-profiles/me", faceHandler.GetMyFaceProfile)
+		syncGroup.GET("/face-profiles/me/embeddings", faceHandler.GetMyEmbeddings)
 		syncGroup.POST("/face-profiles/sync-ack", faceHandler.SyncAck)
 		syncGroup.GET("/face-models/manifest", faceHandler.ModelManifest)
 	}

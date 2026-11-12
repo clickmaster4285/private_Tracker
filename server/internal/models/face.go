@@ -78,3 +78,24 @@ type FaceModelVersion struct {
 	PackageRelPath     string    `json:"packageRelPath"`
 	CreatedAt          time.Time `json:"createdAt"`
 }
+
+// FaceEmbeddingMeta is a stored template without the raw vector (admin/list).
+type FaceEmbeddingMeta struct {
+	ID            string    `json:"id"`
+	ProfileID     string    `json:"profileId"`
+	EmployeeID    string    `json:"employeeId"`
+	SampleID      string    `json:"sampleId"`
+	ModelID       string    `json:"modelId"`
+	ModelVersion  string    `json:"modelVersion"`
+	PreprocessVersion string `json:"preprocessVersion"`
+	EmbeddingDims int       `json:"embeddingDims"`
+	QualityScore  float64   `json:"qualityScore"`
+	PoseID        string    `json:"poseId"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+// FaceEmbeddingTemplate is a DeviceAuth download row (vector decrypted in API).
+type FaceEmbeddingTemplate struct {
+	FaceEmbeddingMeta
+	Vector []float32 `json:"vector"`
+}

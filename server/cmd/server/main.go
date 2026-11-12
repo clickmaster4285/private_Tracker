@@ -235,6 +235,9 @@ func main() {
 		faceRepo, employeeRepo, cfg.Face.Dir, cfg.Face.MaxUploadBytes, cfg.Face.MaxFilesPerJob,
 	)
 	faceService.SetWorkerPush(cfg.Face.WorkerURL, cfg.Face.WorkerAPIKey)
+	if err := faceService.SetEmbeddingKeySecret(cfg.Face.EmbeddingKeySecret); err != nil {
+		log.Fatalf("[server] face embedding key: %v", err)
+	}
 	if err := os.MkdirAll(faceService.RootDir(), 0o750); err != nil {
 		log.Printf("[server] WARNING: could not create face media dir %s: %v", faceService.RootDir(), err)
 	} else {

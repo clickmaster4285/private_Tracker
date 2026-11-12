@@ -3,6 +3,14 @@
 > **Last audited:** 2026-11-12
 > **Changelog:**
 >
+> - 2026-11-12: **Face embeddings persist (AdaFace path + DeviceAuth download).** Go
+>   `POST /internal/face-worker/jobs/:id/embeddings` AES-GCM → `employee_face_embeddings`,
+>   activates profile; DeviceAuth `GET /face-profiles/me/embeddings`. Python worker aligns
+>   YuNet→112 + AdaFace ONNX when `FACE_ADAFACE_ONNX` / `models/adaface_ir50_webface4m.onnx`
+>   present; else still `embeddings_deferred`. Env: `FACE_EMBEDDING_KEY` (else JWT_SECRET).
+>   Restart API + `pip install -r face_worker/requirements.txt` + `python worker.py`. Client
+>   webcam compare engine still next.
+>
 > - 2026-11-12: **face_worker push mode (no 2s poll).** Python HTTP on `FACE_WORKER_LISTEN`
 >   (default `:8010`); Go API `FACE_WORKER_URL` POSTs `/v1/process` after enroll/retry;
 >   worker leases via `POST /internal/face-worker/jobs/:id/lease`. Restart API + `python worker.py`.
