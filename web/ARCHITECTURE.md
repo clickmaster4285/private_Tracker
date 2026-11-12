@@ -42,7 +42,7 @@
 >   `NEXT_PUBLIC_API_URL` at `http://192.168.88.44:8000/api/v1`, so a page on `localhost:3000` called the
 >   API cross-site; the server's `SameSite=Lax` httpOnly cookies were never sent (no `Cookie` header) and
 >   `/auth/check` / `/auth/refresh` always failed → bounce to `/login`. `next.config.ts` had no rewrites
->   despite the docs. Added `rewrites()` `/api/v1/:path*` → `API_PROXY_TARGET` (server-side env, default
+>   despite the docs. Added `rewrites()` `/api/v1/:path*` → `NEXT_PUBLIC_API_URL` (server-side env, default
 >   `http://localhost:8080`); `.env` now leaves `NEXT_PUBLIC_API_URL` unset (client uses relative
 >   `/api/v1`). `<body suppressHydrationWarning>` for extension-injected attributes (ColorZilla).
 >   WebSockets still use `NEXT_PUBLIC_WS_URL` (ticket auth, not cookies). Verified via `localhost:3000`:
