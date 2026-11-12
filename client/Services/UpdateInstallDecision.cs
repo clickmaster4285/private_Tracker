@@ -55,6 +55,42 @@ public static class UpdateInstallDecision
     public static bool PublishedSizeMatches(long publishedSize, long fileLength) =>
         publishedSize <= 0 || fileLength == publishedSize;
 
+    /// <summary>
+    /// User-facing StatusText when the Update button cannot hand off to the service.
+    /// Surfaces the real pipe error (connect/write/response timeout) instead of a
+    /// generic "did not accept" line.
+    /// </summary>
+    public static string RefuseMessage(UpdateInstallRoute route, string? pipeError)
+    {
+        var err = string.IsNullOrWhiteSpace(pipeError) ? null : pipeError.Trim();
+        return route switch
+        {
+            UpdateInstallRoute.GuiFallback =>
+                "AlphaAITracker.Service is too old to start the update. Install the new service, then click Update again.",
+            UpdateInstallRoute.UpdatesDisabled =>
+                "Updates are turned off on AlphaAITracker.Service.",
+            UpdateInstallRoute.AlreadyInProgress =>
+                "An update is already in progress via AlphaAITracker.Service.",
+            UpdateInstallRoute.PollService =>
+                "Update handed to AlphaAITracker.Service.",
+            _ => err switch
+            {
+                "connect_timeout" =>
+                    "AlphaAITracker.Service is not reachable (pipe connect timed out). The app was left open.",
+                "write_timeout" =>
+                    "AlphaAITracker.Service did not accept the write (pipe write timed out). The app was left open.",
+                "response_timeout" =>
+                    "AlphaAITracker.Service did not respond in time (pipe response timed out). The app was left open.",
+                "empty_response" =>
+                    "AlphaAITracker.Service returned an empty pipe response. The app was left open.",
+                { Length: > 0 } e =>
+                    $"AlphaAITracker.Service did not accept the update ({e}). The app was left open.",
+                _ =>
+                    "AlphaAITracker.Service did not accept the update. The app was left open.",
+            },
+        };
+    }
+
     public static bool ShowsInProgress(UpdatePipeView? status)
     {
         if (status is not { } view || !Answered(view))

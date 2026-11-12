@@ -37,6 +37,81 @@
 >   Protection ON can still turn real-time off in the Windows Security UI (guard raises a critical
 >   alert); offline / Safe Mode stays possible. Installer-Parity: re-bake `config.enc` + rebuild the
 >   Windows installer; restart API for **068**.
+> - 2026-11-11: **Protected-uninstall pipe unlock + AppLocker leftover fix (client + DlpService).**
+>   `ApplyTeardownGate` / `AuthorizeTeardown` no longer gated on `ALPHA_DLP_ENABLED` (was returning
+>   `dlp_disabled` / racing write_timeout while AppLocker stayed Enforce). Pipe teardown timeouts
+>   raised; `AppAllowEnforcer.Clear` deletes `SrpV2` then NotConfigured. Elevated
+>   `WindowsTeardownCleanup` clears AppLocker + browser policies + firewall via **HNetCfg COM**
+>   (netsh often AppLocker-denied); SYSTEM task runs AppLocker clear. UAC elevate also triggers
+>   when AppLocker still Enabled. Client **VERSION 1.4.7**. Lab: [`removeTracker.md`](removeTracker.md).
+>   Verified: `dotnet build` client + DlpService; teardown unit tests. Installer-Parity: next Windows
+>   installer.
+>
+> - 2026-11-11: **Lab playbook [`removeTracker.md`](removeTracker.md).** Windows leftover wipe +
+>   diagnostics after protected uninstall (AppLocker/SRP/WDAC, hosts, `AlphaAI-DLP-*` FW/PIN via
+>   COM, USBSTOR, delete-block ACL). Linked from `README.md` + `TESTING.md` §C. Use when
+>   `pipeUnlock=False` / Error 1260 / apps still blocked after product remove.
+>
+> - 2026-11-11: **Silent apply — AppLocker updates path + pre-stop service (DlpService).** Staged
+>   installer under `%ProgramData%\<APP_MUTEX>\updates\` was default-denied under Exe Enforce
+>   (EXE left on disk). Fix: SYSTEM-only AppLocker allow for that folder; fingerprint `v7`.
+>   Helper pre-stops DLP service before Inno (unlock `Service\*.dll`); after success clears
+>   flags + `relaunch_tracker`, and `sc start` only if not RUNNING (Inno `InstallDlpService`
+>   already restarts the service; watchdog relaunches client — main dual-restart parity).
+>   Client **VERSION 1.4.6**. Verified: `dotnet build` DlpService. Installer-Parity: next
+>   Windows installer.
+>
+> - 2026-11-11: **Post-auto-update restart service + tracker (DlpService).** Silent apply helper
+>   clears `update_in_progress` / priority **before** `sc stop/start` of
+>   `AlphaAITracker.Service` (wait until RUNNING), writes `relaunch_tracker`, and the
+>   watchdog launches `client.exe --background --restart` in the user session. Client
+>   **VERSION 1.4.5**. Verified: `dotnet build` DlpService. Installer-Parity: next Windows
+>   installer.
+>
+> - 2026-11-11: **Allowlists apps — path-only allow (web).** `/allowlists/apps` “Allow
+>   application” no longer requires a catalog pick or Windows Settings: enter a full EXE
+>   path alone and **Allow & publish** enables when a **note** is also filled (note stays
+>   optional for catalog / Settings preset). Posts `POST /dlp/lockdown/apps` with `path` +
+>   `note` (server already supported path-only). Verified: `npx tsc --noEmit` as available.
+>
+> - 2026-11-11: **Update-priority yield (client + DlpService).** When a newer release will
+>   auto/force install, `update_priority` is set and the tracker yields sync / live-stream /
+>   screenshots / collectors / browser a11y so download+Inno run first (auto jitter capped at
+>   120s; server `RELEASE_DOWNLOAD_MAX_CONCURRENT` still admits the fleet). Cleared on apply
+>   success/fail/TTL. Client **VERSION 1.4.2**. Verified: `dotnet build` client + DlpService.
+>   Installer-Parity: next Windows installer.
+>
+> - 2026-11-11: **Silent update stuck flag + fleet download admission (client + server).** Lab dump
+>   showed `update_in_progress` left after a second apply arm (helper never logged) → watchdog
+>   never relaunched and auto-update stayed parked; Edge AppLocker XML stayed on bad
+>   `%PROGRAMFILES% (x86)` until the service process reloads v6. Fix: TTL/orphan clear of
+>   `update_in_progress` (watchdog + SilentUpdateWorker); clear flag if helper `Process.Start`
+>   fails; GUI force bypasses 1h `apply_failed`; post-Inno `sc stop/start` of the DLP service;
+>   `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` (default 3600) + honor download `Retry-After`; server
+>   `RELEASE_DOWNLOAD_MAX_CONCURRENT` (default 25) + `Retry-After` on `/downloads`. Client
+>   **VERSION 1.3.7**. Verified: `dotnet build`/`dotnet test`, `go build`/`go vet`/`go test`
+>   handlers. Installer-Parity: re-bake `config.enc` + Windows installer; restart API for
+>   download gate env.
+>
+> - 2026-11-11: **AppLocker PF(x86) prefix order (DlpService).** DB policy for Edge was correct
+>   (`…\Program Files (x86)\Microsoft\Edge\Application\*`), but `NormalizeAppLockerPath`
+>   matched `C:\Program Files` first → invalid `%PROGRAMFILES% (x86)\…` (AppLocker looks for a
+>   literal ` (x86)` folder). Fix: directory-boundary prefix + PF(x86) before PF; rewrite
+>   broken `%PROGRAMFILES% (x86)` macros; fingerprint `v6`. Client **VERSION 1.3.6**.
+>   Verified: `dotnet build` DlpService + normalize sanity. Installer-Parity: next Windows
+>   installer; no republish required (path in DB already OK).
+>
+> - 2026-11-11: **AppLocker Edge allow broken under Program Files (x86) (DlpService + server).**
+>   Root cause: `NormalizeAppLockerPath` emitted `%PROGRAMFILES(X86)%`, which AppLocker does
+>   not understand (only `%PROGRAMFILES%`, which covers both PF roots). Task Manager
+>   (`%SYSTEM32%`) unblocked; Edge stayed default-deny. Fix: map both Program Files roots to
+>   `%PROGRAMFILES%`; fingerprint `v5` forces re-apply; rewrite legacy `(X86)` macros;
+>   `AppProcessGuard` expands `%PROGRAMFILES%` to both roots. Server: `WidenBrowserAllowPath`
+>   publishes Edge/Chrome `Application\*` (versioned helpers) + Edge well-known fallback.
+>   Client **VERSION 1.3.4**. Verified: `dotnet build` DlpService; `go build`/`go vet`
+>   repository+services. Installer-Parity: next Windows installer for DlpService half;
+>   restart API for widen-on-publish.
+>
 > - 2026-11-10: **Merge amircode + sohaib (`marged-11-10-2026`).** Keeps screenshots / scale /
 >   timedatewarning / delete-block from amircode and Port Control + same-site API proxy from
 >   sohaib. Port migrations renumbered to **066** / **067** (after screenshots **065**).
@@ -2089,6 +2164,9 @@ auth, DLP, Asynq workers, and streaming metadata all connect to that database.
 - Background sweeps (session lifecycle, retention, staleness) run via **Asynq** with a fixed
   `ASYNQ_CONCURRENCY` — never unbounded goroutines per job.
 - Live publishers are capped by `LIVE_STREAM_MAX_STREAMS` (product target **100** watched at once).
+- Installer downloads: global **`RELEASE_DOWNLOAD_MAX_CONCURRENT`** + `Retry-After`; clients use
+  **`ALPHA_UPDATE_DOWNLOAD_JITTER_SEC`** and resume Range — per-IP download limits alone are not
+  enough for a same-minute fleet stampede.
 - Redis may cache/queue/rate-limit; Postgres remains the telemetry system of record.
 
 ### Installer-Parity Rule (mandatory)

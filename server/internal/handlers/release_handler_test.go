@@ -20,12 +20,39 @@ func newReleaseFixture(t *testing.T) (*ReleaseHandler, *echo.Echo) {
 	if err := os.WriteFile(filepath.Join(dir, "v1.2.3.exe"), []byte("0123456789"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	h := NewReleaseHandler(services.NewLocalReleaseService(dir))
+	h := NewReleaseHandler(services.NewLocalReleaseService(dir), 25, 60)
 	e := echo.New()
 	e.GET("/api/v1/releases", h.ListReleases)
 	e.GET("/api/v1/downloads/:assetId", h.DownloadAsset)
 	e.HEAD("/api/v1/downloads/:assetId", h.DownloadAsset)
 	return h, e
+}
+
+func TestDownloadGlobalAdmissionReturns429(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "v9.9.9.exe"), []byte("abcdefghij"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := NewReleaseHandler(services.NewLocalReleaseService(dir), 1, 42)
+	e := echo.New()
+	e.GET("/api/v1/releases", h.ListReleases)
+	e.GET("/api/v1/downloads/:assetId", h.DownloadAsset)
+
+	body := listReleases(t, e)
+	url := "/api/v1/downloads/" + strconv.FormatInt(body.Releases[0].Assets[0].ID, 10)
+
+	// Hold the only slot so the next GET body is rejected (same package can see the channel).
+	h.downloadSlots <- struct{}{}
+	defer func() { <-h.downloadSlots }()
+
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("download status=%d want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "42" {
+		t.Fatalf("Retry-After=%q", rec.Header().Get("Retry-After"))
+	}
 }
 
 func listReleases(t *testing.T, e *echo.Echo) dto.ReleasesResponse {

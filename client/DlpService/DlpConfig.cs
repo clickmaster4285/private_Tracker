@@ -84,6 +84,11 @@ public sealed class DlpConfig
     public bool UpdateEnabled { get; init; } = true;
     public int UpdateCheckIntervalSec { get; init; } = 60;
     public bool UpdateAutoInstall { get; init; } = true;
+    /// <summary>
+    /// Spread silent downloads across this many seconds (stable per-machine hash) so a
+    /// fleet does not stampede <c>/downloads</c>. GUI force uses a short window (≤30s).
+    /// </summary>
+    public int UpdateDownloadJitterSec { get; init; } = 3600;
 
     public string DbPath => Path.Combine(DataDir, "dlp.db");
     public string PolicyDir => Path.Combine(DataDir, "policy");
@@ -136,6 +141,7 @@ public sealed class DlpConfig
             UpdateEnabled = GetBool("ALPHA_UPDATE_ENABLED", true),
             UpdateCheckIntervalSec = Math.Max(15, GetInt("ALPHA_UPDATE_CHECK_INTERVAL_SEC", 60)),
             UpdateAutoInstall = GetBool("ALPHA_UPDATE_AUTO_INSTALL", true),
+            UpdateDownloadJitterSec = Math.Max(0, GetIntAllowZero("ALPHA_UPDATE_DOWNLOAD_JITTER_SEC", 3600)),
         };
         cfg.RefreshCredentials();
         return cfg;
@@ -197,5 +203,11 @@ public sealed class DlpConfig
     {
         var v = Environment.GetEnvironmentVariable(key);
         return int.TryParse(v, out var n) && n > 0 ? n : fallback;
+    }
+
+    private static int GetIntAllowZero(string key, int fallback)
+    {
+        var v = Environment.GetEnvironmentVariable(key);
+        return int.TryParse(v, out var n) && n >= 0 ? n : fallback;
     }
 }

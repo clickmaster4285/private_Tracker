@@ -89,11 +89,11 @@ internal static class AppProcessGuard
     {
         var raw = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in AppAllowEnforcer.BootstrapPaths())
-            raw.Add(ExpandMacros(p));
+            AddExpandedPaths(raw, p);
         foreach (var a in allowApps)
         {
             if (!string.IsNullOrWhiteSpace(a.Path))
-                raw.Add(ExpandMacros(a.Path.Trim()));
+                AddExpandedPaths(raw, a.Path.Trim());
         }
 
         var list = new List<PathMatcher>();
@@ -101,6 +101,53 @@ internal static class AppProcessGuard
             list.Add(PathMatcher.Parse(p));
         return list;
     }
+
+    /// <summary>
+    /// Expand AppLocker-style macros to concrete filesystem paths. AppLocker's
+    /// %PROGRAMFILES% covers both Program Files roots — emit matchers for both so the
+    /// sweeper agrees with AppLocker (Edge typically lives under Program Files (x86)).
+    /// Also expands legacy %PROGRAMFILES(X86)% from older policy XML.
+    /// </summary>
+    private static void AddExpandedPaths(SortedSet<string> raw, string path)
+    {
+        var p = path.Replace('/', '\\').Trim();
+        p = Environment.ExpandEnvironmentVariables(p);
+        var windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+        if (StartsWithMacro(p, "%SYSTEM32%"))
+        {
+            raw.Add(ReplacePrefix(p, "%SYSTEM32%", sys));
+            return;
+        }
+        if (StartsWithMacro(p, "%WINDIR%"))
+        {
+            raw.Add(ReplacePrefix(p, "%WINDIR%", windir));
+            return;
+        }
+        if (StartsWithMacro(p, "%PROGRAMFILES(X86)%"))
+        {
+            raw.Add(ReplacePrefix(p, "%PROGRAMFILES(X86)%", pf86));
+            return;
+        }
+        if (StartsWithMacro(p, "%PROGRAMFILES%"))
+        {
+            var rest = p["%PROGRAMFILES%".Length..];
+            if (!string.IsNullOrEmpty(pf))
+                raw.Add(pf + rest);
+            if (!string.IsNullOrEmpty(pf86) &&
+                !string.Equals(pf, pf86, StringComparison.OrdinalIgnoreCase))
+                raw.Add(pf86 + rest);
+            return;
+        }
+
+        raw.Add(p);
+    }
+
+    private static bool StartsWithMacro(string path, string macro) =>
+        path.StartsWith(macro, StringComparison.OrdinalIgnoreCase);
 
     internal static bool IsPathAllowed(string path, List<PathMatcher> allow)
     {
@@ -175,21 +222,6 @@ internal static class AppProcessGuard
     {
         try { return proc.SessionId; }
         catch { return -1; }
-    }
-
-    private static string ExpandMacros(string path)
-    {
-        var p = path.Replace('/', '\\');
-        p = Environment.ExpandEnvironmentVariables(p);
-        var windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        p = ReplacePrefix(p, "%SYSTEM32%", sys);
-        p = ReplacePrefix(p, "%WINDIR%", windir);
-        p = ReplacePrefix(p, "%PROGRAMFILES%", pf);
-        p = ReplacePrefix(p, "%PROGRAMFILES(X86)%", pf86);
-        return p;
     }
 
     private static string ReplacePrefix(string path, string macro, string? value)

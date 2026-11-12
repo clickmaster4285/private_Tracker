@@ -72,7 +72,6 @@ public class AppUpdateService : ObservableObject, IHostedService
         InstallUpdateCommand = new AsyncRelayCommand(InstallUpdateAsync);
         DismissUpdateCommand = new AsyncRelayCommand(DismissUpdateAsync);
         RestartApplicationCommand = new RelayCommand(RestartApplication);
-        OpenReleasesPageCommand = new RelayCommand(OpenReleasesPage);
     }
 
     // ─── Commands (bound to the top bar + dashboard banner) ───
@@ -81,7 +80,6 @@ public class AppUpdateService : ObservableObject, IHostedService
     public IRelayCommand InstallUpdateCommand { get; }
     public IRelayCommand DismissUpdateCommand { get; }
     public IRelayCommand RestartApplicationCommand { get; }
-    public IRelayCommand OpenReleasesPageCommand { get; }
 
     // ─── Observable state (bound by the top bar + dashboard banner) ───
 
@@ -328,33 +326,27 @@ public class AppUpdateService : ObservableObject, IHostedService
 
         StatusText = "Asking AlphaAITracker.Service to install the update…";
         var request = await DlpPipeClient.RequestUpdateCheckDetailedAsync(ct);
-        if (!request.Connected || request.TimedOut || !IsPipeOk(request.Body))
+        // Status poll distinguishes "already applying" / old service from a dead pipe.
+        var status = await DlpPipeClient.GetUpdateStatusDetailedAsync(ct);
+        var route = UpdateInstallDecision.Decide(
+            new UpdatePipeView(request.Connected, request.TimedOut, request.Body),
+            new UpdatePipeView(status.Connected, status.TimedOut, status.Body));
+
+        if (route == UpdateInstallRoute.PollService ||
+            route == UpdateInstallRoute.AlreadyInProgress)
         {
-            var error = PipeError(request.Body);
-            StatusText = error == "unknown_op"
-                ? "AlphaAITracker.Service is too old to start the update. Install the new service, then click Update again."
-                : error == "update_disabled"
-                    ? "Updates are turned off on AlphaAITracker.Service."
-                    : "AlphaAITracker.Service did not accept the update. The app was left open.";
+            StatusText = route == UpdateInstallRoute.AlreadyInProgress
+                ? "An update is already in progress via AlphaAITracker.Service. Closing…"
+                : $"Update to v{_pending.Version} started. Closing…";
+            ShutdownAfterApprovedInstall();
             return;
         }
 
-        StatusText = $"Update to v{_pending.Version} started. Closing…";
-        ShutdownAfterApprovedInstall();
-    }
-
-    private static bool IsPipeOk(string body)
-    {
-        try
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(body);
-            return doc.RootElement.TryGetProperty("ok", out var ok)
-                && ok.ValueKind == System.Text.Json.JsonValueKind.True;
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            return false;
-        }
+        var pipeError = request.Error
+            ?? PipeError(request.Body)
+            ?? status.Error
+            ?? PipeError(status.Body);
+        StatusText = UpdateInstallDecision.RefuseMessage(route, pipeError);
     }
 
     private static string? PipeError(string body)
@@ -442,22 +434,6 @@ public class AppUpdateService : ObservableObject, IHostedService
         {
             StatusText = $"Restart failed: {ex.Message}";
         }
-    }
-
-    /// <summary>
-    /// Opens the public website releases page when a browse URL can be derived.
-    /// Installers themselves always come from the API server download endpoint.
-    /// </summary>
-    private void OpenReleasesPage()
-    {
-        if (!BridgeConfigured)
-        {
-            StatusText = "No server URL configured — set ALPHA_SERVER_URL in .env.";
-            return;
-        }
-        StatusText =
-            "Installers are served from your Alpha AI Tracker /releases page (API bridge). " +
-            "Use Check updates to install from this app.";
     }
 
     // ─── Core flow ───
@@ -585,6 +561,7 @@ public class AppUpdateService : ObservableObject, IHostedService
     private async Task DownloadAndInstallAsync(
         UpdateInfo info, CancellationToken ct, bool userApprovedWindowsInstaller = false)
     {
+        client.Core.UpdatePriority.SetLocal(info.Version, "gui_download");
         try
         {
             await DownloadAsync(info, ct);
@@ -613,6 +590,14 @@ public class AppUpdateService : ObservableObject, IHostedService
             // Keep the banner + install button available for a manual retry.
             StatusText = $"Update failed: {ex.Message}";
             _logger.LogWarning(ex, "Update install failed");
+        }
+        finally
+        {
+            // Windows silent path clears via the service helper; GUI/Linux clears here.
+            if (!OperatingSystem.IsWindows())
+                client.Core.UpdatePriority.ClearLocal();
+            else
+                client.Core.UpdatePriority.Invalidate();
         }
     }
 

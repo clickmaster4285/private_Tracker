@@ -159,7 +159,7 @@ public sealed class PolicyPullWorker : BackgroundService
 
     private async Task TryFinishLoginRebootAsync(CancellationToken ct)
     {
-        if (UpdatePaths.IsUpdateInProgress())
+        if (UpdatePaths.IsUpdateInProgress() || UpdatePaths.IsUpdatePriorityActive())
         {
             _logger.LogWarning("Post-login reboot deferred — silent update in progress");
             return;

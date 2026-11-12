@@ -68,6 +68,12 @@ public sealed class ScreenshotCaptureWorker : BackgroundService
         {
             try
             {
+                if (client.Core.UpdatePriority.ShouldYield)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 await CaptureOnceAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw; }

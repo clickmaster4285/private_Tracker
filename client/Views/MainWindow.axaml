@@ -217,7 +217,7 @@
                                 <Button Classes="ghost" VerticalAlignment="Center"
                                         Command="{Binding Update.CheckForUpdatesCommand}"
                                         IsEnabled="{Binding !Update.IsChecking}"
-                                        ToolTip.Tip="Check GitHub for a newer version">
+                                        ToolTip.Tip="Check the server for a newer version">
                                     <StackPanel Orientation="Horizontal" Spacing="7">
                                         <Path Data="{StaticResource DownloadGeometry}"
                                               Stroke="{StaticResource MutedFgBrush}" StrokeThickness="1.8"

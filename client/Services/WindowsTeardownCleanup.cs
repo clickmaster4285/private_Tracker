@@ -10,9 +10,11 @@ namespace client.Services;
 
 /// <summary>
 /// Privileged Windows teardown: restore USBSTOR Start=3, clear AlphaAI-DLP hosts
-/// sink + firewall rules, stop/delete the DLP service. Prefer SYSTEM via schtasks
-/// (same pattern as Inno). Every external process is hard-killed on timeout so the
-/// CLI never hangs indefinitely. Results are verified, not assumed.
+/// sink + firewall rules (COM first — <c>netsh</c> is AppLocker-blocked for users),
+/// clear leftover AppLocker Exe Enforce (SrpV2 + NotConfigured), stop/delete the DLP
+/// service. Prefer SYSTEM via Task Scheduler COM (same pattern as Inno). Every external
+/// process is hard-killed on timeout so the CLI never hangs indefinitely. Results are
+/// verified, not assumed.
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal static class WindowsTeardownCleanup
@@ -26,6 +28,15 @@ internal static class WindowsTeardownCleanup
     public const string HostsEndMarker = "# AlphaAI-DLP-END";
     public const string HostsMarkerPrefix = "# AlphaAI-DLP";
     public const string FirewallRulePrefix = "AlphaAI-DLP-";
+
+    internal const string EmptyAppLockerPolicyXml =
+        "<AppLockerPolicy Version=\"1\">" +
+        "<RuleCollection Type=\"Exe\" EnforcementMode=\"NotConfigured\" />" +
+        "<RuleCollection Type=\"Msi\" EnforcementMode=\"NotConfigured\" />" +
+        "<RuleCollection Type=\"Script\" EnforcementMode=\"NotConfigured\" />" +
+        "<RuleCollection Type=\"Appx\" EnforcementMode=\"NotConfigured\" />" +
+        "<RuleCollection Type=\"Dll\" EnforcementMode=\"NotConfigured\" />" +
+        "</AppLockerPolicy>";
 
     public sealed record TeardownCleanupResult(
         bool UsbRestored,
@@ -56,60 +67,87 @@ internal static class WindowsTeardownCleanup
             $"before service={beforeState} usbstor={beforeUsb?.ToString() ?? "?"} " +
             $"hostsDirty={!IsWebDomainBlockCleared()}");
 
-        // Clear hosts/FW BEFORE killing the service — the service's own Clear() is
-        // fire-and-forget and often loses the race to sc stop / taskkill.
+        // Clear hosts/FW/AppLocker BEFORE killing the service — pipe AuthorizeTeardown
+        // Clear() is fire-and-forget and often write_timeouts under load.
         TryClearWebDomainBlockDirect(steps);
+        TryClearAppLockerDirect(steps);
+        TryClearBrowserPoliciesDirect(steps);
 
-        // Clear SCM failure actions so stop/kill is not undone by restart/5s.
-        RunLogged(steps, "sc-failure-clear", "sc.exe",
-            $"failure {svc} reset= 0 actions= //", ProcessTimeoutMs);
-
-        // Direct attempts (work after ApplyTeardownGate opened the DACL, if elevated).
-        RunLogged(steps, "sc-stop-direct", "sc.exe", $"stop \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "sc-delete-direct", "sc.exe", $"delete \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "taskkill-direct", "taskkill.exe", $"/F /IM \"{exe}\"", ProcessTimeoutMs);
+        // Prefer in-process SCM / Process APIs — AppLocker blocks sc.exe / taskkill.exe
+        // for interactive users under app allowlist lockdown.
+        TryScmCleanupNative(steps, svc, exe);
         TryRestoreUsbStorDirect(steps);
         TryClearWebDomainBlockDirect(steps);
+        TryClearAppLockerDirect(steps);
 
         var afterDirectGone = !ServiceExists(svc);
         var afterDirectUsb = ReadUsbStorStart() == UsbStorStartManual;
         var afterDirectHosts = IsWebDomainBlockCleared();
-        if (afterDirectGone && afterDirectUsb && afterDirectHosts)
+        var afterDirectAppLocker = !LooksLikeAppLockerExeEnforced();
+        if (afterDirectGone && afterDirectUsb && afterDirectHosts && afterDirectAppLocker)
         {
             steps.Add("verified after direct cleanup");
             return new TeardownCleanupResult(true, true, true, false, elevated,
                 "verified_direct", steps);
         }
 
-        // SYSTEM one-shot (requires ability to create schtasks — usually admin).
+        // SYSTEM one-shot (Task Scheduler COM first — no schtasks.exe; then schtasks fallback).
+        // Required when interactive powershell/netsh are AppLocker-denied (SYSTEM-only bootstrap).
         var systemOk = TrySystemCleanupTask(steps, svc, exe);
         Thread.Sleep(SystemTaskSettleMs);
 
-        // Re-try direct after SYSTEM task may have opened/stopped the service.
-        RunLogged(steps, "sc-stop-retry", "sc.exe", $"stop \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "sc-delete-retry", "sc.exe", $"delete \"{svc}\"", ProcessTimeoutMs);
-        RunLogged(steps, "taskkill-retry", "taskkill.exe", $"/F /IM \"{exe}\"", ProcessTimeoutMs);
+        // Re-try after SYSTEM task may have opened/stopped the service.
+        TryScmCleanupNative(steps, svc, exe, labelPrefix: "retry-");
         TryRestoreUsbStorDirect(steps);
         TryClearWebDomainBlockDirect(steps);
+        TryClearAppLockerDirect(steps);
+        TryClearBrowserPoliciesDirect(steps);
 
         var usbOk = ReadUsbStorStart() == UsbStorStartManual;
         var gone = !ServiceExists(svc);
         var hostsOk = IsWebDomainBlockCleared();
+        var appLockerOk = !LooksLikeAppLockerExeEnforced();
         var afterState = QueryServiceState(svc);
         steps.Add(
             $"after service={afterState} usbstor={ReadUsbStorStart()?.ToString() ?? "?"} " +
-            $"hostsCleared={hostsOk} systemTask={systemOk}");
+            $"hostsCleared={hostsOk} appLockerCleared={appLockerOk} systemTask={systemOk}");
 
-        var summary = (usbOk, gone, hostsOk) switch
+        var summary = (usbOk, gone, hostsOk, appLockerOk) switch
         {
-            (true, true, true) => "verified",
-            (true, true, false) => "service_gone_hosts_still_dirty",
-            (false, true, _) => "service_gone_usbstor_not_manual",
-            (true, false, _) => "usbstor_ok_service_still_registered",
+            (true, true, true, true) => "verified",
+            (true, true, true, false) => "service_gone_applocker_still_enforced",
+            (true, true, false, _) => "service_gone_hosts_still_dirty",
+            (false, true, _, _) => "service_gone_usbstor_not_manual",
+            (true, false, _, _) => "usbstor_ok_service_still_registered",
             _ => "cleanup_incomplete",
         };
 
         return new TeardownCleanupResult(usbOk, gone, hostsOk, systemOk, elevated, summary, steps);
+    }
+
+    /// <summary>
+    /// True when local AppLocker Exe EnforcementMode is Enabled (1) under SrpV2.
+    /// </summary>
+    public static bool LooksLikeAppLockerExeEnforced()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Policies\Microsoft\Windows\SrpV2\Exe");
+            if (key is null) return false;
+            var mode = key.GetValue("EnforcementMode");
+            return mode switch
+            {
+                int i => i == 1,
+                string s => s == "1",
+                _ => false,
+            };
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool ServiceExists(string? serviceName = null)
@@ -123,15 +161,21 @@ internal static class WindowsTeardownCleanup
     {
         try
         {
+            // Native OpenService — does not spawn sc.exe (AppLocker-safe).
+            var native = WindowsScmNative.QueryServiceState(serviceName);
+            if (!native.StartsWith("query_failed", StringComparison.Ordinal))
+                return native;
+
+            // Legacy fallback when native OpenSCManager itself fails.
             var (exit, stdout, stderr) = RunCapture("sc.exe", $"query \"{serviceName}\"", ProcessTimeoutMs);
-            var text = (stdout + "\n" + stderr);
+            var text = stdout + "\n" + stderr;
             if (exit == 1060 || text.Contains("1060", StringComparison.Ordinal) ||
                 text.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
                 return "absent";
             if (text.Contains("RUNNING", StringComparison.OrdinalIgnoreCase)) return "RUNNING";
             if (text.Contains("STOPPED", StringComparison.OrdinalIgnoreCase)) return "STOPPED";
             if (text.Contains("STOP_PENDING", StringComparison.OrdinalIgnoreCase)) return "STOP_PENDING";
-            if (exit != 0) return $"query_failed:{exit}";
+            if (exit != 0) return $"query_failed:{exit};native={native}";
             return "present";
         }
         catch (Exception ex)
@@ -201,11 +245,56 @@ internal static class WindowsTeardownCleanup
         }
     }
 
+    private static void TryScmCleanupNative(
+        List<string> steps, string svc, string exe, string labelPrefix = "")
+    {
+        var fail = WindowsScmNative.TryClearFailureActions(svc);
+        steps.Add($"{labelPrefix}scm-failure-clear ok={fail.Ok} {fail.Detail}");
+
+        var stop = WindowsScmNative.TryStop(svc);
+        steps.Add($"{labelPrefix}scm-stop ok={stop.Ok} {stop.Detail}");
+
+        var del = WindowsScmNative.TryDelete(svc);
+        steps.Add($"{labelPrefix}scm-delete ok={del.Ok} {del.Detail}");
+
+        var kill = WindowsScmNative.TryKillByImageName(exe);
+        steps.Add($"{labelPrefix}proc-kill killed={kill.Killed} {kill.Detail}");
+
+        // If native delete failed with access denied (locked DACL) and sc.exe is still
+        // allowed on this machine, try the legacy shell path once.
+        if (!del.Ok && WindowsScmNative.IsAccessDeniedDetail(del.Detail))
+        {
+            RunLogged(steps, $"{labelPrefix}sc-stop-fallback", "sc.exe", $"stop \"{svc}\"", ProcessTimeoutMs);
+            RunLogged(steps, $"{labelPrefix}sc-delete-fallback", "sc.exe", $"delete \"{svc}\"", ProcessTimeoutMs);
+        }
+    }
+
     private static void TryRestoreUsbStorDirect(List<string> steps)
     {
-        RunLogged(steps, "reg-usbstor", "reg.exe",
-            "add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR\" /v Start /t REG_DWORD /d 3 /f",
-            ProcessTimeoutMs);
+        // Registry API — no reg.exe (AppLocker-safe).
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Services\USBSTOR", writable: true);
+            if (key is null)
+            {
+                steps.Add("reg-usbstor native missing_key");
+            }
+            else
+            {
+                key.SetValue("Start", UsbStorStartManual, RegistryValueKind.DWord);
+                steps.Add("reg-usbstor native ok");
+            }
+        }
+        catch (Exception ex)
+        {
+            steps.Add("reg-usbstor native error=" + ex.Message);
+            RunLogged(steps, "reg-usbstor", "reg.exe",
+                "add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR\" /v Start /t REG_DWORD /d 3 /f",
+                ProcessTimeoutMs);
+        }
+
+        // Prefer native ChangeServiceConfig if we ever need it; sc config is best-effort.
         RunLogged(steps, "sc-usbstor-demand", "sc.exe",
             "config USBSTOR start= demand", ProcessTimeoutMs);
     }
@@ -224,15 +313,114 @@ internal static class WindowsTeardownCleanup
 
         try
         {
-            var removed = ClearOwnedFirewallRules();
-            steps.Add($"fw-clear removed={removed}");
+            var removed = ClearOwnedFirewallRulesCom();
+            if (removed < 0)
+            {
+                removed = ClearOwnedFirewallRulesNetsh();
+                steps.Add($"fw-clear netsh-fallback removed={removed}");
+            }
+            else
+            {
+                steps.Add($"fw-clear com removed={removed}");
+            }
         }
         catch (Exception ex)
         {
             steps.Add("fw-clear error=" + ex.Message);
+            try
+            {
+                var removed = ClearOwnedFirewallRulesNetsh();
+                steps.Add($"fw-clear netsh-fallback removed={removed}");
+            }
+            catch (Exception ex2)
+            {
+                steps.Add("fw-clear netsh error=" + ex2.Message);
+            }
         }
 
+        // ipconfig.exe is often AppLocker-denied for interactive users — try cmdlet via PS.
         RunLogged(steps, "flushdns", "ipconfig.exe", "/flushdns", ProcessTimeoutMs);
+        RunLogged(steps, "flushdns-ps", "powershell.exe",
+            "-NoProfile -ExecutionPolicy Bypass -Command \"Clear-DnsClientCache\"",
+            ProcessTimeoutMs);
+    }
+
+    private static void TryClearAppLockerDirect(List<string> steps)
+    {
+        try
+        {
+            Registry.LocalMachine.DeleteSubKeyTree(
+                @"SOFTWARE\Policies\Microsoft\Windows\SrpV2",
+                throwOnMissingSubKey: false);
+            steps.Add("applocker-srpv2-deleted");
+        }
+        catch (Exception ex)
+        {
+            steps.Add("applocker-srpv2 error=" + ex.Message);
+        }
+
+        try
+        {
+            var dir = TeardownScriptDir;
+            var xmlPath = Path.Combine(dir, "applocker-clear.xml");
+            File.WriteAllText(xmlPath, EmptyAppLockerPolicyXml, Encoding.Unicode);
+            var quoted = xmlPath.Replace("'", "''");
+            var exit = RunLogged(steps, "applocker-set", "powershell.exe",
+                "-NoProfile -ExecutionPolicy Bypass -Command " +
+                $"\"Set-AppLockerPolicy -XmlPolicy '{quoted}'; " +
+                "Set-Service -Name AppIDSvc -StartupType Automatic -ErrorAction SilentlyContinue; " +
+                "Restart-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue\"",
+                ProcessTimeoutMs);
+            steps.Add(exit == 0
+                ? "applocker-set ok"
+                : "applocker-set failed (SYSTEM task may retry)");
+        }
+        catch (Exception ex)
+        {
+            steps.Add("applocker-set error=" + ex.Message);
+        }
+    }
+
+    private static void TryClearBrowserPoliciesDirect(List<string> steps)
+    {
+        foreach (var root in new[]
+                 {
+                     @"SOFTWARE\Policies\Google\Chrome",
+                     @"SOFTWARE\Policies\Microsoft\Edge",
+                 })
+        {
+            foreach (var sub in new[] { "URLBlocklist", "URLAllowlist" })
+            {
+                try
+                {
+                    Registry.LocalMachine.DeleteSubKeyTree(root + "\\" + sub, throwOnMissingSubKey: false);
+                    steps.Add($"browser-policy removed {root}\\{sub}");
+                }
+                catch (Exception ex)
+                {
+                    steps.Add($"browser-policy {sub} error=" + ex.Message);
+                }
+            }
+
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(root, writable: true);
+                if (key is null) continue;
+                foreach (var v in new[] { "DnsOverHttpsMode", "QuicAllowed" })
+                {
+                    try
+                    {
+                        if (key.GetValue(v) is not null)
+                        {
+                            key.DeleteValue(v, throwOnMissingValue: false);
+                            steps.Add($"browser-policy value removed {root}\\{v}");
+                        }
+                    }
+                    catch { /* ignore */ }
+                }
+            }
+            catch { /* ignore */ }
+        }
     }
 
     private static string ClearHostsFile()
@@ -298,9 +486,76 @@ internal static class WindowsTeardownCleanup
         return string.Join("\r\n", kept);
     }
 
-    private static int ClearOwnedFirewallRules()
+    /// <summary>COM firewall wipe — works when <c>netsh.exe</c> is AppLocker-denied.</summary>
+    /// <returns>Count removed, or -1 if COM unavailable.</returns>
+    private static int ClearOwnedFirewallRulesCom()
     {
-        var names = ListOwnedFirewallRules();
+        var type = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
+        if (type is null) return -1;
+        object? fw;
+        try { fw = Activator.CreateInstance(type); }
+        catch { return -1; }
+        if (fw is null) return -1;
+
+        object? rulesObj;
+        try
+        {
+            rulesObj = type.InvokeMember(
+                "Rules",
+                System.Reflection.BindingFlags.GetProperty,
+                binder: null,
+                target: fw,
+                args: null);
+        }
+        catch { return -1; }
+        if (rulesObj is null) return -1;
+
+        var names = new List<string>();
+        try
+        {
+            foreach (var rule in (System.Collections.IEnumerable)rulesObj)
+            {
+                if (rule is null) continue;
+                var nameObj = rule.GetType().InvokeMember(
+                    "Name",
+                    System.Reflection.BindingFlags.GetProperty,
+                    binder: null,
+                    target: rule,
+                    args: null);
+                var name = nameObj as string;
+                if (!string.IsNullOrEmpty(name) &&
+                    name.StartsWith(FirewallRulePrefix, StringComparison.OrdinalIgnoreCase))
+                    names.Add(name);
+            }
+        }
+        catch
+        {
+            return -1;
+        }
+
+        var removed = 0;
+        var rulesType = rulesObj.GetType();
+        foreach (var name in names.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                rulesType.InvokeMember(
+                    "Remove",
+                    System.Reflection.BindingFlags.InvokeMethod,
+                    binder: null,
+                    target: rulesObj,
+                    args: [name]);
+                removed++;
+            }
+            catch { /* ignore single rule */ }
+        }
+
+        return removed;
+    }
+
+    private static int ClearOwnedFirewallRulesNetsh()
+    {
+        var names = ListOwnedFirewallRulesNetsh();
         var removed = 0;
         foreach (var name in names)
         {
@@ -314,6 +569,52 @@ internal static class WindowsTeardownCleanup
     }
 
     private static List<string> ListOwnedFirewallRules()
+    {
+        var viaCom = ListOwnedFirewallRulesCom();
+        if (viaCom is not null) return viaCom;
+        return ListOwnedFirewallRulesNetsh();
+    }
+
+    private static List<string>? ListOwnedFirewallRulesCom()
+    {
+        try
+        {
+            var type = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
+            if (type is null) return null;
+            var fw = Activator.CreateInstance(type);
+            if (fw is null) return null;
+            var rulesObj = type.InvokeMember(
+                "Rules",
+                System.Reflection.BindingFlags.GetProperty,
+                binder: null,
+                target: fw,
+                args: null);
+            if (rulesObj is null) return null;
+
+            var list = new List<string>();
+            foreach (var rule in (System.Collections.IEnumerable)rulesObj)
+            {
+                if (rule is null) continue;
+                var nameObj = rule.GetType().InvokeMember(
+                    "Name",
+                    System.Reflection.BindingFlags.GetProperty,
+                    binder: null,
+                    target: rule,
+                    args: null);
+                var name = nameObj as string;
+                if (!string.IsNullOrEmpty(name) &&
+                    name.StartsWith(FirewallRulePrefix, StringComparison.OrdinalIgnoreCase))
+                    list.Add(name);
+            }
+            return list;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<string> ListOwnedFirewallRulesNetsh()
     {
         var list = new List<string>();
         try
@@ -330,7 +631,7 @@ internal static class WindowsTeardownCleanup
         }
         catch
         {
-            /* ignore — verification treats uncleared as dirty */
+            /* ignore — verification treats uncleared as dirty when hosts dirty */
         }
         return list;
     }
@@ -425,12 +726,16 @@ internal static class WindowsTeardownCleanup
         var usbOk = ReadUsbStorStart() == UsbStorStartManual;
         var gone = !ServiceExists();
         var hostsOk = IsWebDomainBlockCleared();
-        var summary = (usbOk, gone, hostsOk) switch
+        var appLockerOk = !LooksLikeAppLockerExeEnforced();
+        var summary = (usbOk, gone, hostsOk, appLockerOk) switch
         {
-            (true, true, true) => "verified_after_elevate",
+            (true, true, true, true) => "verified_after_elevate",
+            (true, true, true, false) => "elevate_applocker_still_enforced",
             _ => "elevate_incomplete",
         };
-        steps.Add($"after elevate usbstor={ReadUsbStorStart()?.ToString() ?? "?"} gone={gone} hostsCleared={hostsOk}");
+        steps.Add(
+            $"after elevate usbstor={ReadUsbStorStart()?.ToString() ?? "?"} gone={gone} " +
+            $"hostsCleared={hostsOk} appLockerCleared={appLockerOk}");
         return new TeardownCleanupResult(usbOk, gone, hostsOk, true, false, summary, steps);
     }
 
@@ -445,12 +750,17 @@ internal static class WindowsTeardownCleanup
             var ps1 = Path.Combine(dir, "teardown-clear-hosts.ps1");
             File.WriteAllText(ps1, BuildHostsClearPowerShell(), Encoding.UTF8);
 
+            var appLockerPs1 = Path.Combine(dir, "teardown-clear-applocker.ps1");
+            File.WriteAllText(appLockerPs1, BuildAppLockerClearPowerShell(dir), Encoding.UTF8);
+
             var script = Path.Combine(dir, "teardown-cleanup.cmd");
             // Keep script short and non-interactive; no pauses.
-            // Clear hosts/FW first, then USB + service stop/delete.
+            // Clear hosts/FW + AppLocker first (SYSTEM can run powershell under lockdown),
+            // then USB + service stop/delete.
             File.WriteAllText(script,
                 "@echo off\r\n" +
                 $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{ps1}\" >nul 2>&1\r\n" +
+                $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{appLockerPs1}\" >nul 2>&1\r\n" +
                 "reg add \"HKLM\\SYSTEM\\CurrentControlSet\\Services\\USBSTOR\" /v Start /t REG_DWORD /d 3 /f >nul 2>&1\r\n" +
                 "sc config USBSTOR start= demand >nul 2>&1\r\n" +
                 $"sc failure \"{svc}\" reset= 0 actions= // >nul 2>&1\r\n" +
@@ -459,9 +769,18 @@ internal static class WindowsTeardownCleanup
                 $"taskkill /F /IM \"{exe}\" >nul 2>&1\r\n");
 
             var task = AppInfo.WindowsServiceMaintTask + "Teardown";
-            // Match Inno: single-quoted /TR payload that runs cmd /c <script>.
-            var tr = $"cmd.exe /c \\\"{script}\\\"";
+            // Prefer Task Scheduler COM (no schtasks.exe — AppLocker cannot block COM).
+            var com = WindowsScmNative.TryRunSystemCmdViaTaskScheduler(task, $"\"{script}\"");
+            steps.Add($"tasksched-com ok={com.Ok} {com.Detail}");
+            if (com.Ok)
+            {
+                Thread.Sleep(SystemTaskSettleMs);
+                WindowsScmNative.TryDeleteScheduledTask(task);
+                return true;
+            }
 
+            // Legacy schtasks.exe fallback (blocked under AppLocker lockdown for users).
+            var tr = $"cmd.exe /c \\\"{script}\\\"";
             var create = RunLogged(steps, "schtasks-create", "schtasks.exe",
                 $"/Create /TN \"{task}\" /TR \"{tr}\" /SC ONCE /ST 00:00 /RU SYSTEM /F",
                 ProcessTimeoutMs);
@@ -485,6 +804,23 @@ internal static class WindowsTeardownCleanup
             steps.Add("schtasks exception: " + ex.Message);
             return false;
         }
+    }
+
+    /// <summary>SYSTEM PowerShell: wipe SrpV2 + Set-AppLockerPolicy NotConfigured.</summary>
+    internal static string BuildAppLockerClearPowerShell(string workDir)
+    {
+        var xmlPath = Path.Combine(workDir, "applocker-clear-system.xml").Replace("'", "''");
+        return
+            "$ErrorActionPreference='SilentlyContinue'\r\n" +
+            "try { Remove-Item -LiteralPath 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\SrpV2' -Recurse -Force } catch {}\r\n" +
+            $"$xmlPath = '{xmlPath}'\r\n" +
+            "$xml = @'\r\n" +
+            EmptyAppLockerPolicyXml + "\r\n" +
+            "'@\r\n" +
+            "[System.IO.File]::WriteAllText($xmlPath, $xml, [System.Text.Encoding]::Unicode)\r\n" +
+            "Set-AppLockerPolicy -XmlPolicy $xmlPath\r\n" +
+            "Set-Service -Name AppIDSvc -StartupType Automatic -ErrorAction SilentlyContinue\r\n" +
+            "Restart-Service -Name AppIDSvc -Force -ErrorAction SilentlyContinue\r\n";
     }
 
     /// <summary>PowerShell used by SYSTEM / Inno to strip AlphaAI-DLP hosts + FW rules.</summary>

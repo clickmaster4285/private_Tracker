@@ -34,6 +34,7 @@ internal static class EnvBootstrap
         ("ALPHA_UPDATE_ENABLED", "true"),
         ("ALPHA_UPDATE_AUTO_INSTALL", "true"),
         ("ALPHA_UPDATE_CHECK_INTERVAL_SEC", "60"),
+        ("ALPHA_UPDATE_DOWNLOAD_JITTER_SEC", "3600"),
     ];
 
     public static void Apply()

@@ -382,6 +382,12 @@ public class LogCollectorService : BackgroundService
         {
             try
             {
+                if (ClientProcessMode.ParkTrackingWork || UpdatePriority.ShouldYield)
+                {
+                    await Task.Delay(UpdatePriority.ShouldYield ? 10_000 : 5000, stoppingToken);
+                    continue;
+                }
+
                 if (!_trackingEnabled)
                 {
                     await Task.Delay(5000, stoppingToken);

@@ -8,6 +8,16 @@
 >   `stale`, paginated, health counts, projected `isStale` + `threats24h`). Detections/tamper are DLP
 >   alerts (`malware`, `av_tamper`). RBAC `security-dlp/antivirus` seeded. Files:
 >   `antivirus_{dto,repo,service,handler}.go`.
+> **Last audited:** 2026-11-11 (Edge/Chrome allow path widen)
+> **Changelog:**
+> - 2026-11-11: **Browser allow paths widen to `Application\*`.** `WidenBrowserAllowPath`
+>   (repo) turns Edge/Chrome/EdgeWebView single-EXE inventory paths into
+>   `…\Application\*` so AppLocker covers versioned helpers after updates. Applied in
+>   `resolveInstallIdentity`, `ExpandEnabledAllowApps`, and `CreateAllowApp`.
+>   `wellKnownWindowsAllowPath` adds Microsoft Edge fallback
+>   `C:\Program Files (x86)\Microsoft\Edge\Application\*` when inventory has no path.
+>   Windows inventory join appends `.exe` when `binary_name` lacks an extension.
+>   Verified: `go build`/`go vet` repository+services. Restart API so Publish re-expands.
 > - 2026-11-10: **Screenshots store + API.** Migration **065** `screenshots` index. Files under
 >   `SCREENSHOTS_DIR` (`media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`). DeviceAuth
 >   `POST /screenshots/upload` (multipart WebP, size cap, `RATE_LIMIT_SCREENSHOT_*`); JWT
@@ -398,7 +408,7 @@ server/
 │   └── 032_app_sessions_usage_index.sql # composite index (employee_id, started_at DESC, app_display_name) for /app-sessions/usage aggregation
 │
 └── internal/
-    ├── config/config.go         # Loads env vars, builds Config struct (incl. LINK_STALE_DAYS, DEFAULT_SHIFT_TIMEZONE, GitHubConfig)
+    ├── config/config.go         # Loads env vars, builds Config struct (incl. LINK_STALE_DAYS, DEFAULT_SHIFT_TIMEZONE, ReleasesConfig)
     ├── database/postgres.go     # pgxpool creation, migration runner
     ├── redis/
     │   ├── redis.go             # Secrets: StoreSecret / ValidateSecret / DeleteSecret

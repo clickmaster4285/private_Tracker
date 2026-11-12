@@ -77,10 +77,6 @@
                                 ToolTip.Tip="Remind me later (this version)">
                             <TextBlock Text="Later"/>
                         </Button>
-                        <Button Classes="ghost" Command="{Binding Update.OpenReleasesPageCommand}"
-                                ToolTip.Tip="Open the releases page in your browser">
-                            <TextBlock Text="GitHub"/>
-                        </Button>
                     </StackPanel>
                 </Grid>
             </Border>

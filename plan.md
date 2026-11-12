@@ -1,8 +1,8 @@
 # Always-on Windows tracker + default-deny lockdown
 
-> **Status:** P0–P3 source complete. **Active:** installed Lab 3 (AppLocker + delete-block ACL) on Windows installer **1.0.6+**.
+> **Status:** P0–P3 source complete. **Active:** installed Lab 3 (AppLocker + delete-block ACL) on Windows installer **1.3.6+** (PF(x86) prefix-boundary fix).
 > **Written:** 2026-11-05
-> **Updated:** 2026-11-10 — delete-block ACL (`ALPHA_DLP_DELETE_BLOCK`); AppLocker bootstrap SYSTEM-only PowerShell + Settings out of bootstrap A; `/allowlists/apps` Windows Settings preset + path override. Prior 2026-11-06: AppLocker Exe+Appx enforce + AppIDSvc restart + Taskmgr verify.
+> **Updated:** 2026-11-11 — AppLocker match PF(x86) before PF + dir boundary (no `%PROGRAMFILES% (x86)\…`); fingerprint `v6`; Lab §H 13b. Earlier same day: `%PROGRAMFILES%` for both PF roots; Edge/Chrome `Application\*` widen. Prior 2026-11-10: delete-block ACL; Settings preset. Prior 2026-11-06: AppLocker Exe+Appx + AppIDSvc + Taskmgr verify.
 > **Owns:** delete the tracking-mode feature from server, client, and web, a Windows default-deny allowlist (network, web, applications), and the Terms & Conditions feature.
 > **Does not own:** Linux or macOS enforcement, or moving collectors, login, browser reading, or live capture into `AlphaAITracker.Service`.
 
@@ -191,8 +191,10 @@ Department-scoped allowlists are a later phase. They still compile into **one** 
 - `AppAllowEnforcer`: when `lockdown == true` and not paused, apply local AppLocker policy:
   - **Exe + Appx** EnforcementMode=Enabled (Win32 + Store default-deny). MSI Enabled empty = no installs. Script/Dll stay NotConfigured.
   - Bootstrap A path + shell Appx product allows (baked). PowerShell is **SYSTEM-only**; Settings stays default-deny until published. Published path / publisher from `policy_allow_apps` (+ Appx family when path is under WindowsApps).
+  - Path macros: both Program Files roots → AppLocker `%PROGRAMFILES%` (never invent `%PROGRAMFILES(X86)%` or `%PROGRAMFILES% (x86)\…`). Match PF(x86) before PF with a directory-boundary prefix. Fingerprint `v6`.
   - UTF-16 policy XML; AppIDSvc Automatic + restart after apply; `Test-AppLockerPolicy` verify Taskmgr Denied.
-  - Blocked launches show the Windows organization dialog (not open-then-kill). `AppProcessGuard` remains backup for already-running EXEs (and force-kills interactive shells/Settings when path is unknown).
+  - Blocked launches show the Windows organization dialog (not open-then-kill). `AppProcessGuard` expands `%PROGRAMFILES%` to both PF roots (backup kill for already-running EXEs; force-kills interactive shells/Settings when path is unknown).
+- Server Publish: `WidenBrowserAllowPath` emits Edge/Chrome `Application\*` (versioned helpers); Edge well-known fallback when inventory path is missing.
 - `DeleteBlockAclEnforcer`: same lockdown gate — NTFS Deny Delete on Fixed/Removable roots (`ALPHA_DLP_DELETE_BLOCK`); clear on pause/teardown/park/local off.
 - Fingerprint + generation lock. Teardown / `ALPHA_DLP_ENABLED=false` / `lockdown: false` / pause **removes** AppLocker policy **and** delete-block ACEs.
 - Apply failure → `enforcement_audit` (do not claim enforce if verify says NOT_ENFORCING).
@@ -231,6 +233,7 @@ Network + hosts only; no Chromium HKLM URLAllowlist claim.
 1. Fresh login under `lockdown: true`, empty app allow list. Expect: Explorer + tracker OK; Calculator / Task Manager / Notepad / browsers / **PowerShell (interactive)** / **Settings** get the Windows block dialog on launch (no flash-open).
 2. On `/allowlists/apps`, pick "Calculator" (or lab catalog app) from the inventory list. Expect auto-publish; within a policy poll, Calculator starts; Task Manager still blocked.
 3. Allow Task Manager the same way. Expect it starts. For Settings use the **Windows Settings (Win10/11)** preset (not a Linux cinnamon/gnome catalog row).
+3b. Allow Microsoft Edge (catalog or path). Expect launch OK on PF(x86) installs; `applocker.policy.xml` uses `%PROGRAMFILES%\Microsoft\Edge\Application\*`, never `%PROGRAMFILES(X86)%` or `%PROGRAMFILES% (x86)\…` (`TESTING.md` §H 13b; installer **1.3.6+**).
 4. Deactivate (or delete) Calculator. Expect auto-publish; Calculator blocked again.
 5. If an entry has SHA-256: copy/rename the binary → expect deny when hash no longer matches.
 6. Reboot. Expect sign-in, tracker relaunch, AppLocker still on.
@@ -297,4 +300,4 @@ Network + hosts only; no Chromium HKLM URLAllowlist claim.
 
 ## 11. Suggested order
 
-P0–P3 complete in source. **Next:** rebuild + install `AlphaAITracker-Setup-2.10.2.exe` and run Lab 3 (`TESTING.md` §H steps 10–14). Pass gate: Windows block dialog on double-click, `verify=enforcing` in service log. There is no Linux or macOS phase.
+P0–P3 complete in source. **Next:** rebuild + install Windows **1.3.6+** and run Lab 3 (`TESTING.md` §H steps 10–14 + **13b Edge**). Pass gate: Windows block dialog on double-click, `verify=enforcing` in service log; Edge under PF(x86) unblocks with `%PROGRAMFILES%\Microsoft\Edge\Application\*` (no ` (x86)` after the macro). There is no Linux or macOS phase.

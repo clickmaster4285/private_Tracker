@@ -208,9 +208,14 @@ func main() {
 	logGraphicalHandler := handlers.NewLogGraphicalHandler(logGraphicalService)
 
 	releaseService := services.NewLocalReleaseService(cfg.Releases.Dir)
-	releaseHandler := handlers.NewReleaseHandler(releaseService)
+	releaseHandler := handlers.NewReleaseHandler(
+		releaseService,
+		cfg.Releases.MaxConcurrentDownloads,
+		cfg.Releases.DownloadRetryAfterSec,
+	)
 	if st, err := os.Stat(releaseService.Dir()); err == nil && st.IsDir() {
-		log.Printf("[server] releases served from %s (/api/v1/releases, /api/v1/downloads)", releaseService.Dir())
+		log.Printf("[server] releases served from %s (/api/v1/releases, /api/v1/downloads maxConcurrent=%d)",
+			releaseService.Dir(), cfg.Releases.MaxConcurrentDownloads)
 	} else {
 		log.Printf("[server] WARNING: releases dir %s not found — /api/v1/releases returns an empty list until installers are added", releaseService.Dir())
 	}

@@ -97,6 +97,7 @@ migration **068**. Use a **lab VM** — the guard removes Defender exclusions it
 11. Already-open forbidden apps (pre-lockdown) may still be killed by the sweeper — backup only.
 12. `/allowlists/apps` → pick Calculator from the inventory catalog → auto-publish → Calculator launches; Task Manager still blocked.
 13. Deactivate / delete Calculator → Calculator blocked again on next launch.
+13b. **Edge under Program Files (x86) (installer 1.3.7+):** allow Microsoft Edge from catalog (or path override). Expect Edge launches (org dialog gone). On the PC, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml` must be exactly `%PROGRAMFILES%\Microsoft\Edge\Application\*` — **never** `%PROGRAMFILES(X86)%` and **never** `%PROGRAMFILES% (x86)\…` (the latter was a client bug: matching `Program Files` before `Program Files (x86)`). Silent update (1.4.5+) clears update flags, restarts `AlphaAITracker.Service` (wait RUNNING), then watchdog relaunches `client.exe --background --restart`. If `update_in_progress` is stuck, delete it (or wait TTL). Publish should emit `Application\*` (not only `msedge.exe`) so versioned helpers stay allowed after Edge updates.
 14. If AppLocker apply fails / `verify=NOT_ENFORCING`: expect apply failure or ENFORCED warning; kill sweeper should still run. Check AppIDSvc, SKU, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml`, Event Log.
 15. **Delete-block (ACL):** lockdown ON + `ALPHA_DLP_DELETE_BLOCK=true` → create/edit a file on Desktop OK; Delete → Access Denied. Same on a second Fixed partition and a USB Removable volume. Explorer desktop stays stable (no ~15s blank flicker). Service log: `Delete-block ACLs ENFORCED`. Marker: `%ProgramData%\<APP_MUTEX>\dlp\delete_block_roots.json`.
 16. Lockdown Off / pause / `ALPHA_DLP_DELETE_BLOCK=false` / protected teardown → Deny Delete ACE removed; delete works again.
@@ -110,6 +111,8 @@ clears leftovers from older builds.
 **Apps:** AppLocker **Exe + Appx** Enforce (Store + Win32 default-deny), MSI empty-deny,
 bootstrap A (product + Explorer/Start/shell Appx families). Catalog picks expand to
 **path** at Publish. Broad Microsoft publisher alone is never used for inbox apps.
+AppLocker path macros: `%PROGRAMFILES%` covers both Program Files roots (do not emit
+`%PROGRAMFILES(X86)%`). Edge/Chrome publish as `…\Application\*` when possible.
 
 **Delete-block:** NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated Users
 on every Fixed/Removable volume root (create/write allowed). SYSTEM/Administrators not denied.
@@ -142,8 +145,23 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
    curl -I "$API/api/v1/downloads/$ASSET_ID"
    curl -v -H "Range: bytes=0-1023" -o range-test.bin "$API/api/v1/downloads/$ASSET_ID"   # 206, 1024 bytes
    ```
-4. Auto-update: install an older build on a Windows lab PC, drop a newer `vX.Y.Z.exe` in the setup folder → within ~1–2 min `%ProgramData%\<APP_MUTEX>\updates\update.log` shows the SYSTEM silent apply and the tracker relaunches on the new version. A failed apply writes `updates\apply_failed.txt` and that version is not retried for 1 hour.
-5. Negative: unknown `assetId` → 404; non-numeric → 400; missing setup folder → empty list (200).
+4. Auto-update: install an older build on a Windows lab PC, drop a newer `vX.Y.Z.exe` in the setup folder → within ~1–2 min `%ProgramData%\<APP_MUTEX>\updates\update.log` shows the SYSTEM silent apply (pre-stop service → Inno → clear flags) and **both** restart: service via Inno `InstallDlpService` (helper `sc start` only if not RUNNING), tracker via watchdog / `relaunch_tracker`. A failed apply writes `updates\apply_failed.txt` and that version is not retried for 1 hour.
+5. Under app lockdown (`ALPHA_DLP_APP_BLOCK=true` + published lockdown): staged `updates\v*.exe` must still launch (SYSTEM AppLocker allow for that folder, fingerprint `v7+`). If the EXE stays in `updates\` with no/failed `Installer finished` line in `update.log`, suspect AppLocker deny on the staged path.
+6. Negative: unknown `assetId` → 404; non-numeric → 400; missing setup folder → empty list (200).
+
+### Troubleshooting: older client polls `/releases` but never installs (e.g. 1.0.13 → 1.2.0)
+
+**Symptom:** API access log shows `GET /api/v1/releases` every ~60s (200) but **no** `GET /api/v1/downloads/...`. Discovery works; download/apply does not.
+
+**Why:** On Windows only `AlphaAITracker.Service` (`SilentUpdateWorker`) downloads and runs Inno. The GUI **Check updates / Install** only pipes `RequestUpdateCheck` — it does not download itself. Version compare `1.2.0 > 1.0.13` is fine; `v1.2.0.exe` in `setup/` is fine.
+
+Check on the stuck PC:
+
+1. `service.env` (under `%ProgramData%\<APP_MUTEX>\dlp\`) has `ALPHA_SERVER_URL` pointing at this API and `ALPHA_UPDATE_ENABLED=true` / `ALPHA_UPDATE_AUTO_INSTALL=true`. Missing URL → worker state `no_server_url`.
+2. Pipe/Health update fields (`GetUpdateStatus`) — look for `no_server_url`, `update_disabled`, `apply_failed_retry_later`, `update_in_progress`, `unknown_op` (service too old).
+3. `%ProgramData%\<APP_MUTEX>\updates\`: `update.log`, `apply_failed.txt` (1h cooldown for that version), stuck `update_in_progress`, staged `v*.exe` (download OK / apply blocked — often AppLocker before `v7`, or service DLL lock).
+4. After fixing env, restart `AlphaAITracker.Service` and watch the API log for `/downloads/{assetId}`.
+5. Dev `dotnet run` without the installed service can poll `/releases` forever and never install on Windows.
 
 ---
 
@@ -182,6 +200,7 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 4. **Linux expect:** HTTP `removal-verify` (token from `~/.local/share/alpha-ai-tracker/data/*.db`) → drain → wipe → LocalAppData / `/var/lib/<pkg>/dlp` `teardown.ok`; then `sudo apt remove` / `dpkg -r` allowed.
 5. Apps & features / `.deb` remove succeeds with gate. Replay the same code → verify fails. Without `teardown.ok`, Inno / `prerm` refuses.
 6. Windows before unlock: Services.msc **Stop** on the DLP service fails for Administrators (query-only DACL).
+7. If `pipeUnlock=False` or Apps & features shows **Error 1260** / apps stay “blocked by your organization” after uninstall: follow **[`removeTracker.md`](./removeTracker.md)** (AppLocker/SRP purge, hosts/FW COM wipe, reboot for AppID). Client **1.4.7+** clears AppLocker in elevated teardown even when the pipe times out; still reboot if AppID keeps a stale Exe deny set.
 
 ### C.1 Plain `--remove-account` (local wipe — not product uninstall)
 

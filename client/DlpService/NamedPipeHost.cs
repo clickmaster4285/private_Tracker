@@ -280,8 +280,11 @@ public sealed class NamedPipeHost : BackgroundService
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
-                "AuthorizeTeardown" => await RequireDlp(() => AuthorizeTeardownJson(doc.RootElement, ct)),
-                "ApplyTeardownGate" => RequireDlpSync(() => ApplyTeardownGateJson(doc.RootElement)),
+                // Teardown unlock must work even when ALPHA_DLP_ENABLED=false (pipe still
+                // listens for update IPC). RequireDlp would return dlp_disabled and leave
+                // AppLocker / USB / hosts stuck after --protected-uninstall.
+                "AuthorizeTeardown" => await AuthorizeTeardownJson(doc.RootElement, ct),
+                "ApplyTeardownGate" => ApplyTeardownGateJson(doc.RootElement),
                 _ => JsonSerializer.Serialize(new { ok = false, error = "unknown_op" }),
             };
         }
@@ -472,15 +475,31 @@ public sealed class NamedPipeHost : BackgroundService
     {
         TeardownGate.MarkAuthorized(_cfg.DataDir, purpose);
 
-        // CRITICAL: return ok=true on the pipe FIRST. USBSTOR + sc sdset can take
+        // CRITICAL: return ok=true on the pipe FIRST. USBSTOR + sdset can take
         // seconds (or hang). Doing that before WriteLineAsync deadlocked the CLI:
         // client hit a read timeout, Dispose waited on the service, service held the
         // pipe while blocked in sc.exe — protected-uninstall froze on
         // "Unlocking DLP service..." and Apps & features then hit Error 32 (files locked).
+        //
+        // On Windows: clear AppLocker FIRST so the CLI's follow-up cleanup (and any
+        // SYSTEM helper) can spawn sc/taskkill/schtasks if native paths still need them.
         _ = Task.Run(() =>
         {
             try
             {
+                if (OperatingSystem.IsWindows())
+                {
+                    var apps = AppAllowEnforcer.Clear();
+                    _logger.LogWarning(
+                        "Teardown cleared AppLocker first (changed={Changed}, detail={Detail})",
+                        apps.Changed, apps.Detail);
+                    var del = DeleteBlockAclEnforcer.Clear();
+                    _logger.LogWarning(
+                        "Teardown cleared delete-block ACLs (changed={Changed}, detail={Detail})",
+                        del.Changed, del.Detail);
+                    ServiceAclHardener.TryApplyOpen(_logger);
+                }
+
                 if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
                 {
                     var usb = UsbStorEnforcer.Apply(block: false);
@@ -492,18 +511,6 @@ public sealed class NamedPipeHost : BackgroundService
                     _logger.LogWarning(
                         "Teardown cleared AlphaAI-DLP hosts/FW|nft/PIN (changed={Changed}, detail={Detail})",
                         web.Changed, web.Detail);
-                    if (OperatingSystem.IsWindows())
-                    {
-                        var apps = AppAllowEnforcer.Clear();
-                        _logger.LogWarning(
-                            "Teardown cleared AppLocker (changed={Changed}, detail={Detail})",
-                            apps.Changed, apps.Detail);
-                        var del = DeleteBlockAclEnforcer.Clear();
-                        _logger.LogWarning(
-                            "Teardown cleared delete-block ACLs (changed={Changed}, detail={Detail})",
-                            del.Changed, del.Detail);
-                        ServiceAclHardener.TryApplyOpen(_logger);
-                    }
                 }
 
                 _logger.LogWarning(

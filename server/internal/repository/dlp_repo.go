@@ -1108,17 +1108,26 @@ func resolveInstallIdentity(installPath, binaryName string) string {
 	bin := strings.TrimSpace(binaryName)
 	lower := strings.ToLower(p)
 	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".com") || strings.HasSuffix(lower, ".bin") {
-		return p
+		return WidenBrowserAllowPath(p)
 	}
 	if bin != "" {
+		// Inventory binary_name is usually without extension (msedge, chrome).
+		binFile := bin
+		binLower := strings.ToLower(bin)
+		if !strings.HasSuffix(binLower, ".exe") && !strings.HasSuffix(binLower, ".com") &&
+			!strings.HasSuffix(binLower, ".bin") && looksLikeWindowsDrivePath(p) {
+			binFile = bin + ".exe"
+		}
+		var joined string
 		if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
-			return p + bin
-		}
-		// Linux-style command tokens (e.g. "cinnamon-settings accessibility") are not paths.
-		if !strings.ContainsAny(p, `/\`) && !looksLikeWindowsDrivePath(p) {
+			joined = p + binFile
+		} else if !strings.ContainsAny(p, `/\`) && !looksLikeWindowsDrivePath(p) {
+			// Linux-style command tokens (e.g. "cinnamon-settings accessibility") are not paths.
 			return ""
+		} else {
+			joined = p + `\` + binFile
 		}
-		return p + `\` + bin
+		return WidenBrowserAllowPath(joined)
 	}
 	if p == "" {
 		return ""
@@ -1128,9 +1137,36 @@ func resolveInstallIdentity(installPath, binaryName string) string {
 	}
 	// Directory allow for AppLocker path rules.
 	if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
-		return p + `*`
+		return WidenBrowserAllowPath(p + `*`)
 	}
-	return p + `\*`
+	return WidenBrowserAllowPath(p + `\*`)
+}
+
+// WidenBrowserAllowPath turns a single Edge/Chrome EXE under Application\ into a
+// directory wildcard so AppLocker covers versioned helper binaries after updates.
+func WidenBrowserAllowPath(path string) string {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return p
+	}
+	orig := strings.ReplaceAll(p, "/", `\`)
+	lower := strings.ToLower(orig)
+	for _, marker := range []string{
+		`\microsoft\edge\application`,
+		`\google\chrome\application`,
+		`\microsoft\edgewebview\application`,
+	} {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		end := idx + len(marker)
+		prefix := orig[:end]
+		if strings.HasSuffix(strings.ToLower(prefix), `\application`) {
+			return prefix + `\*`
+		}
+	}
+	return orig
 }
 
 func looksLikeWindowsDrivePath(p string) bool {
@@ -1202,7 +1238,7 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 			}
 			if resolved != nil {
 				for _, p := range resolved.Paths {
-					add(LockdownAllowAppRow{Path: p, Product: resolved.AppName})
+					add(LockdownAllowAppRow{Path: WidenBrowserAllowPath(p), Product: resolved.AppName})
 				}
 				// Path-first: only emit publisher when no paths (unsigned/missing inventory path).
 				if len(resolved.Paths) == 0 {
@@ -1212,7 +1248,7 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 				}
 			}
 		}
-		add(LockdownAllowAppRow{Publisher: publisher, Product: product, Sha256: sha, Path: path})
+		add(LockdownAllowAppRow{Publisher: publisher, Product: product, Sha256: sha, Path: WidenBrowserAllowPath(path)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

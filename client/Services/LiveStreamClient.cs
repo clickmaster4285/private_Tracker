@@ -72,6 +72,14 @@ public sealed class LiveStreamClient : BackgroundService
             try { employee = await _store.GetEmployeeInfoAsync(stoppingToken); }
             catch (Exception ex) { _logger.LogDebug(ex, "LiveStreamClient: employee lookup failed"); }
 
+            if (client.Core.UpdatePriority.ShouldYield)
+            {
+                _capture.SetStreamActive(false);
+                try { await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken); }
+                catch (OperationCanceledException) { break; }
+                continue;
+            }
+
             if (employee is null ||
                 (string.IsNullOrWhiteSpace(employee.DeviceToken) && string.IsNullOrWhiteSpace(employee.Token)))
             {

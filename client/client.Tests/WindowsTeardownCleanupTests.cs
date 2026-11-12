@@ -34,4 +34,27 @@ public class WindowsTeardownCleanupTests
     {
         Assert.Equal("AlphaAITracker.Service", AppInfo.WindowsServiceName);
     }
+
+    [Fact]
+    public void BuildAppLockerClearPowerShell_emits_set_policy_and_srpv2_delete()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var ps = WindowsTeardownCleanup.BuildAppLockerClearPowerShell(@"C:\Temp\teardown");
+        Assert.Contains("Set-AppLockerPolicy", ps, StringComparison.Ordinal);
+        Assert.Contains("SrpV2", ps, StringComparison.Ordinal);
+        Assert.Contains("NotConfigured", ps, StringComparison.Ordinal);
+        Assert.Contains("AppIDSvc", ps, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EmptyAppLockerPolicyXml_is_notconfigured()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        Assert.Contains("NotConfigured", WindowsTeardownCleanup.EmptyAppLockerPolicyXml, StringComparison.Ordinal);
+        Assert.Contains("Exe", WindowsTeardownCleanup.EmptyAppLockerPolicyXml, StringComparison.Ordinal);
+    }
 }

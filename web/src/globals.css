@@ -4,6 +4,9 @@
 @import "tw-animate-css";
 @plugin "@tailwindcss/typography";
 
+/* Class-based dark mode (toggled via .dark on <html>) */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
@@ -91,6 +94,8 @@
 
 @layer base {
   :root {
+    color-scheme: light;
+
     --background: 250 20% 98%;
     --foreground: 250 30% 12%;
 
@@ -150,25 +155,45 @@
   }
 
   .dark {
+    color-scheme: dark;
+
     --background: 250 30% 8%;
     --foreground: 250 10% 92%;
+
     --card: 250 25% 12%;
     --card-foreground: 250 10% 92%;
+
     --popover: 250 25% 12%;
     --popover-foreground: 250 10% 92%;
+
     --primary: 262 80% 60%;
     --primary-foreground: 0 0% 100%;
+
     --secondary: 262 30% 18%;
     --secondary-foreground: 262 20% 85%;
+
     --muted: 250 20% 16%;
-    --muted-foreground: 250 10% 55%;
+    --muted-foreground: 250 10% 60%;
+
     --accent: 262 40% 20%;
     --accent-foreground: 262 60% 80%;
-    --destructive: 0 62% 40%;
+
+    --destructive: 0 62% 45%;
     --destructive-foreground: 0 0% 100%;
+
+    --success: 152 55% 40%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 90% 50%;
+    --warning-foreground: 38 92% 12%;
+
+    --info: 210 75% 55%;
+    --info-foreground: 0 0% 100%;
+
     --border: 250 20% 18%;
     --input: 250 20% 18%;
     --ring: 262 80% 60%;
+
     --sidebar-background: 262 50% 10%;
     --sidebar-foreground: 262 15% 85%;
     --sidebar-primary: 262 80% 65%;
@@ -177,6 +202,12 @@
     --sidebar-accent-foreground: 262 15% 90%;
     --sidebar-border: 262 30% 18%;
     --sidebar-ring: 262 80% 65%;
+
+    --gradient-primary: linear-gradient(135deg, hsl(262, 80%, 55%), hsl(280, 70%, 55%));
+    --gradient-card: linear-gradient(135deg, hsl(250, 25%, 12%), hsl(262, 30%, 14%));
+    --shadow-card: 0 1px 3px 0 hsl(0 0% 0% / 0.35), 0 1px 2px -1px hsl(0 0% 0% / 0.35);
+    --shadow-card-hover: 0 10px 25px -5px hsl(0 0% 0% / 0.45), 0 8px 10px -6px hsl(0 0% 0% / 0.3);
+    --shadow-sidebar: 4px 0 20px -2px hsl(0 0% 0% / 0.4);
   }
 }
 
@@ -184,8 +215,11 @@
   * {
     @apply border-border;
   }
-  body {
+  html {
     @apply bg-background text-foreground;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
     font-family: var(--font-body);
   }
   h1, h2, h3, h4, h5, h6 {

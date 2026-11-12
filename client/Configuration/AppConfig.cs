@@ -149,8 +149,8 @@ public class AppConfig
     public int WsReconnectBaseSec { get; init; } = 2;
 
     // ─── Self-update (public releases bridge on ALPHA_SERVER_URL) ───
-    // GET {ServerUrl}/api/v1/releases + GET /api/v1/downloads/:assetId. No GitHub
-    // token on the client. (REPO= in .env is only for publish/release.sh / gh CLI.)
+    // GET {ServerUrl}/api/v1/releases + GET /api/v1/downloads/:assetId.
+    // Installers come from the API host's setup/ folder (RELEASES_DIR).
     public bool UpdateEnabled { get; init; } = true;          // master switch for all update behaviour
     public int UpdateCheckIntervalSec { get; init; } = 60;    // seconds between background checks against the server
     public bool UpdateAutoInstall { get; init; } = true;      // auto-download+install when a check finds a newer version

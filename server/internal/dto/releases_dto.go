@@ -6,7 +6,7 @@ type ReleasesResponse struct {
 	Releases     []ReleaseResponse `json:"releases"`
 }
 
-// ReleaseResponse is one published GitHub release (drafts never included).
+// ReleaseResponse is one published local installer version from RELEASES_DIR.
 type ReleaseResponse struct {
 	TagName     string               `json:"tagName"`
 	Name        string               `json:"name"`
@@ -16,8 +16,8 @@ type ReleaseResponse struct {
 	Assets      []ReleaseAssetResponse `json:"assets"`
 }
 
-// ReleaseAssetResponse is a downloadable installer asset exposed to the website.
-// Upstream GitHub URLs are intentionally omitted.
+// ReleaseAssetResponse is a downloadable installer asset exposed to the website
+// and desktop clients (served from the local setup folder).
 type ReleaseAssetResponse struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`

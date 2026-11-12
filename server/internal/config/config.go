@@ -91,6 +91,10 @@ type ScaleConfig struct {
 // ReleasesConfig points at the folder holding client installers (e.g. setup/v1.0.0.exe).
 type ReleasesConfig struct {
 	Dir string
+	// MaxConcurrentDownloads caps simultaneous GET /downloads body streams (fleet admission).
+	MaxConcurrentDownloads int
+	// DownloadRetryAfterSec is returned with 429 when the download gate is full.
+	DownloadRetryAfterSec int
 }
 
 // LiveStreamConfig holds caps for the in-memory WebRTC SFU (no DB persistence).
@@ -245,7 +249,9 @@ func Load() (*Config, error) {
 		},
 
 		Releases: ReleasesConfig{
-			Dir: strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
+			Dir:                    strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
+			MaxConcurrentDownloads: getEnvInt("RELEASE_DOWNLOAD_MAX_CONCURRENT", 25),
+			DownloadRetryAfterSec:  getEnvInt("RELEASE_DOWNLOAD_RETRY_AFTER_SEC", 60),
 		},
 
 		Screenshots: ScreenshotsConfig{

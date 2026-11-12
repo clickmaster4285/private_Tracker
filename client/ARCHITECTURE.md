@@ -10,6 +10,39 @@
 >   Runs when `ALPHA_AV_ENFORCE=true` (default) regardless of `ALPHA_DLP_ENABLED`; third-party AV is
 >   reported, not fought. `PolicyStore.GetKvAsync/SetKvAsync`; `AppProcessGuard` denies `SecHealthUI`.
 >   Env `ALPHA_AV_*` baked via `generate-windows-vars.sh` → `service.env`.
+> **Last audited:** 2026-11-11 (silent apply AppLocker updates\* + pre-stop)
+> **Changelog:**
+> - 2026-11-11: **Protected-uninstall AppLocker + pipe.** Teardown IPC not gated on DLP
+>   enable; longer ApplyTeardownGate timeouts; `AppAllowEnforcer.Clear` deletes SrpV2;
+>   `WindowsTeardownCleanup` AppLocker + FW COM + browser clear (SYSTEM task). **VERSION 1.4.7**.
+> - 2026-11-11: **Lab leftover wipe doc.** See repo [`removeTracker.md`](../removeTracker.md)
+>   (AppLocker/SRP purge + hosts/FW after protected uninstall). Linked from TESTING §C.
+> - 2026-11-11: **Silent apply AppLocker + pre-stop.** SYSTEM-only allow
+>   `%ProgramData%\<mutex>\updates\*`; fingerprint `v7`; helper stops service before Inno;
+>   after success clear flags + `relaunch_tracker`, `sc start` only if not RUNNING (Inno
+>   already starts service). **VERSION 1.4.6**.
+> - 2026-11-11: **Post-auto-update restart.** Apply helper clears gates, restarts DLP service
+>   (wait RUNNING), sets `relaunch_tracker`; watchdog starts `--background --restart`. **VERSION 1.4.5**.
+> - 2026-11-11: **Update-priority yield.** Newer release → `update_priority` flag; tracker parks
+>   sync/live/screenshots/collectors so download+apply run first (auto jitter ≤120s). **VERSION 1.4.2**.
+> - 2026-11-11: **Silent update `update_in_progress` TTL + fleet download jitter.** Orphan/TTL
+>   clear so watchdog relaunches; clear flag if helper spawn fails; post-Inno service restart
+>   for AppLocker v6; `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` + Retry-After on downloads. **VERSION 1.3.7**.
+> - 2026-11-11: **AppLocker PF(x86) prefix order.** `NormalizeAppLockerPath` used
+>   `StartsWith(Program Files)` before PF(x86), turning
+>   `C:\Program Files (x86)\Microsoft\Edge\Application\*` into invalid
+>   `%PROGRAMFILES% (x86)\…`. Fix: `StartsWithDir` (boundary `\`) + match PF(x86) first;
+>   rewrite broken `%PROGRAMFILES% (x86)` macros; fingerprint `v6`. **VERSION 1.3.6**.
+>   Verified: `dotnet build` DlpService. Installer-Parity: next Windows installer.
+> - 2026-11-11: **AppLocker Edge allow under Program Files (x86).**
+>   `AppAllowEnforcer.NormalizeAppLockerPath` mapped `Program Files (x86)` to
+>   `%PROGRAMFILES(X86)%`, which AppLocker does not understand (only `%PROGRAMFILES%`,
+>   covering both PF roots per MS docs). Symptom: Task Manager (`%SYSTEM32%`) unblocked;
+>   Edge stayed default-deny. Fix: both PF roots → `%PROGRAMFILES%`; rewrite legacy
+>   `(X86)` macros on apply; fingerprint `v5`. `AppProcessGuard.AddExpandedPaths` emits
+>   matchers for both Program Files roots when expanding `%PROGRAMFILES%` (and still
+>   expands legacy `%PROGRAMFILES(X86)%`). **VERSION 1.3.4**. Verified: `dotnet build`
+>   DlpService. Installer-Parity: next Windows installer.
 > - 2026-11-10: **`--timedatewarning` subprocess.** `TimeDateWarningWorker` (start + hourly):
 >   server-time skew + IP/schedule IANA TZ vs OS; spawns sibling Avalonia process when wrong.
 >   State: `%LocalAppData%/<APP>/timedatewarning/state.json`. Open Date & Time settings; Dismiss
@@ -479,7 +512,7 @@
 - **No ORM** — raw parameterized SQL via `SqliteCommand`
 - **Sparse tests** — `client/client.Tests` covers a few DLP/teardown helpers; collectors largely untested
 - **No structured logging beyond ILogger** — console (dev) + `FileLoggerProvider` → `dotnetrunlog.txt`
-- **No third-party auto-updater library** — the built-in `AppUpdateService` (2026-08-12, §16) self-updates from GitHub Releases; installers are still published via `release.sh`
+- **No third-party auto-updater library** — the built-in `AppUpdateService` + Windows `SilentUpdateWorker` self-update from the API `setup/` folder (`GET /api/v1/releases` + `/downloads`); publish via `release.sh`
 
 ---
 
@@ -504,7 +537,7 @@ client/
 ├── APP_IDENTIFIERS_README.md       # How to re-brand; lists every consumer
 ├── VERSION_README.md               # How to bump the version
 ├── appsettings.json                # Logging config (largely unused — level comes from ALPHA_LOG_LEVEL)
-├── .env / .env.example             # Dev plaintext config template (REPO key is NOT read by client)
+├── .env / .env.example             # Dev plaintext config template (ALPHA_SERVER_URL + ALPHA_UPDATE_*)
 │
 ├── Configuration/
 │   ├── AppConfig.cs                # Reads all ALPHA_* env vars into typed config (see §14)
@@ -569,7 +602,7 @@ client/
 ├── Services/
 │   ├── LogCollectorService.cs      # ⭐ main BackgroundService: collect → resolve → sessions/items → heartbeat (no network I/O since 2026-08-11)
 │   ├── SyncService.cs              # ⭐ dedicated sync engine: drains unsent rows in byte-bounded chunks (gzip, polite pauses, exponential backoff)
-│   ├── AppUpdateService.cs         # ⭐ self-updater (2026-08-12): GitHub latest-release check → platform asset → download to user data dir → pkexec dpkg / silent Inno / dmg; ObservableObject state bound by the GUI; 24h auto-check loop
+│   ├── AppUpdateService.cs         # ⭐ self-updater: GET /api/v1/releases + /downloads; Windows queues SilentUpdateWorker; Linux pkexec dpkg / macOS dmg; ObservableObject for GUI Check updates
 │   ├── LiveStreamClient.cs         # ⭐ WebRTC VP8 publisher → GET /live-stream/push; ABR; send after PC connected
 │   ├── NetProbeService.cs          # Uplink probe → POST /live-stream/uplink-probe; SelectBitrateKbps ladder
 │   ├── ScreenCaptureService.cs     # Win GDI BitBlt + Linux portal/PipeWire → BGRA (DropOldest)
@@ -1063,6 +1096,7 @@ Watchers (IObservableEventSource)          EventCoordinator                 Jour
 | `ALPHA_UPDATE_ENABLED` | true | master switch for self-update (background checks + auto-install + GUI); requires `ALPHA_SERVER_URL` |
 | `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background update checks against the server (min 15); service + GUI |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install when a check finds a newer version (Linux still shows the polkit password dialog) |
+| `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` | 3600 | fleet per-machine silent download delay window (fleet); GUI force ≤30s |
 | `ALPHA_STREAM_ENABLED` | false | master switch for WebRTC live-stream publisher |
 | `ALPHA_STREAM_FPS` | 12 | capture / encode cadence (1–30); may drop under ABR degrade |
 | `ALPHA_STREAM_MAX_WIDTH` | 1920 | scale cap (hard-clamped 320–1920); may drop under ABR |
@@ -1150,7 +1184,7 @@ Two consequences worth knowing before you touch either file:
 | Gap | Severity | Details |
 |---|---|---|
 | **No crash handling** | 🔴 High | No `AppDomain.UnhandledException` subscription, no crash dumps, no telemetry. |
-| ~~**No auto-update**~~ (resolved 2026-08-12) | — | `AppUpdateService` checks GitHub Releases on a 24h cadence + on demand (GUI **Check updates**), auto-installs (Linux polkit / Windows silent Inno / macOS dmg) and relaunches itself. |
+| ~~**No auto-update**~~ (resolved 2026-08-12; local setup 2026-11-07) | — | `AppUpdateService` + Windows `SilentUpdateWorker` poll `GET /api/v1/releases` every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s); Windows silent Inno via LocalSystem; Linux polkit / macOS dmg. |
 | **SQLite unencrypted** | 🟠 Medium | `ALPHA_DB_ENCRYPTION_KEY` exists but sqlcipher is not wired in. |
 | **macOS CPU = 0%** | 🟠 Medium | macOS collector does not measure CPU. |
 | **macOS window capture limited** | 🟢 Low | Only foreground window via osascript; no EnumWindows equivalent. |
@@ -1203,9 +1237,11 @@ Two consequences worth knowing before you touch either file:
    Linux arch preference (`_amd64.deb` / `_arm64.deb`). No asset → "No installer for this platform".
 4. Compare vs installed version. Newer → proceed.
 5. **Windows (service that understands the pipe):** Range-download to `%ProgramData%\<APP_MUTEX>\updates\`
-   while the tracker runs; a detached SYSTEM PowerShell helper runs Inno `/VERYSILENT` (no `RunAs`)
-   and clears `update_in_progress` (no celebration toast). The GUI polls `GetUpdateStatus` and does
-   not elevate.
+   while the tracker runs; a detached SYSTEM PowerShell helper pre-stops the DLP service, runs Inno
+   `/VERYSILENT` (no `RunAs`; AppLocker SYSTEM allow for `updates\*`), clears `update_in_progress`,
+   writes `relaunch_tracker`, and `sc start`s only if Inno did not leave the service RUNNING
+   (Inno `InstallDlpService` normally creates+starts; watchdog relaunches the tracker). No
+   celebration toast. The GUI polls `GetUpdateStatus` and does not elevate.
    **Windows (installed service that answers `unknown_op`):** the GUI downloads the same bridge
    asset, requires the file length to match `asset.size` when that size is non-zero, then
    `Start-Process -Verb RunAs` (explicit UAC, not a silent bypass). `update_disabled`,
@@ -1225,7 +1261,7 @@ Two consequences worth knowing before you touch either file:
 
 ### Background loop
 
-- **Windows service:** `SilentUpdateWorker` 30-min tick + `ALPHA_UPDATE_AUTO_CHECK_HOURS` gate;
+- **Windows service:** `SilentUpdateWorker` every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s);
   independent of `ALPHA_DLP_ENABLED`; pipe ops `GetUpdateStatus` / `RequestUpdateCheck` always
   available on Windows.
 - **Client:** still auto-checks; on Windows auto-install defers to the service pipe.
@@ -1238,6 +1274,7 @@ Two consequences worth knowing before you touch either file:
 | `ALPHA_UPDATE_ENABLED` | true | master switch (service worker + GUI no-op when false) |
 | `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background checks |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install without a click |
+| `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` | 3600 | stable per-machine delay window before silent download (fleet admission); GUI force ≤30s |
 
 ⚠️ **Installers are not code-signed / checksum-verified** — the download is trusted over the API TLS
 (only size is checked against the release list). Signing is a future hardening step. First install still needs

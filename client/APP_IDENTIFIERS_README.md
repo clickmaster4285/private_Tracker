@@ -128,17 +128,15 @@ Which the `.iss` file includes:
 
 The `.iss` then uses `{#MyAppName}`, `{#MyAppExeName}`, etc. throughout.
 
-### GitHub Releases (`release.sh`)
+### Local setup folder (`release.sh`)
 
 ```bash
 source "$PROJECT_DIR/APP_IDENTIFIERS"
 ```
 
-Used in release notes and `gh` title:
-
-```bash
-gh release create "$VERSION" --title "$DISPLAY_NAME $VERSION"
-```
+`publish/release.sh` builds platform installers and copies them into `server/setup/`
+(e.g. `v1.2.0.exe`) using `DISPLAY_NAME` / product names from `APP_IDENTIFIERS`.
+The API (`RELEASES_DIR`, default `setup`) serves them on `/api/v1/releases` + `/downloads`.
 
 ## Adding a New Identifier
 

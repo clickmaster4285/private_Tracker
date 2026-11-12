@@ -128,6 +128,10 @@ Follow the full definitions in `AGENTS.md`. In particular:
   `is_synced=1` on those responses; honor `Retry-After` and use login jitter
   (`ALPHA_SYNC_LOGIN_JITTER_SEC`). Background sweeps run via Asynq with a hard concurrency cap —
   never unbounded `go` per job. Live watches cap at `LIVE_STREAM_MAX_STREAMS` (product target 100).
+  **Installer downloads** (`GET /api/v1/downloads`) use a global concurrency gate
+  (`RELEASE_DOWNLOAD_MAX_CONCURRENT`, default 25) with `429` + `Retry-After`; Windows
+  `SilentUpdateWorker` spreads starts with `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` (default 3600) and
+  resumes Range after Retry-After — do not rely on per-IP limits alone for a fleet stampede.
   Canonical plan: `newplan.md`.
 
 ## Verification
