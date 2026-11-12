@@ -4,9 +4,20 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Search, Loader2, ShieldCheck, ShieldAlert, ShieldOff, ShieldQuestion, Bug, Clock,
-  ScanLine, RefreshCw, Trash2, Check,
+  ScanLine, ScanSearch, RefreshCw, Trash2, Check, FolderSearch, History, Info, ChevronDown,
 } from 'lucide-react';
-import { keepPreviousData, useInfiniteQuery, useMutation } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { CustomScanDialog } from '@/components/antivirus/CustomScanDialog';
+import { CommandHistoryDialog } from '@/components/antivirus/CommandHistoryDialog';
+import { COMMAND_INFO, HEALTH_HELP } from '@/components/antivirus/labels';
 import {
   antivirusApi,
   type AntivirusCommandType,
@@ -101,22 +112,25 @@ function HardeningChips({ r }: { r: AntivirusStatusRow }) {
   );
 }
 
-/** Admin-side remote fix: queue a scan / remediation for one machine. */
-const ROW_ACTIONS: { type: AntivirusCommandType; label: string; Icon: typeof ScanLine; confirm?: string }[] = [
-  { type: 'scan_quick', label: 'Quick scan', Icon: ScanLine },
-  { type: 'scan_full', label: 'Full scan', Icon: ScanLine },
-  { type: 'update_signatures', label: 'Update signatures', Icon: RefreshCw },
-  { type: 'remove_threats', label: 'Remove threats', Icon: Trash2, confirm: 'Remove all active threats on this PC?' },
-];
+const REMOVE_CONFIRM =
+  'Delete every threat Microsoft Defender has found on this PC, including quarantined items? This cannot be undone.';
 
+/**
+ * Compact per-row actions: one "Actions" button that opens a dropdown, so each record row
+ * stays a single line tall. A short-lived green pill confirms the last queued command.
+ */
 function ActionsCell({ r }: { r: AntivirusStatusRow }) {
-  const [doneType, setDoneType] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const [feedback, setFeedback] = useState<string | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const mutation = useMutation({
     mutationFn: (type: AntivirusCommandType) =>
       antivirusApi.queueCommand({ employeeId: r.employeeId, machineId: r.machineId, type }),
-    onSuccess: (_data, type) => {
-      setDoneType(type);
-      setTimeout(() => setDoneType((t) => (t === type ? null : t)), 2500);
+    onSuccess: (data, type) => {
+      setFeedback(`${COMMAND_INFO[type].label}: ${data.reused ? 'already queued' : 'queued'}`);
+      setTimeout(() => setFeedback(null), 3000);
+      qc.invalidateQueries({ queryKey: ['antivirus-commands', r.employeeId, r.machineId] });
     },
   });
 
@@ -124,28 +138,123 @@ function ActionsCell({ r }: { r: AntivirusStatusRow }) {
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     mutation.mutate(type);
   };
-  const disabled = mutation.isPending || r.isStale;
+  const busy = mutation.isPending || r.isStale;
+  const staleHint = 'This PC is not reporting (off or offline) — it would not pick the command up';
+
+  const item = (type: AntivirusCommandType, Icon: typeof ScanLine) => (
+    <DropdownMenuItem
+      disabled={busy}
+      onSelect={() => run(type, type === 'remove_threats' ? REMOVE_CONFIRM : undefined)}
+      className={`gap-2 ${type === 'remove_threats' ? 'text-destructive focus:text-destructive' : ''}`}
+    >
+      <Icon className="w-3.5 h-3.5 shrink-0" />
+      <div className="flex flex-col">
+        <span>{COMMAND_INFO[type].label}</span>
+        <span className="text-[10px] text-muted-foreground">{COMMAND_INFO[type].help}</span>
+      </div>
+    </DropdownMenuItem>
+  );
 
   return (
-    <div className="flex flex-col gap-1">
-      {ROW_ACTIONS.map((a) => (
-        <button
-          key={a.type}
-          type="button"
-          disabled={disabled}
-          onClick={() => run(a.type, a.confirm)}
-          title={r.isStale ? 'Machine is not reporting — command would not be picked up' : a.label}
-          className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
-            a.type === 'remove_threats'
-              ? 'border-destructive/30 text-destructive hover:bg-destructive/10'
-              : 'border-border text-foreground hover:bg-muted/40'
-          } disabled:opacity-40 disabled:cursor-not-allowed`}
+    <div className="flex flex-col items-start gap-1">
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          title={r.isStale ? staleHint : 'Scan, update or clean this PC'}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border bg-card text-xs font-medium text-foreground hover:bg-muted/50 transition-colors data-[state=open]:bg-muted/60"
         >
-          {doneType === a.type ? <Check className="w-3 h-3 text-success" /> : <a.Icon className="w-3 h-3" />}
-          {doneType === a.type ? 'Queued' : a.label}
-        </button>
-      ))}
-      {mutation.isError && <span className="text-[10px] text-destructive">Failed to queue</span>}
+          {mutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5 text-primary" />}
+          Actions
+          <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60">
+          <DropdownMenuLabel className="text-[11px] text-muted-foreground">Scans & maintenance</DropdownMenuLabel>
+          {item('scan_quick', ScanLine)}
+          {item('scan_full', ScanSearch)}
+          <DropdownMenuItem disabled={r.isStale} onSelect={() => setCustomOpen(true)} className="gap-2">
+            <FolderSearch className="w-3.5 h-3.5 shrink-0" />
+            <div className="flex flex-col">
+              <span>Custom scan…</span>
+              <span className="text-[10px] text-muted-foreground">{COMMAND_INFO.scan_custom.help}</span>
+            </div>
+          </DropdownMenuItem>
+          {item('update_signatures', RefreshCw)}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => setHistoryOpen(true)} className="gap-2 text-primary focus:text-primary">
+            <History className="w-3.5 h-3.5 shrink-0" />
+            <span>Command history</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {item('remove_threats', Trash2)}
+          {r.isStale && (
+            <p className="px-2 py-1.5 text-[10px] text-warning">{staleHint}</p>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {feedback && (
+        <span className="inline-flex items-center gap-1 text-[10px] text-success">
+          <Check className="w-3 h-3" /> {feedback}
+        </span>
+      )}
+      {mutation.isError && <span className="text-[10px] text-destructive">Could not queue — try again</span>}
+
+      <CustomScanDialog row={r} open={customOpen} onOpenChange={setCustomOpen} />
+      <CommandHistoryDialog row={r} open={historyOpen} onOpenChange={setHistoryOpen} />
+    </div>
+  );
+}
+
+/** Collapsible plain-language explanation of the page. */
+function HowItWorks() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="bg-card rounded-xl border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-foreground"
+      >
+        <Info className="w-4 h-4 text-primary" /> How to read this page
+        <ChevronDown className={`w-4 h-4 ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4 grid gap-4 md:grid-cols-3 text-xs text-muted-foreground">
+          <div>
+            <p className="font-semibold text-foreground mb-1">Status</p>
+            <ul className="space-y-1">
+              {(['protected', 'outdated', 'realtime_off', 'disabled', 'third_party'] as AntivirusHealth[]).map((k) => (
+                <li key={k}>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium mr-1 ${HEALTH[k].cls}`}>{HEALTH[k].label}</span>
+                  {HEALTH_HELP[k]}
+                </li>
+              ))}
+              <li><span className="text-warning font-medium">Not reporting</span> — no update from the PC for 30 minutes (switched off, offline or the tracker stopped).</li>
+            </ul>
+          </div>
+          <div>
+            <p className="font-semibold text-foreground mb-1">Protection & hardening chips</p>
+            <p className="mb-1"><span className="text-success font-medium">Green</span> = on, <span className="text-warning font-medium">amber</span> = audit (logs but does not block), <span className="text-destructive font-medium">red</span> = off.</p>
+            <ul className="space-y-1">
+              <li><b>Real-time</b> — every file is checked when it is opened, run or downloaded.</li>
+              <li><b>Behaviour</b> — watches programs for suspicious actions.</li>
+              <li><b>Cloud / PUA</b> — Microsoft cloud lookups / blocks unwanted adware-style apps.</li>
+              <li><b>Tamper prot.</b> — Windows stops other programs switching Defender off.</li>
+              <li><b>ASR x/16</b> — Attack Surface Reduction rules blocking risky actions (e.g. Office macros starting programs).</li>
+              <li><b>Folder</b> — ransomware protection for Documents/Desktop.</li>
+            </ul>
+          </div>
+          <div>
+            <p className="font-semibold text-foreground mb-1">Actions</p>
+            <ul className="space-y-1">
+              {(['scan_quick', 'scan_full', 'scan_custom', 'update_signatures', 'remove_threats'] as AntivirusCommandType[]).map((k) => (
+                <li key={k}><b>{COMMAND_INFO[k].label}</b> — {COMMAND_INFO[k].help}</li>
+              ))}
+              <li><b>History</b> — shows each command, who sent it, and whether it finished or failed.</li>
+            </ul>
+            <p className="mt-2">Commands wait until the PC is on, then run within about 30 seconds. Buttons are greyed out while a PC is not reporting.</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -225,6 +334,8 @@ function AntivirusInner() {
         </Link>
       </div>
 
+      <HowItWorks />
+
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center bg-card border border-border rounded-lg px-3 py-2 gap-2 w-full sm:max-w-xs">
           <Search className="w-4 h-4 text-muted-foreground" />
@@ -277,7 +388,12 @@ function AntivirusInner() {
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${h.cls}`}>{h.label}</span>
+                    <span title={HEALTH_HELP[r.health] ?? ''} className={`px-2.5 py-1 rounded-full text-xs font-medium cursor-help ${h.cls}`}>{h.label}</span>
+                    {r.error && (
+                      <div className="text-[11px] text-destructive mt-1 max-w-[180px] break-words" title={r.error}>
+                        Problem reading status: {r.error.length > 80 ? r.error.slice(0, 80) + '…' : r.error}
+                      </div>
+                    )}
                     {r.health === 'third_party' && r.thirdPartyProducts && (
                       <div className="text-xs text-muted-foreground mt-1">{r.thirdPartyProducts}</div>
                     )}

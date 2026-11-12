@@ -70,15 +70,18 @@ func (h *AntivirusHandler) QueueCommand(c echo.Context) error {
 		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
 	}
 	uid, _ := c.Get("user_id").(string)
-	id, err := h.svc.QueueCommand(c.Request().Context(), &req, uid)
+	id, reused, err := h.svc.QueueCommand(c.Request().Context(), &req, uid)
 	if err != nil {
 		if err == services.ErrInvalidCommand {
 			return errorResponse(c, http.StatusBadRequest, "Invalid antivirus command", err)
 		}
+		if err == services.ErrUnknownMachine {
+			return errorResponse(c, http.StatusBadRequest, "Machine has not reported antivirus status", err)
+		}
 		log.Printf("[antivirus] QueueCommand error: %v", err)
 		return errorResponse(c, http.StatusInternalServerError, "Failed to queue command", err)
 	}
-	return c.JSON(http.StatusOK, map[string]any{"id": id, "queued": true})
+	return c.JSON(http.StatusOK, map[string]any{"id": id, "queued": true, "reused": reused})
 }
 
 // ListCommands handles GET /api/v1/antivirus/commands?employeeId=&machineId=&limit= (JWT).
@@ -87,8 +90,20 @@ func (h *AntivirusHandler) ListCommands(c echo.Context) error {
 	if empID == "" {
 		return errorResponse(c, http.StatusBadRequest, "employeeId is required", nil)
 	}
-	limit, _ := strconv.Atoi(c.QueryParam("limit"))
-	resp, err := h.svc.ListCommands(c.Request().Context(), empID, c.QueryParam("machineId"), limit)
+	page, _ := strconv.Atoi(c.QueryParam("page"))
+	perPage, _ := strconv.Atoi(c.QueryParam("perPage"))
+	if perPage == 0 {
+		perPage, _ = strconv.Atoi(c.QueryParam("limit"))
+	}
+	resp, err := h.svc.ListCommands(c.Request().Context(), repository.AntivirusCommandFilter{
+		EmployeeID: empID,
+		MachineID:  c.QueryParam("machineId"),
+		Status:     c.QueryParam("status"),
+		Type:       c.QueryParam("type"),
+		Search:     c.QueryParam("search"),
+		Page:       page,
+		PerPage:    perPage,
+	})
 	if err != nil {
 		return errorResponse(c, http.StatusInternalServerError, "Failed to list commands", err)
 	}

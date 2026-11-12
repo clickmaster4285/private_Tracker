@@ -2227,22 +2227,37 @@ export type AntivirusCommandType =
   | 'scan_quick'
   | 'scan_full'
   | 'scan_custom'
+  | 'scan_offline'
   | 'update_signatures'
   | 'remove_threats'
+  | 'remove_threat'
   | 'restore_threat';
+
+export type AntivirusCommandStatus = 'pending' | 'running' | 'done' | 'failed' | 'expired';
 
 export interface AntivirusCommandRow {
   id: number;
   employeeId: string;
+  employeeName: string;
   machineId: string;
+  hostname: string;
   type: AntivirusCommandType;
   arg: string;
-  status: 'pending' | 'running' | 'done' | 'failed' | 'expired';
+  status: AntivirusCommandStatus;
   result: string;
   requestedBy: string | null;
+  requestedByName: string;
   createdAt: string;
   dispatchedAt: string | null;
   completedAt: string | null;
+}
+
+export interface AntivirusCommandListResponse {
+  data: AntivirusCommandRow[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
 }
 
 export const antivirusApi = {
@@ -2251,9 +2266,17 @@ export const antivirusApi = {
       params: params as Record<string, string | number | undefined>,
     }),
   queueCommand: (body: { employeeId: string; machineId: string; type: AntivirusCommandType; arg?: string }) =>
-    request<{ id: number; queued: boolean }>('/antivirus/commands', { method: 'POST', body }),
-  listCommands: (params: { employeeId: string; machineId?: string; limit?: number }) =>
-    request<{ data: AntivirusCommandRow[] }>('/antivirus/commands', {
+    request<{ id: number; queued: boolean; reused?: boolean }>('/antivirus/commands', { method: 'POST', body }),
+  listCommands: (params: {
+    employeeId: string;
+    machineId?: string;
+    status?: AntivirusCommandStatus | '';
+    type?: AntivirusCommandType | '';
+    search?: string;
+    page?: number;
+    perPage?: number;
+  }) =>
+    request<AntivirusCommandListResponse>('/antivirus/commands', {
       params: params as Record<string, string | number | undefined>,
     }),
 };

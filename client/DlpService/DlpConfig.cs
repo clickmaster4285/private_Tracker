@@ -204,10 +204,4 @@ public sealed class DlpConfig
         var v = Environment.GetEnvironmentVariable(key);
         return int.TryParse(v, out var n) && n > 0 ? n : fallback;
     }
-
-    private static int GetIntAllowZero(string key, int fallback)
-    {
-        var v = Environment.GetEnvironmentVariable(key);
-        return int.TryParse(v, out var n) && n >= 0 ? n : fallback;
-    }
 }
