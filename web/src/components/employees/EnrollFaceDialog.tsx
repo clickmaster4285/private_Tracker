@@ -344,102 +344,104 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
           : `Upload all ${samples.length} angles`;
 
   const employeeKey = employee?.employeeId || employee?.id || '';
+  const progressLabel = retryMode
+    ? `${samples.length}/${rejectedServer.length || rejectedPoseIds.size} retakes`
+    : `${samples.length}/${FACE_POSES.length} saved`;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-card sm:max-w-2xl w-[calc(100vw-1.5rem)] max-h-[min(92vh,900px)] p-0 gap-0 flex flex-col overflow-hidden">
-        <div className="shrink-0 border-b border-border px-6 pt-6 pb-3 pr-12">
+      <DialogContent className="bg-card w-[90vw] h-[90vh] max-w-none p-0 gap-0 flex flex-col overflow-hidden sm:rounded-xl">
+        <div className="shrink-0 border-b border-border px-5 pt-5 pb-3 pr-12">
           <DialogHeader>
-            <DialogTitle className="font-display flex items-center gap-2">
+            <DialogTitle className="font-display flex items-center gap-2 text-base sm:text-lg">
               <ScanFace className="w-5 h-5 text-primary" />
               Face enrollment{employee ? ` — ${employee.name}` : ''}
             </DialogTitle>
           </DialogHeader>
-          <p className="text-xs text-muted-foreground mt-2 text-left">
+          <p className="text-xs text-muted-foreground mt-1.5 text-left leading-relaxed">
             {phase === 'review'
               ? 'Server is checking each image. Verified angles stay; Retry means retake that pose only.'
               : retryMode
                 ? 'Retake only the red Retry angles, then upload replacements. Verified images stay.'
                 : <>
-                    Follow each pose cue, then press{' '}
-                    <span className="text-foreground font-medium">Capture this angle</span>. Upload after{' '}
-                    {FACE_ENROLL_MIN_SAMPLES} angles (all {FACE_POSES.length} recommended). Originals go to the
-                    server; the server face_worker verifies faces.
+                    Follow each pose cue on the left, then{' '}
+                    <span className="text-foreground font-medium">Capture</span>. Upload after{' '}
+                    {FACE_ENROLL_MIN_SAMPLES}+ angles (all {FACE_POSES.length} recommended).
                   </>}
           </p>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-4 space-y-4 [scrollbar-gutter:stable]">
-          {phase === 'capture' && (
-            <>
-              <div className="relative rounded-xl overflow-hidden bg-black aspect-video max-h-[min(42vh,360px)] mx-auto w-full">
-                <video ref={videoRef} className="w-full h-full object-cover scale-x-[-1]" playsInline muted />
-                <div
-                  className={`pointer-events-none absolute left-1/2 top-[48%] -translate-x-1/2 -translate-y-1/2
-                    w-[46%] max-w-[200px] aspect-[3/4] rounded-[50%] border-2
-                    ${qualityOk ? 'border-primary/70' : 'border-warning/80'}`}
-                  aria-hidden
-                />
-                <div className="absolute bottom-2 left-2 right-2 flex items-end justify-between gap-2">
-                  <div className="min-w-0 space-y-1">
-                    <p className="text-[11px] uppercase tracking-wide text-white/70 bg-black/55 inline-block px-2 py-0.5 rounded">
-                      Step {poseIndex + 1} of {FACE_POSES.length}: {pose.shortLabel}
-                      {retryMode ? ' · retake' : ''}
-                    </p>
-                    <p className="text-sm font-medium text-white bg-black/65 px-2.5 py-1 rounded-md max-w-full truncate">
-                      {liveHint}
-                    </p>
-                  </div>
-                  <span className="shrink-0 text-xs bg-black/65 text-white px-2 py-1 rounded-md tabular-nums">
-                    {retryMode
-                      ? `${samples.length}/${rejectedServer.length || rejectedPoseIds.size} retakes`
-                      : `${samples.length}/${FACE_POSES.length} saved`}
+        {phase === 'capture' && (
+          <div className="min-h-0 flex-1 grid grid-cols-1 lg:grid-cols-[minmax(280px,0.38fr)_1fr] overflow-hidden">
+            {/* Left rail — all controls */}
+            <aside className="min-h-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border bg-muted/20 overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 space-y-4 [scrollbar-gutter:stable]">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                    Angles
+                  </p>
+                  <span className="text-xs tabular-nums text-foreground/80 bg-background border border-border px-2 py-0.5 rounded-md">
+                    {progressLabel}
                   </span>
                 </div>
-              </div>
 
-              <div className="flex flex-wrap gap-1.5" role="list" aria-label="Enrollment angles">
-                {FACE_POSES.map((p, i) => {
-                  const done = capturedByPose.has(p.id);
-                  const active = i === poseIndex;
-                  const needsRetry = retryMode && rejectedPoseIds.has(p.id);
-                  const lockedOk = retryMode && !needsRetry;
-                  return (
-                    <button
-                      key={p.id}
-                      type="button"
-                      role="listitem"
-                      disabled={lockedOk}
-                      onClick={() => {
-                        if (!lockedOk) setPoseIndex(i);
-                      }}
-                      title={p.label}
-                      className={`inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-md border transition-colors ${
-                        lockedOk
-                          ? 'border-success/40 bg-success/10 text-success opacity-70 cursor-default'
-                          : active
-                            ? 'border-primary bg-primary/15 text-foreground'
-                            : done
-                              ? 'border-success/50 bg-success/10 text-success'
-                              : needsRetry
-                                ? 'border-destructive/60 text-destructive'
-                                : 'border-border text-muted-foreground hover:text-foreground'
-                      }`}
-                    >
-                      {done || lockedOk ? <Check className="w-3 h-3 shrink-0" aria-hidden /> : null}
-                      {p.shortLabel}
-                    </button>
-                  );
-                })}
-              </div>
+                <div className="flex flex-col gap-1.5" role="list" aria-label="Enrollment angles">
+                  {FACE_POSES.map((p, i) => {
+                    const done = capturedByPose.has(p.id);
+                    const active = i === poseIndex;
+                    const needsRetry = retryMode && rejectedPoseIds.has(p.id);
+                    const lockedOk = retryMode && !needsRetry;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        role="listitem"
+                        disabled={lockedOk}
+                        onClick={() => {
+                          if (!lockedOk) setPoseIndex(i);
+                        }}
+                        title={p.label}
+                        className={`flex items-center gap-2.5 text-left text-sm px-3 py-2.5 rounded-lg border transition-colors ${
+                          lockedOk
+                            ? 'border-success/40 bg-success/10 text-success opacity-70 cursor-default'
+                            : active
+                              ? 'border-primary bg-primary/15 text-foreground shadow-sm'
+                              : done
+                                ? 'border-success/45 bg-success/10 text-success'
+                                : needsRetry
+                                  ? 'border-destructive/60 text-destructive'
+                                  : 'border-border/80 text-muted-foreground hover:text-foreground hover:bg-background/60'
+                        }`}
+                      >
+                        <span
+                          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums ${
+                            active ? 'bg-primary text-primary-foreground' : 'bg-background border border-border'
+                          }`}
+                        >
+                          {done || lockedOk ? <Check className="w-3.5 h-3.5" aria-hidden /> : i + 1}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-medium truncate">{p.shortLabel}</span>
+                          <span className="block text-[11px] opacity-70 truncate">{p.label}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
 
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="rounded-lg border border-border/80 bg-background/70 px-3 py-2.5 space-y-1">
+                  <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Live cue</p>
+                  <p className={`text-sm font-medium leading-snug ${qualityOk ? 'text-foreground' : 'text-warning'}`}>
+                    {liveHint}
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
                   <button
                     type="button"
                     onClick={() => void capture()}
                     disabled={busy || submitting || (retryMode && !rejectedPoseIds.has(pose.id))}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
                   >
                     {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
                     Capture this angle
@@ -447,145 +449,226 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
                   <button
                     type="button"
                     onClick={() => void startCamera()}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border text-sm"
+                    className="inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border border-border bg-background text-sm hover:bg-muted/40"
                   >
                     <RotateCcw className="w-4 h-4" />
                     Restart camera
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => void submit()}
+                    disabled={!canUpload}
+                    className="inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-foreground text-background text-sm font-medium disabled:opacity-45"
+                  >
+                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                    {uploadLabel}
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void submit()}
-                  disabled={!canUpload}
-                  className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-foreground text-background text-sm font-medium disabled:opacity-45 sm:min-w-[11rem]"
-                >
-                  {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-                  {uploadLabel}
-                </button>
-              </div>
 
-              {!retryMode && (
-                <div className="grid grid-cols-4 gap-2 pb-1">
-                  {FACE_POSES.map((p) => {
-                    const s = capturedByPose.get(p.id);
-                    return (
-                      <div
-                        key={p.id}
-                        className={`relative rounded-lg overflow-hidden border aspect-square ${
-                          s ? 'border-border bg-muted/30' : 'border-dashed border-border/70 bg-muted/15'
-                        }`}
-                      >
-                        {s ? (
-                          <>
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                {!retryMode && (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-3 gap-2 pb-1">
+                    {FACE_POSES.map((p) => {
+                      const s = capturedByPose.get(p.id);
+                      return (
+                        <div
+                          key={p.id}
+                          className={`relative rounded-lg overflow-hidden border aspect-square ${
+                            s ? 'border-border bg-muted/30' : 'border-dashed border-border/70 bg-muted/15'
+                          }`}
+                        >
+                          {s ? (
+                            <>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={s.previewUrl}
+                                alt={p.shortLabel}
+                                className="w-full h-full object-cover scale-x-[-1]"
+                              />
+                              <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[10px] text-white px-1.5 py-1 flex items-center justify-between gap-1">
+                                <span className="truncate font-medium">{p.shortLabel}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeSample(p.id)}
+                                  className="shrink-0 p-0.5 rounded hover:bg-white/15"
+                                  aria-label={`Remove ${p.shortLabel} and retake`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setPoseIndex(FACE_POSES.findIndex((x) => x.id === p.id))}
+                              className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/25"
+                              aria-label={`Go to ${p.shortLabel}`}
+                            >
+                              <span className="text-[10px] font-medium px-1 text-center leading-tight">
+                                {p.shortLabel}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {retryMode && rejectedServer.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2 pb-1">
+                    {rejectedServer.map((s) => {
+                      const local = capturedByPose.get(s.poseId);
+                      const img =
+                        local?.previewUrl ||
+                        s.imageUrl ||
+                        (employeeKey ? employeesApi.faceSampleImagePath(employeeKey, s.id) : '');
+                      return (
+                        <div
+                          key={s.id}
+                          className="relative rounded-lg overflow-hidden border border-destructive/50 aspect-square"
+                        >
+                          {img ? (
+                            // eslint-disable-next-line @next/next/no-img-element
                             <img
-                              src={s.previewUrl}
-                              alt={p.shortLabel}
+                              src={img}
+                              alt={poseShortLabel(s.poseId)}
                               className="w-full h-full object-cover scale-x-[-1]"
                             />
-                            <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[11px] text-white px-1.5 py-1 flex items-center justify-between gap-1">
-                              <span className="truncate font-medium">{p.shortLabel}</span>
-                              <button
-                                type="button"
-                                onClick={() => removeSample(p.id)}
-                                className="shrink-0 p-0.5 rounded hover:bg-white/15"
-                                aria-label={`Remove ${p.shortLabel} and retake`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setPoseIndex(FACE_POSES.findIndex((x) => x.id === p.id))}
-                            className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:text-foreground hover:bg-muted/25"
-                            aria-label={`Go to ${p.shortLabel}`}
-                          >
-                            <span className="text-[11px] font-medium px-1 text-center leading-tight">
-                              {p.shortLabel}
-                            </span>
-                            <span className="text-[10px] opacity-70">Not captured</span>
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {retryMode && rejectedServer.length > 0 && (
-                <div className="grid grid-cols-4 gap-2 pb-1">
-                  {rejectedServer.map((s) => {
-                    const local = capturedByPose.get(s.poseId);
-                    const img =
-                      local?.previewUrl ||
-                      s.imageUrl ||
-                      (employeeKey ? employeesApi.faceSampleImagePath(employeeKey, s.id) : '');
-                    return (
-                      <div key={s.id} className="relative rounded-lg overflow-hidden border border-destructive/50 aspect-square">
-                        {img ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={img} alt={poseShortLabel(s.poseId)} className="w-full h-full object-cover scale-x-[-1]" />
-                        ) : null}
-                        <div className="absolute inset-x-0 top-0 bg-destructive/90 text-[10px] text-white px-1.5 py-0.5">
-                          Retry · {poseShortLabel(s.poseId)}
-                        </div>
-                        {local ? (
-                          <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[10px] text-white px-1.5 py-1">
-                            New capture ready
+                          ) : null}
+                          <div className="absolute inset-x-0 top-0 bg-destructive/90 text-[10px] text-white px-1.5 py-0.5">
+                            Retry · {poseShortLabel(s.poseId)}
                           </div>
-                        ) : (
-                          <button
-                            type="button"
-                            className="absolute inset-0 bg-black/20"
-                            onClick={() => {
-                              const idx = FACE_POSES.findIndex((p) => p.id === s.poseId);
-                              if (idx >= 0) setPoseIndex(idx);
-                            }}
-                            aria-label={`Retake ${poseShortLabel(s.poseId)}`}
-                          />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
-          )}
+                          {local ? (
+                            <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[10px] text-white px-1.5 py-1">
+                              New capture ready
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="absolute inset-0 bg-black/20"
+                              onClick={() => {
+                                const idx = FACE_POSES.findIndex((p) => p.id === s.poseId);
+                                if (idx >= 0) setPoseIndex(idx);
+                              }}
+                              aria-label={`Retake ${poseShortLabel(s.poseId)}`}
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </aside>
 
-          {phase === 'review' && (
-            <>
-              <div className="flex items-center justify-between gap-2 text-sm">
-                <p>
-                  Server job: <span className="font-medium">{job?.status ?? '…'}</span>
+            {/* Right stage — camera only */}
+            <section className="relative min-h-[42vh] lg:min-h-0 bg-black overflow-hidden">
+              <video
+                ref={videoRef}
+                className="absolute inset-0 h-full w-full object-cover scale-x-[-1]"
+                playsInline
+                muted
+              />
+              <div
+                className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_42%,rgba(0,0,0,0.55)_100%)]"
+                aria-hidden
+              />
+              <div
+                className={`pointer-events-none absolute left-1/2 top-[46%] -translate-x-1/2 -translate-y-1/2
+                  w-[min(42%,280px)] aspect-[3/4] rounded-[50%] border-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.28)]
+                  transition-colors duration-300
+                  ${qualityOk ? 'border-primary/80' : 'border-warning/90'}`}
+                aria-hidden
+              />
+              <div className="absolute inset-x-0 bottom-0 p-4 sm:p-5 bg-gradient-to-t from-black/85 via-black/45 to-transparent">
+                <div className="flex items-end justify-between gap-3">
+                  <div className="min-w-0 space-y-1.5">
+                    <p className="text-[11px] uppercase tracking-[0.14em] text-white/65">
+                      Step {poseIndex + 1} of {FACE_POSES.length}
+                      {retryMode ? ' · retake' : ''}
+                    </p>
+                    <p className="text-lg sm:text-xl font-semibold text-white tracking-tight truncate">
+                      {pose.shortLabel}
+                    </p>
+                    <p className="text-sm text-white/85 max-w-xl truncate">{liveHint}</p>
+                  </div>
+                  <div className="shrink-0 text-right space-y-1">
+                    <span
+                      className={`inline-flex text-[11px] font-medium px-2 py-1 rounded-md border ${
+                        qualityOk
+                          ? 'border-emerald-400/40 bg-emerald-500/20 text-emerald-100'
+                          : 'border-amber-400/40 bg-amber-500/20 text-amber-100'
+                      }`}
+                    >
+                      {qualityOk ? 'Framing OK' : 'Adjust'}
+                    </span>
+                    <p className="text-xs text-white/80 tabular-nums">{progressLabel}</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {phase === 'review' && (
+          <div className="min-h-0 flex-1 grid grid-cols-1 lg:grid-cols-[minmax(260px,0.32fr)_1fr] overflow-hidden">
+            <aside className="min-h-0 overflow-y-auto border-b lg:border-b-0 lg:border-r border-border bg-muted/20 px-4 py-4 space-y-4">
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground font-medium">
+                  Server job
+                </p>
+                <p className="text-sm">
+                  <span className="font-medium capitalize">{job?.status ?? '…'}</span>
                   {job?.sampleCount != null ? ` · ${job.sampleCount} images` : null}
                   {job?.rejectedSamples ? ` · ${job.rejectedSamples} rejected` : null}
                 </p>
                 {processing && (
-                  <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground pt-1">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     Checking one-by-one…
                   </span>
                 )}
               </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {job?.errorMessage ? (
+                <p className="text-xs text-warning leading-relaxed">{job.errorMessage}</p>
+              ) : null}
+              {rejectedServer.length > 0 && !processing && (
+                <button
+                  type="button"
+                  onClick={() => enterRetryCapture(rejectedServer)}
+                  className="inline-flex w-full items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium"
+                >
+                  <Camera className="w-4 h-4" />
+                  Retake rejected angles
+                </button>
+              )}
+            </aside>
+            <div className="min-h-0 overflow-y-auto p-4 sm:p-5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
                 {serverSamples.map((s) => {
                   const badge = statusBadge(s);
                   const src =
                     s.imageUrl ||
                     (employeeKey ? employeesApi.faceSampleImagePath(employeeKey, s.id) : '');
                   return (
-                    <div key={s.id} className="relative rounded-lg overflow-hidden border border-border aspect-square bg-muted/20">
+                    <div
+                      key={s.id}
+                      className="relative rounded-xl overflow-hidden border border-border aspect-square bg-muted/20"
+                    >
                       {src ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={src} alt={poseShortLabel(s.poseId)} className="w-full h-full object-cover scale-x-[-1]" />
+                        <img
+                          src={src}
+                          alt={poseShortLabel(s.poseId)}
+                          className="w-full h-full object-cover scale-x-[-1]"
+                        />
                       ) : null}
-                      <span className={`absolute top-1.5 left-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.className}`}>
+                      <span
+                        className={`absolute top-2 left-2 text-[10px] font-medium px-1.5 py-0.5 rounded ${badge.className}`}
+                      >
                         {badge.label}
                       </span>
-                      <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[11px] text-white px-1.5 py-1">
+                      <div className="absolute inset-x-0 bottom-0 bg-black/70 text-[11px] text-white px-2 py-1.5">
                         <div className="font-medium truncate">{poseShortLabel(s.poseId)}</div>
                         {s.processStatus === 'rejected' ? (
                           <div className="text-[10px] text-red-200 truncate">{rejectLabel(s)}</div>
@@ -595,24 +678,9 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
                   );
                 })}
               </div>
-
-              {job?.errorMessage ? (
-                <p className="text-xs text-warning">{job.errorMessage}</p>
-              ) : null}
-
-              {rejectedServer.length > 0 && !processing && (
-                <button
-                  type="button"
-                  onClick={() => enterRetryCapture(rejectedServer)}
-                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium"
-                >
-                  <Camera className="w-4 h-4" />
-                  Retake rejected angles
-                </button>
-              )}
-            </>
-          )}
-        </div>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

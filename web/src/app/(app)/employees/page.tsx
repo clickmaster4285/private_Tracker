@@ -696,13 +696,15 @@ function UsersListInner() {
                           <Pencil className="w-4 h-4 text-muted-foreground" />
                           Edit Details
                         </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() => setShowEnrollFace(emp)}
-                          className="cursor-pointer gap-2.5 px-2.5 py-2"
-                        >
-                          <ScanFace className="w-4 h-4 text-muted-foreground" />
-                          Enroll Face…
-                        </DropdownMenuItem>
+                        {!emp.faceEnrolled && (
+                          <DropdownMenuItem
+                            onSelect={() => setShowEnrollFace(emp)}
+                            className="cursor-pointer gap-2.5 px-2.5 py-2"
+                          >
+                            <ScanFace className="w-4 h-4 text-muted-foreground" />
+                            Enroll Face…
+                          </DropdownMenuItem>
+                        )}
                         {!emp.hasUserLogin && (
                           <DropdownMenuItem asChild className="cursor-pointer gap-2.5 px-2.5 py-2">
                             <Link href={`/settings/user-management?create=1&employeeId=${encodeURIComponent(emp.employeeId)}&name=${encodeURIComponent(emp.name)}&email=${encodeURIComponent(emp.email)}`}>

@@ -320,6 +320,8 @@ export interface Employee {
   /** True when a row in the users table exists for this employee's employee_id.
    *  Projected server-side via an indexed EXISTS() so it costs O(1) per row. */
   hasUserLogin: boolean;
+  /** True when an active face profile exists (enrollment complete). */
+  faceEnrolled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
