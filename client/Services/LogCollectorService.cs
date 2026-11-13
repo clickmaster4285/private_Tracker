@@ -339,7 +339,7 @@ public class LogCollectorService : BackgroundService
             {
                 var info = await _store.GetEmployeeInfoAsync(stoppingToken);
                 if (info != null)
-                    FaceVerifyLauncher.TryLaunchAfterLogin(_config, info);
+                    FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info);
             }
             catch (Exception ex)
             {
@@ -417,8 +417,10 @@ public class LogCollectorService : BackgroundService
                                 pending.Name,
                                 pending.Token ?? string.Empty);
                             StartTracking();
+                            // Every session start must open face-verify (GUI login race may lose).
+                            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, pending);
                             _logger.LogInformation(
-                                "Session appeared in SQLite while waiting — tracking started (soft face-verify compatible)");
+                                "Session appeared in SQLite while waiting — tracking started + face-verify launch");
                             continue;
                         }
                     }

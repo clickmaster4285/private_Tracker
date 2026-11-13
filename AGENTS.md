@@ -3,6 +3,11 @@
 > **Last audited:** 2026-11-12
 > **Changelog:**
 >
+> - 2026-11-13: **Face-verify on every client restart.** `TryLaunchOnSessionStart`
+>   also fires when background LogCollector sees SQLite login while waiting (not only
+>   boot restore / GUI). Prior local verify never suppresses relaunch. Client
+>   **VERSION 2.0.8**. Rebuild Windows installer.
+>
 > - 2026-11-13: **Face-verify FaceDetectorYN + offline-first order.** Client detection
 >   uses OpenCvSharp `FaceDetectorYN` (same as face_worker) — removes brittle ORT
 >   YuNet decode that caused IndexOutOfRange. OpenCvSharp **4.13**. On match:

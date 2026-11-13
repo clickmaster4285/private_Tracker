@@ -2,6 +2,8 @@
 
 > **Last audited:** 2026-11-13 (face models from API + fleet TLS)
 > **Changelog:**
+> - 2026-11-13: **Face-verify every session start.** `TryLaunchOnSessionStart` on
+>   boot restore, GUI restore/login, and LogCollector login-poll. **VERSION 2.0.8**.
 > - 2026-11-13: **FaceDetectorYN detect + offline verify.** OpenCvSharp 4.13
 >   `FaceDetectorYN` for YuNet (parity with face_worker); AdaFace stays ORT.
 >   Verified → local `MarkVerifyAsync` then best-effort server audit. **VERSION 2.0.7**.

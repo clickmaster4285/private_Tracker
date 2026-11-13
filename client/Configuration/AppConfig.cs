@@ -92,7 +92,7 @@ public class AppConfig
     public int TimeDateCooldownHours { get; init; } = 4;
 
     // ─── Face verify (Windows --face-verify soft gate) ───
-    /// <summary>Spawn face verify subprocess after login / session restore (Windows only).</summary>
+    /// <summary>Spawn face verify on every Windows session start (boot restore / login).</summary>
     public bool FaceVerifyEnabled { get; init; } = true;
     /// <summary>Cosine threshold vs L2 embeddings (calibrate per office webcams).</summary>
     public double FaceMatchThreshold { get; init; } = 0.4;

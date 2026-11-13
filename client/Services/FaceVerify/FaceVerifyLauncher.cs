@@ -5,11 +5,22 @@ using client.Core.Models;
 namespace client.Services.FaceVerify;
 
 /// <summary>
-/// Soft-gate spawn of <c>--face-verify</c> after login / session restore (Windows only).
+/// Soft-gate spawn of <c>--face-verify</c> on every Windows session start
+/// (process boot restore, GUI restore, login). Never skipped because of a prior
+/// successful local verify — only skipped if a verify window is already open.
 /// </summary>
 public static class FaceVerifyLauncher
 {
-    public static void TryLaunchAfterLogin(AppConfig config, EmployeeInfo info)
+    /// <summary>Alias for <see cref="TryLaunchOnSessionStart"/> (login / restore call sites).</summary>
+    public static void TryLaunchAfterLogin(AppConfig config, EmployeeInfo info) =>
+        TryLaunchOnSessionStart(config, info);
+
+    /// <summary>
+    /// Spawn the face-verify modal when the employee is logged in.
+    /// Intended for every client process start / session restore / login.
+    /// Does not read <c>last_verify_*</c> — prior success does not suppress relaunch.
+    /// </summary>
+    public static void TryLaunchOnSessionStart(AppConfig config, EmployeeInfo info)
     {
         if (!OperatingSystem.IsWindows()) return;
         if (!config.FaceVerifyEnabled) return;
