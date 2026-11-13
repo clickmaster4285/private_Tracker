@@ -66,6 +66,11 @@
     <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
     <PackageReference Include="SkiaSharp" Version="3.119.4" />
+    <!-- Face verify (Windows face-verify CLI): YuNet detect + AdaFace ONNX -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
+    <!-- 4.13+ required for FaceDetectorYN (YuNet) — matches face_worker cv2.FaceDetectorYN -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20261107" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20261107" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
   </ItemGroup>
 
   <ItemGroup>

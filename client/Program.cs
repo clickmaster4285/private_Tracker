@@ -275,6 +275,38 @@ if (args.Contains("--timedatewarning") && !args.Contains("--background"))
     return;
 }
 
+// Windows face verify UI (spawned soft-gate after login / session restore).
+// Sibling mutex; no tracker host. Maximized Topmost until match.
+if (args.Contains("--face-verify") && !args.Contains("--background"))
+{
+    client.Services.CliConsole.DetachForGui();
+    if (!OperatingSystem.IsWindows())
+        return;
+    var faceMutex = new Mutex(true, client.Services.FaceVerify.FacePaths.MutexName, out var faceCreated);
+    if (!faceCreated)
+    {
+        try { faceMutex.Dispose(); } catch { /* ignore */ }
+        return;
+    }
+
+    try
+    {
+        EnvLoader.Load();
+        // Soft gate: never starve the tracker/sync process. Face ONNX+webcam is heavy.
+        try { System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
+            System.Diagnostics.ProcessPriorityClass.BelowNormal; } catch { /* ignore */ }
+        App.FaceVerifyMode = true;
+        App.AllowShutdown = true;
+        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+    finally
+    {
+        try { faceMutex.ReleaseMutex(); } catch { /* ignore */ }
+        try { faceMutex.Dispose(); } catch { /* ignore */ }
+    }
+    return;
+}
+
 var isBackground = args.Contains("--background");
 var isMinimized = args.Contains("--minimized");
 var isGuiAgent = args.Contains("--gui");
@@ -285,7 +317,8 @@ var isGuiAgent = args.Contains("--gui");
 // Restart=always racing) must exit quietly so they never disturb the user.
 var isUserLaunch = !isBackground && !isMinimized && !isGuiAgent
     && !args.Contains("--celebrate-update")
-    && !args.Contains("--timedatewarning");
+    && !args.Contains("--timedatewarning")
+    && !args.Contains("--face-verify");
 
 // L2: unsupervised `client --background` (autostart / menu / scripts) must hand
 // off to the user systemd unit BEFORE taking the mutex. Restart=always only
@@ -599,13 +632,16 @@ if (!isProtectedUninstall && !isRemoveAccount)
         sp.GetRequiredService<client.Services.Screenshots.ScreenshotSyncWorker>());
 }
 
-// HTTP Client
-builder.Services.AddSingleton<HttpClient>(sp =>
+// HTTP Client — private-network HTTPS: OS trust + optional ALPHA_TLS_CA / bundled tls/rootCA.pem
+builder.Services.AddSingleton<HttpClient>(_ =>
+    client.Core.TlsCertificateTrust.CreateHttpClient(TimeSpan.FromSeconds(120)));
 {
-    var client = new HttpClient();
-    client.Timeout = TimeSpan.FromSeconds(120);
-    return client;
-});
+    var ca = client.Core.TlsCertificateTrust.ResolveCaPemPath();
+    if (client.Core.TlsCertificateTrust.InsecureLabOverride)
+        Console.Error.WriteLine("[client] WARNING: ALPHA_TLS_INSECURE=true — TLS verify disabled (lab only)");
+    else if (!string.IsNullOrWhiteSpace(ca))
+        Console.WriteLine($"[client] TLS extra CA: {ca}");
+}
 
 // Installed App Detector (cross-platform)
 builder.Services.AddSingleton<IInstalledAppDetector, InstalledAppDetector>();

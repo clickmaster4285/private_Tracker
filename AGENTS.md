@@ -3,6 +3,45 @@
 > **Last audited:** 2026-11-12
 > **Changelog:**
 >
+> - 2026-11-13: **Face-verify FaceDetectorYN + offline-first order.** Client detection
+>   uses OpenCvSharp `FaceDetectorYN` (same as face_worker) — removes brittle ORT
+>   YuNet decode that caused IndexOutOfRange. OpenCvSharp **4.13**. On match:
+>   `MarkVerifyAsync` local first, then best-effort `verify-event`. Client
+>   **VERSION 2.0.7**. Rebuild Windows installer.
+>
+> - 2026-11-13: **Client YuNet input size 640 (ORT InvalidArgument).**
+>   `FaceRecognitionEngine` read fixed ONNX H/W (zoo 2023mar = 640×640) instead of
+>   hardcoded 320. Client **VERSION 2.0.6**. Rebuild Windows installer.
+>
+> - 2026-11-13: **Face models from `face_worker/models` (worker ensure + API packages).**
+>   Worker startup `ensure_models()`: YuNet auto-download if missing; AdaFace from disk or
+>   optional `FACE_ADAFACE_DOWNLOAD_URL`. DeviceAuth
+>   `GET /face-models/packages/yunet` + `adaface-ir50` serve that dir. Windows client
+>   downloads **both** from the API (no GitHub under DLP). Env: `FACE_MODELS_DIR`,
+>   `FACE_YUNET_ONNX`, `FACE_*_DOWNLOAD_URL`. Client **VERSION 2.0.5**. Restart API +
+>   `python worker.py`; Installer-Parity: next Windows build.
+>
+> - 2026-11-13: **Fleet TLS auto-trust via Windows installer (no employee action).**
+>   Bake copies `certs/rootCA.pem` → `publish/windows/tls/`; Inno `InstallOrgTlsCa`
+>   post-install (and silent update) writes `%ProgramData%\AlphaAITracker\tls\rootCA.pem`
+>   + `certutil -addstore Root`. Leave `ALPHA_TLS_CA` unset in bake. Shared
+>   `TlsCertificateTrust` for login/sync/WS/updates/face; lab-only
+>   `ALPHA_TLS_INSECURE`. Repair script:
+>   [`client/publish/install-org-ca.ps1`](client/publish/install-org-ca.ps1). Client
+>   **VERSION 2.0.3**. Docs: [`certs.md`](certs.md) Fleet section. Installer-Parity:
+>   rebuild Windows Setup with `certs/rootCA.pem` present.
+>
+> - 2026-11-12: **Client face verify (Windows subprocess, soft gate).** After login /
+>   session restore, spawn `--face-verify` (mutex, maximized Topmost, no close until
+>   match). Downloads YuNet + AdaFace ONNX to LocalAppData `face/models/`, DeviceAuth
+>   `GET /face-profiles/me/embeddings` → `face/biometric.db`, webcam cosine compare;
+>   failures POST `/face-profiles/verify-event` audit (tracking still starts). Models
+>   land in LocalAppData `face/models/` (YuNet URL + DeviceAuth
+>   `GET /face-models/packages/adaface-ir50` from API `FACE_ADAFACE_ONNX`). Env:
+>   `ALPHA_FACE_VERIFY_ENABLED`, `ALPHA_FACE_MATCH_THRESHOLD`, optional
+>   `ALPHA_FACE_ADAFACE_URL`. Installer-Parity: next Windows build ships OnnxRuntime +
+>   OpenCvSharp natives.
+>
 > - 2026-11-12: **Local HTTPS (mkcert) for API + Next web.** Repo `certs/local.pem` +
 >   `local-key.pem` (+ `rootCA.pem`); `TLS_CERT_FILE` / `TLS_KEY_FILE` / `TLS_CA_FILE` /
 >   `COOKIE_SECURE` in `server/.env` → Echo `StartTLS` + Secure auth cookies; CORS /

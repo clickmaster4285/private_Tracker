@@ -157,6 +157,7 @@ public sealed class WsClient : BackgroundService
             else
                 ws.Options.SetRequestHeader("Authorization", $"Bearer {employee.Token}");
             ClientIdentityHeaders.Apply(ws.Options);
+            client.Core.TlsCertificateTrust.Apply(ws.Options);
 
             _logger.LogInformation("WsClient connecting to {Url}", wsUrl);
             await ws.ConnectAsync(new Uri(wsUrl), ct);

@@ -321,6 +321,31 @@ begin
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_DOWNLOAD_JITTER_SEC', '{#ALPHA_UPDATE_DOWNLOAD_JITTER_SEC}');
 end;
 
+// Private-LAN HTTPS: copy baked tls\rootCA.pem → ProgramData and LocalMachine\Root.
+// Runs elevated (PrivilegesRequired=admin). Idempotent on upgrade / silent update.
+// No employee action — same CA that signed the API leaf must be present at bake time
+// (build-installer.sh copies repo certs\rootCA.pem into publish\windows\tls\).
+procedure InstallOrgTlsCa;
+var
+  Src, DestDir, Dest: string;
+  ResultCode: Integer;
+begin
+  Src := ExpandConstant('{app}\tls\rootCA.pem');
+  if not FileExists(Src) then
+    Exit;
+
+  DestDir := ExpandConstant('{commonappdata}\{#APP_MUTEX}\tls');
+  ForceDirectories(DestDir);
+  Dest := DestDir + '\rootCA.pem';
+  if not CopyFile(Src, Dest, False) then
+    Exit;
+
+  // Prefer certutil (PEM). Non-zero exit is non-fatal — TlsCertificateTrust still
+  // loads the ProgramData PEM as ExtraStore for HttpClient/WebSocket.
+  Exec('certutil.exe', '-addstore -f Root "' + Dest + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 procedure InstallDlpService;
 var
   ResultCode: Integer;
@@ -457,6 +482,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    InstallOrgTlsCa;
     InstallDlpService;
     GInstallSucceeded := True;
   end;

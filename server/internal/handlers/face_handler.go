@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -11,12 +12,21 @@ import (
 )
 
 type FaceHandler struct {
-	svc          *services.FaceService
-	workerAPIKey string
+	svc                *services.FaceService
+	workerAPIKey       string
+	modelsDir          string
+	adaFacePackagePath string
+	yuNetPackagePath   string
 }
 
-func NewFaceHandler(svc *services.FaceService, workerAPIKey string) *FaceHandler {
-	return &FaceHandler{svc: svc, workerAPIKey: strings.TrimSpace(workerAPIKey)}
+func NewFaceHandler(svc *services.FaceService, workerAPIKey, modelsDir, adaFacePackagePath, yuNetPackagePath string) *FaceHandler {
+	return &FaceHandler{
+		svc:                svc,
+		workerAPIKey:       strings.TrimSpace(workerAPIKey),
+		modelsDir:          strings.TrimSpace(modelsDir),
+		adaFacePackagePath: strings.TrimSpace(adaFacePackagePath),
+		yuNetPackagePath:   strings.TrimSpace(yuNetPackagePath),
+	}
 }
 
 // CreateEnrollment handles JWT multipart POST /employees/:id/face-enrollment
@@ -281,18 +291,160 @@ func (h *FaceHandler) SyncAck(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]any{"ok": true})
 }
 
+// VerifyEvent handles DeviceAuth POST /face-profiles/verify-event
+// Soft warning sink from the Windows --face-verify subprocess (does not gate tracking).
+func (h *FaceHandler) VerifyEvent(c echo.Context) error {
+	empID, _ := c.Get("employee_id").(string)
+	var body struct {
+		Result         string   `json:"result"`
+		Score          *float64 `json:"score"`
+		Threshold      *float64 `json:"threshold"`
+		ClientDeviceID string   `json:"clientDeviceId"`
+		Detail         string   `json:"detail"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+	}
+	result := strings.ToLower(strings.TrimSpace(body.Result))
+	action := "face_verify_failed"
+	switch result {
+	case "verified", "ok", "success":
+		action = "face_verify_ok"
+		result = "verified"
+	case "no_profile", "none":
+		action = "face_verify_no_profile"
+		result = "no_profile"
+	case "model_error":
+		action = "face_verify_model_error"
+		result = "model_error"
+	case "camera_error":
+		action = "face_verify_camera_error"
+		result = "camera_error"
+	case "failed", "mismatch", "not_verified":
+		action = "face_verify_failed"
+		result = "failed"
+	default:
+		if result == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "result is required")
+		}
+		action = "face_verify_failed"
+	}
+	meta := map[string]any{
+		"result": result,
+	}
+	if body.Score != nil {
+		meta["score"] = *body.Score
+	}
+	if body.Threshold != nil {
+		meta["threshold"] = *body.Threshold
+	}
+	if d := strings.TrimSpace(body.Detail); d != "" {
+		meta["detail"] = d
+	}
+	_ = h.svc.InsertAudit(c.Request().Context(), empID, body.ClientDeviceID, action, meta)
+	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+}
+
 // ModelManifest handles DeviceAuth GET /face-models/manifest
 func (h *FaceHandler) ModelManifest(c echo.Context) error {
 	list, err := h.svc.ModelManifest(c.Request().Context())
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
+	adaReady := h.resolveAdaFacePackage() != ""
+	yunetReady := h.resolveYuNetPackage() != ""
 	return c.JSON(http.StatusOK, map[string]any{
 		"models":             list,
 		"preprocessVersion":  "face-preprocess-v1",
-		"packagesAvailable":  false,
-		"licenseGatePending": true,
+		"packagesAvailable":  adaReady && yunetReady,
+		"yunetAvailable":     yunetReady,
+		"adafaceAvailable":   adaReady,
+		"licenseGatePending": !adaReady,
+		"yunetPackageId":     "yunet",
+		"adafacePackageId":   "adaface-ir50",
+		"modelsDir":          h.modelsDir,
 	})
+}
+
+// DownloadModelPackage handles DeviceAuth GET /face-models/packages/:packageId
+// Serves ONNX from face_worker/models (YuNet + AdaFace). Clients cache under LocalAppData.
+func (h *FaceHandler) DownloadModelPackage(c echo.Context) error {
+	id := strings.TrimSpace(c.Param("packageId"))
+	var path, filename string
+	switch strings.ToLower(id) {
+	case "yunet", "face_detection_yunet_2023mar", "face_detection_yunet_2023mar.onnx":
+		path = h.resolveYuNetPackage()
+		filename = "face_detection_yunet_2023mar.onnx"
+		if path == "" {
+			return echo.NewHTTPError(http.StatusNotFound, "YuNet ONNX missing on API (face_worker/models or FACE_YUNET_ONNX)")
+		}
+	case "adaface-ir50", "adaface_ir50_webface4m.onnx", "adaface":
+		path = h.resolveAdaFacePackage()
+		filename = "adaface_ir50_webface4m.onnx"
+		if path == "" {
+			return echo.NewHTTPError(http.StatusNotFound, "AdaFace ONNX not configured on API (FACE_ADAFACE_ONNX)")
+		}
+	default:
+		return echo.NewHTTPError(http.StatusNotFound, "unknown face model package")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "face model file missing on API host")
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	c.Response().Header().Set(echo.HeaderContentType, "application/octet-stream")
+	c.Response().Header().Set(echo.HeaderContentDisposition, `attachment; filename="`+filename+`"`)
+	http.ServeContent(c.Response(), c.Request(), st.Name(), st.ModTime(), f)
+	return nil
+}
+
+func (h *FaceHandler) resolvePackageFile(explicit string, minSize int64, names ...string) string {
+	var candidates []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		candidates = append(candidates, p)
+	}
+	add(explicit)
+	if explicit != "" && !filepath.IsAbs(explicit) && !strings.HasPrefix(explicit, "face_worker"+string(filepath.Separator)) {
+		add(filepath.Join("face_worker", explicit))
+	}
+	dir := strings.TrimSpace(h.modelsDir)
+	if dir == "" {
+		dir = filepath.Join("face_worker", "models")
+	}
+	for _, name := range names {
+		add(filepath.Join(dir, name))
+		add(filepath.Join("face_worker", "models", name))
+	}
+	if wd, err := os.Getwd(); err == nil {
+		n := len(candidates)
+		for i := 0; i < n; i++ {
+			if !filepath.IsAbs(candidates[i]) {
+				add(filepath.Join(wd, candidates[i]))
+			}
+		}
+	}
+	for _, p := range candidates {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Size() > minSize {
+			return p
+		}
+	}
+	return ""
+}
+
+func (h *FaceHandler) resolveAdaFacePackage() string {
+	return h.resolvePackageFile(h.adaFacePackagePath, 1_000_000, "adaface_ir50_webface4m.onnx")
+}
+
+func (h *FaceHandler) resolveYuNetPackage() string {
+	return h.resolvePackageFile(h.yuNetPackagePath, 100_000, "face_detection_yunet_2023mar.onnx")
 }
 
 // WorkerClaimJob POST /internal/face-worker/claim (optional recovery poll; push mode preferred)
@@ -447,7 +599,7 @@ func (h *FaceHandler) GetMyEmbeddings(c echo.Context) error {
 		"status":             profile.Status,
 		"preprocessVersion":  profile.PreprocessVersion,
 		"normalization":      "l2",
-		"packagesAvailable":  false,
+		"packagesAvailable":  h.resolveAdaFacePackage() != "",
 	})
 }
 

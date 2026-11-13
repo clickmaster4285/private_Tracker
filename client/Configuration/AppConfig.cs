@@ -91,6 +91,18 @@ public class AppConfig
     /// <summary>After Dismiss, do not re-spawn the warning window for this many hours (default 4).</summary>
     public int TimeDateCooldownHours { get; init; } = 4;
 
+    // ─── Face verify (Windows --face-verify soft gate) ───
+    /// <summary>Spawn face verify subprocess after login / session restore (Windows only).</summary>
+    public bool FaceVerifyEnabled { get; init; } = true;
+    /// <summary>Cosine threshold vs L2 embeddings (calibrate per office webcams).</summary>
+    public double FaceMatchThreshold { get; init; } = 0.4;
+    /// <summary>
+    /// Optional HTTP URL override for AdaFace ONNX only. Default: DeviceAuth download
+    /// of YuNet + AdaFace from GET /face-models/packages/{yunet|adaface-ir50}
+    /// (API serves face_worker/models/) into LocalAppData face/models/.
+    /// </summary>
+    public string? FaceAdaFaceUrl { get; init; }
+
     // ─── GPS & Location (Phase 3, finalplan §16) ───
     // Default OFF — requires OS location permission + employee consent.
     public bool LocationEnabled { get; init; } = false;
@@ -200,6 +212,12 @@ public class AppConfig
             TimeDateCheckHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_CHECK_HOURS"), out var tdCheck) ? tdCheck : 1),
             TimeDateSkewSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_SKEW_SEC"), out var tdSkew) ? tdSkew : 60),
             TimeDateCooldownHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_COOLDOWN_HOURS"), out var tdCool) ? tdCool : 4),
+            FaceVerifyEnabled = GetEnv("ALPHA_FACE_VERIFY_ENABLED") is not ("0" or "false" or "False"),
+            FaceMatchThreshold = Math.Clamp(
+                double.TryParse(GetEnv("ALPHA_FACE_MATCH_THRESHOLD"), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.4,
+                0.05, 0.99),
+            FaceAdaFaceUrl = GetEnv("ALPHA_FACE_ADAFACE_URL"),
             LocationEnabled = GetEnv("ALPHA_LOCATION_ENABLED") is ("1" or "true" or "True"),
             LocationPollSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_LOCATION_POLL_SEC"), out var locPoll) ? locPoll : 300),
             LocationIpFallback = GetEnv("ALPHA_LOCATION_IP_FALLBACK") is ("1" or "true" or "True"),

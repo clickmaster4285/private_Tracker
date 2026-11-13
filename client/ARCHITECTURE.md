@@ -1,7 +1,20 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-11 (silent apply AppLocker updates\* + pre-stop)
+> **Last audited:** 2026-11-13 (face models from API + fleet TLS)
 > **Changelog:**
+> - 2026-11-13: **FaceDetectorYN detect + offline verify.** OpenCvSharp 4.13
+>   `FaceDetectorYN` for YuNet (parity with face_worker); AdaFace stays ORT.
+>   Verified → local `MarkVerifyAsync` then best-effort server audit. **VERSION 2.0.7**.
+> - 2026-11-13: **YuNet ORT 640×640.** Detector input size taken from ONNX metadata
+>   (zoo export fixed 640), not hardcoded 320. **VERSION 2.0.6**.
+> - 2026-11-13: **Face models via DeviceAuth only.** YuNet + AdaFace download from
+>   `/face-models/packages/yunet|adaface-ir50` into LocalAppData (no GitHub on PC).
+>   **VERSION 2.0.5**.
+> - 2026-11-13: **Private-LAN HTTPS auto-trust.** `TlsCertificateTrust` (OS store +
+>   ProgramData / `ALPHA_TLS_CA` PEM; lab `ALPHA_TLS_INSECURE`). Windows installer
+>   bakes `certs/rootCA.pem` into `{app}\tls\` and post-install installs
+>   LocalMachine\Root + ProgramData PEM — no manual `install-org-ca.ps1` on fleet.
+>   **VERSION 2.0.3**.
 > - 2026-11-11: **Protected-uninstall AppLocker + pipe.** Teardown IPC not gated on DLP
 >   enable; longer ApplyTeardownGate timeouts; `AppAllowEnforcer.Clear` deletes SrpV2;
 >   `WindowsTeardownCleanup` AppLocker + FW COM + browser clear (SYSTEM task). **VERSION 1.4.7**.

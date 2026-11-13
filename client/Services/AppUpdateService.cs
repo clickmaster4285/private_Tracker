@@ -62,10 +62,9 @@ public class AppUpdateService : ObservableObject, IHostedService
         _store = store;
         _logger = logger;
 
-        // The shared HttpClient has a 30s global timeout — fine for the tiny releases
-        // metadata call but lethal for a multi-hundred-MB installer download. Dedicated
-        // client with a 15-minute ceiling for the actual download.
-        _downloadHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
+        // The shared HttpClient timeout is fine for releases JSON but short for large
+        // installers. Dedicated client keeps the same TLS trust policy (org CA / GPO).
+        _downloadHttp = client.Core.TlsCertificateTrust.CreateHttpClient(TimeSpan.FromMinutes(15));
 
         CheckForUpdatesCommand = new AsyncRelayCommand(
             () => CheckForUpdatesCoreAsync(auto: false, CancellationToken.None));

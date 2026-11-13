@@ -1,6 +1,10 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-12 (face enrollment UX + server FaceWorker)
+> **Last audited:** 2026-11-13 (face models dir + DeviceAuth YuNet/AdaFace packages)
+> **Changelog:**
+> - 2026-11-13: **Face models hub.** `face_worker/models/` shared by worker `ensure_models()`
+>   (YuNet auto-download; AdaFace disk / `FACE_ADAFACE_DOWNLOAD_URL`) and DeviceAuth
+>   `GET /face-models/packages/yunet|adaface-ir50`. Env `FACE_MODELS_DIR`, `FACE_YUNET_ONNX`.
 > **Changelog:**
 >
 > - 2026-11-12: **face_worker is Python** under `server/face_worker` (`worker.py`, OpenCV).

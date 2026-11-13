@@ -435,6 +435,52 @@ internal static class DatabaseSchema
 
         CREATE INDEX IF NOT EXISTS idx_location_samples_captured
             ON location_samples(captured_at DESC);
+
+        -- Face verify (Windows --face-verify). Also mirrored in face/biometric.db for the
+        -- subprocess; tables here keep wipe-via-sqlite_master coverage if co-located.
+        CREATE TABLE IF NOT EXISTS local_face_profiles (
+            employee_id         TEXT PRIMARY KEY,
+            profile_id          TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT '',
+            profile_version     INTEGER NOT NULL DEFAULT 0,
+            enrollment_version  INTEGER NOT NULL DEFAULT 0,
+            model_id            TEXT NOT NULL DEFAULT '',
+            model_version       TEXT NOT NULL DEFAULT '',
+            preprocess_version  TEXT NOT NULL DEFAULT 'face-preprocess-v1',
+            embedding_dims      INTEGER NOT NULL DEFAULT 512,
+            embedding_count     INTEGER NOT NULL DEFAULT 0,
+            updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS local_face_templates (
+            id                  TEXT PRIMARY KEY,
+            employee_id         TEXT NOT NULL,
+            profile_id          TEXT NOT NULL,
+            sample_id           TEXT,
+            pose_id             TEXT,
+            model_id            TEXT NOT NULL DEFAULT '',
+            model_version       TEXT NOT NULL DEFAULT '',
+            preprocess_version  TEXT NOT NULL DEFAULT 'face-preprocess-v1',
+            embedding_dims      INTEGER NOT NULL DEFAULT 512,
+            quality_score       REAL,
+            vector_blob         BLOB NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_local_face_templates_employee
+            ON local_face_templates(employee_id);
+
+        CREATE TABLE IF NOT EXISTS local_biometric_sync_state (
+            employee_id         TEXT PRIMARY KEY,
+            last_sync_at        TEXT,
+            last_ack_at         TEXT,
+            last_verify_at      TEXT,
+            last_verify_result  TEXT,
+            profile_version     INTEGER NOT NULL DEFAULT 0,
+            model_version       TEXT NOT NULL DEFAULT '',
+            failure_count       INTEGER NOT NULL DEFAULT 0,
+            updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
     ";
 
     internal const string MigrateSql = @"

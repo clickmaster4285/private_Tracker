@@ -249,7 +249,13 @@ func main() {
 		log.Printf("[server] face media store %s (max %d bytes/file, max %d files/job)",
 			faceService.RootDir(), faceService.MaxBytes(), faceService.MaxFiles())
 	}
-	faceHandler := handlers.NewFaceHandler(faceService, cfg.Face.WorkerAPIKey)
+	faceHandler := handlers.NewFaceHandler(
+		faceService,
+		cfg.Face.WorkerAPIKey,
+		cfg.Face.ModelsDir,
+		cfg.Face.AdaFacePackagePath,
+		cfg.Face.YuNetPackagePath,
+	)
 	if cfg.Face.WorkerAPIKey == "" {
 		log.Printf("[server] FACE_WORKER_API_KEY empty — /api/v1/internal/face-worker/* rejects until set")
 	} else if cfg.Face.WorkerURL != "" {

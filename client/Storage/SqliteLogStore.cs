@@ -3330,6 +3330,12 @@ public class SqliteLogStore : ILogStore, IDisposable
                 }
             }
 
+            // Face verify caches (models + biometric.db + session handoff) live under
+            // LocalAppData/…/face — wipe with the account so a re-login cannot reuse
+            // another employee's templates.
+            try { client.Services.FaceVerify.FacePaths.WipeAll(); }
+            catch { /* best-effort */ }
+
             // Foreign-key enforcement is turned OFF for the sweep. sqlite_master returns
             // tables in CREATION order, not dependency order, so deleting a parent
             // (app_sessions) before its children (app_items) aborts the whole transaction

@@ -151,13 +151,70 @@ Open `https://YOUR_HOST:3000`.
 
 ---
 
+## Fleet / production (private LAN only)
+
+This product stays on the org network (`https://192.x.x.x:8000`). Do **not** skip TLS verify in fleet builds.
+
+### Model
+
+1. **One org root CA** (mkcert CAROOT for lab, or enterprise AD/Intune CA for production) as `certs/rootCA.pem`.
+2. **One API server cert** signed by that CA, with the LAN IP (and optional internal DNS name) in SAN.
+3. **Windows installer auto-trusts that root** on every PC (no employee / IT script):
+   - bake copies `certs/rootCA.pem` → `publish/windows/tls/rootCA.pem`
+   - Inno post-install → `%ProgramData%\AlphaAITracker\tls\rootCA.pem` + `certutil -addstore Root`
+   - silent auto-update re-runs the same step
+4. Client `ALPHA_SERVER_URL=https://API_IP:8000` in baked `config.enc` — leave `ALPHA_TLS_CA` unset (auto-discover). Trust policy: `client/Core/TlsCertificateTrust.cs`.
+
+### Issue API cert (example with mkcert as stand-in org CA)
+
+On the **API host** (once):
+
+```powershell
+mkcert -install
+cd C:\projects\alpha-ai-tracker\certs
+mkcert -cert-file local.pem -key-file local-key.pem 192.168.88.35
+Copy-Item "$env:LOCALAPPDATA\mkcert\rootCA.pem" .\rootCA.pem -Force
+```
+
+`server/.env`:
+
+```env
+TLS_CERT_FILE=../certs/local.pem
+TLS_KEY_FILE=../certs/local-key.pem
+TLS_CA_FILE=../certs/rootCA.pem
+COOKIE_SECURE=true
+INSTANCE_PUBLIC_URL=https://192.168.88.35:8000
+```
+
+Client bake (`.env` → `config.enc`):
+
+```env
+ALPHA_SERVER_URL=https://192.168.88.35:8000
+# Do not set ALPHA_TLS_CA to a repo path — installer + ProgramData handle trust.
+# ALPHA_TLS_INSECURE=false
+```
+
+Then `bash client/publish/build-installer.sh -b win` (requires `certs/rootCA.pem`) and drop the Setup exe into `server/setup/`. Fleet PCs install/update — HTTPS works with no manual CA step.
+
+### Lab repair (only if bake missed the PEM)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File client\publish\install-org-ca.ps1 -CaPem C:\path\to\rootCA.pem
+```
+
+### Lab-only escape hatch
+
+`ALPHA_TLS_INSECURE=true` disables verify (login works without CA install). **Do not** bake this into production installers.
+
+---
+
 ## Notes
 
-- **Do not commit** `*.pem` — they stay local per machine.
-- Prefer **generating on each PC** over copying another machine’s key/CA. If you copy PEMs, that PC must trust the **same** CA (`mkcert -install` against that CAROOT), which is awkward; regenerate instead.
-- Without `mkcert -install`, HTTPS still works but the browser shows a warning, and Node/Python may fail TLS verify until `TLS_CA_FILE` / `NODE_EXTRA_CA_CERTS` / `REQUESTS_CA_BUNDLE` point at `rootCA.pem`.
-- face_worker loads `server/.env`; with `TLS_*` set it calls the API over `https` and trusts `TLS_CA_FILE`.
-- Desktop client `ALPHA_SERVER_URL` is separate — point it at `https://…` only if that client build trusts this CA.
+- **Do not commit** `*.pem` — they stay local per machine / secure share.
+- Fleet PCs must share the **same root CA** that signed the API leaf (distribute `rootCA.pem`, not the server private key).
+- Without CA trust, browsers warn and the .NET client fails with “SSL connection could not be established”.
+- face_worker: `TLS_CA_FILE` / `REQUESTS_CA_BUNDLE` → same `rootCA.pem`.
+- Web: `NODE_EXTRA_CA_CERTS` → same `rootCA.pem`.
 - Re-mint when you change LAN IP or need extra hostnames:
 
 ```bash

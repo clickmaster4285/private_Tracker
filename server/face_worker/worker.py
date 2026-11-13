@@ -37,12 +37,15 @@ YUNET_URL = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/"
     "face_detection_yunet/face_detection_yunet_2023mar.onnx"
 )
+YUNET_FILENAME = "face_detection_yunet_2023mar.onnx"
+ADAFACE_FILENAME = "adaface_ir50_webface4m.onnx"
 YUNET_SCORE_THRESHOLD = float(os.environ.get("FACE_WORKER_YUNET_SCORE", "0.5") or "0.5")
 YUNET_NMS_THRESHOLD = 0.3
 YUNET_TOP_K = 5000
 YUNET_MIN_FACE_PX = int(os.environ.get("FACE_WORKER_MIN_FACE_PX", "60") or "60")
 
 WORKER_DIR = Path(__file__).resolve().parent
+MODELS_DIR = WORKER_DIR / "models"
 SERVER_ROOT = WORKER_DIR.parent
 SERVER_DOTENV = SERVER_ROOT / ".env"
 
@@ -125,17 +128,80 @@ def resolve_listen() -> tuple[str, int]:
     return host, port
 
 
+def _download_to(path: Path, url: str, label: str) -> None:
+    print(f"[FaceWorker] downloading {label}…", flush=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with urllib.request.urlopen(url, timeout=600) as resp:
+            data = resp.read()
+        if not data:
+            raise RuntimeError(f"empty download for {label}")
+        tmp.write_bytes(data)
+        tmp.replace(path)
+        print(f"[FaceWorker] {label} → {path} ({path.stat().st_size} bytes)", flush=True)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def ensure_yunet_model() -> Path:
-    models = WORKER_DIR / "models"
-    models.mkdir(parents=True, exist_ok=True)
-    path = models / "face_detection_yunet_2023mar.onnx"
+    """Ensure YuNet ONNX under models/. Auto-download from OpenCV zoo if missing."""
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    path = MODELS_DIR / YUNET_FILENAME
     if path.exists() and path.stat().st_size > 100_000:
         return path
-    print("[FaceWorker] downloading YuNet ONNX…", flush=True)
-    with urllib.request.urlopen(YUNET_URL, timeout=180) as resp:
-        data = resp.read()
-    path.write_bytes(data)
+    url = env("FACE_YUNET_DOWNLOAD_URL") or YUNET_URL
+    _download_to(path, url, "YuNet")
+    if not path.exists() or path.stat().st_size <= 100_000:
+        raise RuntimeError(f"YuNet download failed or file too small: {path}")
     return path
+
+
+def ensure_adaface_model() -> Path | None:
+    """Ensure AdaFace ONNX under models/ when possible.
+
+    Prefer existing FACE_ADAFACE_ONNX / models/adaface_*.onnx.
+    If missing and FACE_ADAFACE_DOWNLOAD_URL is set, download into models/.
+    Returns path when present; None when still missing (embeddings_deferred).
+    """
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    from embed import resolve_onnx_path  # local import after dotenv load
+
+    existing = resolve_onnx_path()
+    if existing is not None:
+        return existing
+
+    url = env("FACE_ADAFACE_DOWNLOAD_URL")
+    if not url:
+        return None
+
+    dest = MODELS_DIR / ADAFACE_FILENAME
+    _download_to(dest, url, "AdaFace")
+    if dest.exists() and dest.stat().st_size > 1_000_000:
+        return dest
+    return None
+
+
+def ensure_models() -> Path:
+    """Startup: check models/ for YuNet (+ AdaFace); download missing when URLs allow."""
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    yunet = ensure_yunet_model()
+    ada = ensure_adaface_model()
+    print(f"[FaceWorker] models dir={MODELS_DIR}", flush=True)
+    print(f"[FaceWorker]   YuNet   = {yunet.name} ({yunet.stat().st_size} bytes)", flush=True)
+    if ada is not None:
+        print(f"[FaceWorker]   AdaFace = {ada.name} ({ada.stat().st_size} bytes)", flush=True)
+    else:
+        print(
+            "[FaceWorker]   AdaFace = MISSING — place "
+            f"{ADAFACE_FILENAME} under models/ or set FACE_ADAFACE_ONNX / "
+            "FACE_ADAFACE_DOWNLOAD_URL",
+            flush=True,
+        )
+    return yunet
 
 
 def create_yunet_detector(model_path: Path) -> cv2.FaceDetectorYN:
@@ -426,10 +492,10 @@ def main() -> int:
         return 1
 
     try:
-        model_path = ensure_yunet_model()
+        model_path = ensure_models()
         DETECTOR = create_yunet_detector(model_path)
     except Exception as ex:  # noqa: BLE001
-        print(f"Failed to init YuNet: {ex}", file=sys.stderr)
+        print(f"Failed to init YuNet / models: {ex}", file=sys.stderr)
         return 1
 
     try:

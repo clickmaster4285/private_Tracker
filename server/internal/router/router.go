@@ -154,7 +154,9 @@ func Setup(
 		syncGroup.GET("/face-profiles/me", faceHandler.GetMyFaceProfile)
 		syncGroup.GET("/face-profiles/me/embeddings", faceHandler.GetMyEmbeddings)
 		syncGroup.POST("/face-profiles/sync-ack", faceHandler.SyncAck)
+		syncGroup.POST("/face-profiles/verify-event", faceHandler.VerifyEvent)
 		syncGroup.GET("/face-models/manifest", faceHandler.ModelManifest)
+		syncGroup.GET("/face-models/packages/:packageId", faceHandler.DownloadModelPackage)
 	}
 
 	// Security & DLP — device surface (policy pull, alert sync, health, removal verify)

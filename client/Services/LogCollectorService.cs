@@ -5,6 +5,7 @@ using client.Core;
 using client.Core.Abstractions;
 using client.Core.BrowserAccessibility;
 using client.Core.Models;
+using client.Services.FaceVerify;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -334,6 +335,16 @@ public class LogCollectorService : BackgroundService
         {
             StartTracking();
             _logger.LogInformation("Session restored from SQLite — tracking started in background mode");
+            try
+            {
+                var info = await _store.GetEmployeeInfoAsync(stoppingToken);
+                if (info != null)
+                    FaceVerifyLauncher.TryLaunchAfterLogin(_config, info);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Face verify launch after headless restore failed");
+            }
         }
 
         // ─── Reconcile stale sessions from previous crashes ───
@@ -390,6 +401,32 @@ public class LogCollectorService : BackgroundService
 
                 if (!_trackingEnabled)
                 {
+                    // Soft face-verify / GUI login must not leave the --background tracker
+                    // parked forever: GUI SaveEmployeeInfo writes SQLite while this process
+                    // had no credentials at boot. Poll and StartTracking when a session appears.
+                    try
+                    {
+                        var pending = await _store.GetEmployeeInfoAsync(stoppingToken);
+                        if (pending != null
+                            && !string.IsNullOrWhiteSpace(pending.EmployeeId)
+                            && (!string.IsNullOrWhiteSpace(pending.Token)
+                                || !string.IsNullOrWhiteSpace(pending.DeviceToken)))
+                        {
+                            SetEmployeeInfo(
+                                pending.EmployeeId,
+                                pending.Name,
+                                pending.Token ?? string.Empty);
+                            StartTracking();
+                            _logger.LogInformation(
+                                "Session appeared in SQLite while waiting — tracking started (soft face-verify compatible)");
+                            continue;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Login poll while waiting for tracking failed");
+                    }
+
                     await Task.Delay(5000, stoppingToken);
                     continue;
                 }
