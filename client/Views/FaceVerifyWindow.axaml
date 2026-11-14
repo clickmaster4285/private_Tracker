@@ -1,0 +1,116 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:client.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="client.Views.FaceVerifyWindow"
+        x:DataType="vm:FaceVerifyViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="{Binding AppName} — Face verification"
+        WindowState="Maximized"
+        Topmost="True"
+        CanResize="False"
+        SystemDecorations="None"
+        Background="#0B1220"
+        Foreground="#F8FAFC">
+
+  <Grid RowDefinitions="Auto,*,Auto" Margin="48">
+    <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
+      <TextBlock Text="{Binding AppName}"
+                 FontSize="14"
+                 FontWeight="SemiBold"
+                 Opacity="0.7"
+                 LetterSpacing="1"/>
+      <TextBlock Text="{Binding StatusTitle}"
+                 FontSize="36"
+                 FontWeight="Bold"
+                 TextWrapping="Wrap"/>
+      <TextBlock Text="{Binding StatusDetail}"
+                 FontSize="18"
+                 Opacity="0.85"
+                 TextWrapping="Wrap"
+                 MaxWidth="900"/>
+    </StackPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto">
+      <Border Grid.Column="0"
+              Background="#111827"
+              CornerRadius="16"
+              ClipToBounds="True"
+              BorderBrush="#1F2937"
+              BorderThickness="1">
+        <Grid>
+          <Image Source="{Binding Preview}"
+                 Stretch="Uniform"
+                 HorizontalAlignment="Center"
+                 VerticalAlignment="Center"/>
+          <StackPanel VerticalAlignment="Center"
+                      HorizontalAlignment="Center"
+                      IsVisible="{Binding ShowProgress}"
+                      Spacing="12">
+            <TextBlock Text="{Binding ProgressText}"
+                       HorizontalAlignment="Center"
+                       FontSize="16"
+                       Opacity="0.9"/>
+            <ProgressBar Value="{Binding ProgressValue}"
+                         Minimum="0" Maximum="1"
+                         Width="360" Height="8"/>
+          </StackPanel>
+          <StackPanel VerticalAlignment="Center"
+                      HorizontalAlignment="Center"
+                      IsVisible="{Binding WaitingForHr}"
+                      Spacing="16"
+                      MaxWidth="720"
+                      Margin="32">
+            <TextBlock Text="Meet HR to enroll your face verification"
+                       FontSize="28"
+                       FontWeight="SemiBold"
+                       TextAlignment="Center"
+                       TextWrapping="Wrap"/>
+            <TextBlock Text="Your apps and activity keep syncing while this window stays open."
+                       FontSize="15"
+                       Opacity="0.75"
+                       TextAlignment="Center"
+                       TextWrapping="Wrap"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Border Grid.Column="1"
+              Margin="16,0,0,0"
+              Width="220"
+              Background="#111827"
+              CornerRadius="16"
+              ClipToBounds="True"
+              BorderBrush="#1F2937"
+              BorderThickness="1"
+              IsVisible="{Binding ShowReference}">
+        <StackPanel Margin="12" Spacing="8">
+          <TextBlock Text="Reference"
+                     FontSize="12"
+                     Opacity="0.7"
+                     HorizontalAlignment="Center"/>
+          <Image Source="{Binding ReferenceImage}"
+                 Stretch="Uniform"
+                 MaxHeight="280"
+                 HorizontalAlignment="Center"/>
+        </StackPanel>
+      </Border>
+    </Grid>
+
+    <StackPanel Grid.Row="2"
+                Orientation="Horizontal"
+                HorizontalAlignment="Center"
+                Margin="0,24,0,0"
+                Spacing="12">
+      <Button Content="Check again"
+              Command="{Binding RetryCommand}"
+              IsVisible="{Binding ShowRetry}"
+              MinWidth="160"
+              MinHeight="44"
+              FontSize="16"
+              Padding="20,10"/>
+    </StackPanel>
+  </Grid>
+</Window>

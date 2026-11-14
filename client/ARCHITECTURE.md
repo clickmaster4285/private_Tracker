@@ -1,7 +1,127 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-07 (local blocker switches)
+> **Last audited:** 2026-11-14 (plain HTTP only — TLS removed)
 > **Changelog:**
+> - 2026-11-14: **TLS/HTTPS removed.** Deleted `TlsCertificateTrust`; HttpClient/WebSocket
+>   use default handlers. DlpService no longer applies fleet CA callbacks. Installer no
+>   longer bakes/`InstallOrgTlsCa` for `rootCA.pem`. `ALPHA_SERVER_URL` is `http://…`.
+>   **VERSION 2.3.1**. Re-bake `config.enc` + rebuild Windows installer.
+> - 2026-11-13: **File Download / File Upload DLP rules (DlpService).** `FileTransferEnforcer`
+>   (HKLM `SOFTWARE\Policies\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave, Chromium}`:
+>   `DownloadRestrictions=3`, `AllowFileSelectionDialogs=0`; drift-only; Clear removes only our exact
+>   values). `EnforceWorker.ApplyFileTransferAsync` every tick from published rules with trigger
+>   `file_download` / `file_upload` and action block / alert_block (`PolicyBundleParser.BlockingRule`);
+>   gated by creds + machine pause + `ALPHA_DLP_FILE_TRANSFER_BLOCK` (not by lockdown). Rewrite with
+>   unchanged desired state → `file_transfer_tamper` alert (≤1/10 min). Park / pipe teardown /
+>   `WindowsTeardownCleanup` clear it; `Health.fileTransferBlock`.
+> - 2026-11-11: **24/7 antivirus guard (DlpService).** `DefenderGuard` (status via
+>   `Get-MpComputerStatus`/`Get-MpPreference`/SecurityCenter2; one-process drift-only enforce script;
+>   GPO disable/exclusion registry cleanup; Defender Operational `EventLogReader`) +
+>   `AntivirusGuardWorker` (30 s guard; events → `malware`/`av_tamper` DLP alerts with deterministic
+>   ids + `policy_kv` bookmark; signature update / periodic quick scan; `POST /antivirus/status/sync`).
+>   Runs when `ALPHA_AV_ENFORCE=true` (default) regardless of `ALPHA_DLP_ENABLED`; third-party AV is
+>   reported, not fought. `PolicyStore.GetKvAsync/SetKvAsync`; `AppProcessGuard` denies `SecHealthUI`.
+>   Env `ALPHA_AV_*` baked via `generate-windows-vars.sh` → `service.env`.
+> - 2026-11-13: **Local face package + first/simple verify.** Cache enrollment JPEGs
+>   under `face/samples/`; first verify multi-pose wizard; simple on boot/unlock;
+>   early `TryLaunchEarly` before Host.Build; warm-up + event drain in tracker.
+>   **VERSION 2.0.9**.
+> - 2026-11-13: **Face-verify every session start.** `TryLaunchOnSessionStart` on
+>   boot restore, GUI restore/login, and LogCollector login-poll. **VERSION 2.0.8**.
+> - 2026-11-13: **FaceDetectorYN detect + offline verify.** OpenCvSharp 4.13
+>   `FaceDetectorYN` for YuNet (parity with face_worker); AdaFace stays ORT.
+>   Verified → local `MarkVerifyAsync` then best-effort server audit. **VERSION 2.0.7**.
+> - 2026-11-13: **YuNet ORT 640×640.** Detector input size taken from ONNX metadata
+>   (zoo export fixed 640), not hardcoded 320. **VERSION 2.0.6**.
+> - 2026-11-13: **Face models via DeviceAuth only.** YuNet + AdaFace download from
+>   `/face-models/packages/yunet|adaface-ir50` into LocalAppData (no GitHub on PC).
+>   **VERSION 2.0.5**.
+> - 2026-11-13: **Private-LAN HTTPS auto-trust.** `TlsCertificateTrust` (OS store +
+>   ProgramData / `ALPHA_TLS_CA` PEM; lab `ALPHA_TLS_INSECURE`). Windows installer
+>   bakes `certs/rootCA.pem` into `{app}\tls\` and post-install installs
+>   LocalMachine\Root + ProgramData PEM — no manual `install-org-ca.ps1` on fleet.
+>   **VERSION 2.0.3**.
+> - 2026-11-11: **Protected-uninstall AppLocker + pipe.** Teardown IPC not gated on DLP
+>   enable; longer ApplyTeardownGate timeouts; `AppAllowEnforcer.Clear` deletes SrpV2;
+>   `WindowsTeardownCleanup` AppLocker + FW COM + browser clear (SYSTEM task). **VERSION 1.4.7**.
+> - 2026-11-11: **Lab leftover wipe doc.** See repo [`removeTracker.md`](../removeTracker.md)
+>   (AppLocker/SRP purge + hosts/FW after protected uninstall). Linked from TESTING §C.
+> - 2026-11-11: **Silent apply AppLocker + pre-stop.** SYSTEM-only allow
+>   `%ProgramData%\<mutex>\updates\*`; fingerprint `v7`; helper stops service before Inno;
+>   after success clear flags + `relaunch_tracker`, `sc start` only if not RUNNING (Inno
+>   already starts service). **VERSION 1.4.6**.
+> - 2026-11-11: **Post-auto-update restart.** Apply helper clears gates, restarts DLP service
+>   (wait RUNNING), sets `relaunch_tracker`; watchdog starts `--background --restart`. **VERSION 1.4.5**.
+> - 2026-11-11: **Update-priority yield.** Newer release → `update_priority` flag; tracker parks
+>   sync/live/screenshots/collectors so download+apply run first (auto jitter ≤120s). **VERSION 1.4.2**.
+> - 2026-11-11: **Silent update `update_in_progress` TTL + fleet download jitter.** Orphan/TTL
+>   clear so watchdog relaunches; clear flag if helper spawn fails; post-Inno service restart
+>   for AppLocker v6; `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` + Retry-After on downloads. **VERSION 1.3.7**.
+> - 2026-11-11: **AppLocker PF(x86) prefix order.** `NormalizeAppLockerPath` used
+>   `StartsWith(Program Files)` before PF(x86), turning
+>   `C:\Program Files (x86)\Microsoft\Edge\Application\*` into invalid
+>   `%PROGRAMFILES% (x86)\…`. Fix: `StartsWithDir` (boundary `\`) + match PF(x86) first;
+>   rewrite broken `%PROGRAMFILES% (x86)` macros; fingerprint `v6`. **VERSION 1.3.6**.
+>   Verified: `dotnet build` DlpService. Installer-Parity: next Windows installer.
+> - 2026-11-11: **AppLocker Edge allow under Program Files (x86).**
+>   `AppAllowEnforcer.NormalizeAppLockerPath` mapped `Program Files (x86)` to
+>   `%PROGRAMFILES(X86)%`, which AppLocker does not understand (only `%PROGRAMFILES%`,
+>   covering both PF roots per MS docs). Symptom: Task Manager (`%SYSTEM32%`) unblocked;
+>   Edge stayed default-deny. Fix: both PF roots → `%PROGRAMFILES%`; rewrite legacy
+>   `(X86)` macros on apply; fingerprint `v5`. `AppProcessGuard.AddExpandedPaths` emits
+>   matchers for both Program Files roots when expanding `%PROGRAMFILES%` (and still
+>   expands legacy `%PROGRAMFILES(X86)%`). **VERSION 1.3.4**. Verified: `dotnet build`
+>   DlpService. Installer-Parity: next Windows installer.
+> - 2026-11-10: **`--timedatewarning` subprocess.** `TimeDateWarningWorker` (start + hourly):
+>   server-time skew + IP/schedule IANA TZ vs OS; spawns sibling Avalonia process when wrong.
+>   State: `%LocalAppData%/<APP>/timedatewarning/state.json`. Open Date & Time settings; Dismiss
+>   cooldown. `ALPHA_TA_TIMEDATE_*`. **VERSION 1.0.13**. Verified: `dotnet build`. Installer-Parity:
+>   re-bake `config.enc`.
+> - 2026-11-10: **Screenshot orphan re-upload fix.** `UploadOneAsync` reads WebP bytes then
+>   closes before `DeleteAccepted` (Windows file-lock). `GuessMetaFromName` recovers trailing
+>   UUID as `ScreenshotId` (machine id no longer absorbs it). No Guid mint on list. **VERSION
+>   1.0.12**. Verified: `dotnet build`.
+> - 2026-11-10: **Offline-first screenshots.** `ScreenshotCaptureWorker` + `ScreenshotSyncWorker`
+>   under `Services/Screenshots/`. Capture: `ScreenCaptureService.CaptureStill` → SkiaSharp WebP →
+>   `%LocalAppData%/<APP>/screenshots/pending/` (+ JSON sidecar); skip on pending pressure (never
+>   delete unsynced). Sync: multipart `POST /api/v1/screenshots/upload`; delete local only on OK;
+>   honor Retry-After. Env: `ALPHA_SCREENSHOT_*`. **VERSION 1.0.10**. Verified: `dotnet build`.
+>   Installer-Parity: re-bake `config.enc`.
+> - 2026-11-10: **Windows live-stream VP8 native load.** `VpxNativeBootstrap` (Program +
+>   `ScreenVp8Encoder`) preloads app-local `VCRUNTIME140` and resolves `vpxmd.dll` from
+>   `AppContext.BaseDirectory`. `publish/ensure-vpx-native.ps1` (MSBuild AfterBuild/Publish +
+>   `build-installer.sh`) copies CRT next to the exe; optional `ALPHA_BUNDLE_VC_REDIST=1` for
+>   full redist in Inno. `LiveStreamClient` probes before encode → honest `stream_encode_error`.
+>   **VERSION 1.0.8**. Verified: `dotnet build` client. Installer-Parity: next Windows installer.
+> - 2026-11-10: **Scale client half.** `ALPHA_SYNC_LOGIN_JITTER_SEC` (default 120) delays
+>   post-login / session-restore sync via `RequestImmediateSyncWithLoginJitterAsync`.
+>   `SyncService` honors `Retry-After` on HTTP 429/503 and still leaves rows `is_synced=0`.
+>   Verified: `dotnet build` client (0 warnings). Installer-Parity: re-bake `config.enc`.
+> - 2026-11-10: **Delete-block ACL + tighter AppLocker bootstrap (DlpService).** New
+>   `DeleteBlockAclEnforcer` — NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated
+>   Users on Fixed/Removable volume roots when lockdown is ON; `ALPHA_DLP_DELETE_BLOCK` (default
+>   `true`) gates apply and clears leftovers (`disabled_local` / pause / park / teardown). Marker
+>   `delete_block_roots.json` under the DLP data root; pipe `Health.deleteBlock`; audits
+>   `delete_block_apply` / `delete_block_clear`. Caveat: temp→delete→rename Save paths may fail
+>   while ON. `AppAllowEnforcer`: PowerShell path rules are SYSTEM-only (S-1-5-18); Settings /
+>   ImmersiveControlPanel / broad WindowsApps wildcards dropped from Everyone bootstrap; fingerprint
+>   `v3`. `AppProcessGuard` kills interactive PowerShell/Settings/cmd/terminal (session > 0) even
+>   when MainModule path is unreadable. `EnvBootstrap` / `generate-windows-vars.sh` /
+>   `installer-windows.iss` / `install-service.ps1` seed the new key. Client **VERSION 1.0.6**.
+>   Installer-Parity: next Windows installer.
+> **Last audited:** 2026-11-07 (hardware & port control)
+> **Changelog:**
+> - 2026-11-07: **Hardware & Port Control (scan + enforce).** Tracker: `PortDeviceCollector`
+>   (BackgroundService) scans every PnP port/device via `Get-PnpDevice`, classifies into 3 categories,
+>   writes `machine_ports` (SQLite, `DatabaseSchema.UpsertMachinePortSql`; client owns present/removed),
+>   drained by `SyncService` to `POST /hardware-ports/sync`; gated by `ALPHA_PORT_SCAN_ENABLED`.
+>   DlpService: `PortDeviceEnforcer` disables blocked classes (Device Installation Restrictions,
+>   retroactive) + instances (`Disable-PnpDevice`), wired into `EnforceWorker` + park-clear, local
+>   switch `ALPHA_DLP_PORT_BLOCK` (`DlpConfig`/`EnvBootstrap`); `PolicyBundle` parses `deviceControl`.
+>   **Offline-first fix:** `PolicyStore` persists `deviceControl` in a new `policy_device_control`
+>   table (`dlp.db`) on apply and emits it on rebuild — previously the relational round-trip dropped it,
+>   so `EnforceWorker` always received an empty block set and nothing was ever enforced. Verified:
+>   `dotnet build` client + DlpService (0/0); live scan (52 devices). Ships in the next installer.
 > - 2026-11-07: **Local blocker switches.** `DlpConfig` gains `NetworkLockdown`
 >   (`ALPHA_DLP_NETWORK_LOCKDOWN`) and `AppBlock` (`ALPHA_DLP_APP_BLOCK`) next to `UsbBlock` / `WebBlock`.
 >   `EnforceWorker` gates `ApplyLockdownAsync`, the lockdown browser allow-set in `ApplyWebAsync`, and
@@ -421,7 +541,7 @@
 - **No ORM** — raw parameterized SQL via `SqliteCommand`
 - **Sparse tests** — `client/client.Tests` covers a few DLP/teardown helpers; collectors largely untested
 - **No structured logging beyond ILogger** — console (dev) + `FileLoggerProvider` → `dotnetrunlog.txt`
-- **No third-party auto-updater library** — the built-in `AppUpdateService` (2026-08-12, §16) self-updates from GitHub Releases; installers are still published via `release.sh`
+- **No third-party auto-updater library** — the built-in `AppUpdateService` + Windows `SilentUpdateWorker` self-update from the API `setup/` folder (`GET /api/v1/releases` + `/downloads`); publish via `release.sh`
 
 ---
 
@@ -446,7 +566,7 @@ client/
 ├── APP_IDENTIFIERS_README.md       # How to re-brand; lists every consumer
 ├── VERSION_README.md               # How to bump the version
 ├── appsettings.json                # Logging config (largely unused — level comes from ALPHA_LOG_LEVEL)
-├── .env / .env.example             # Dev plaintext config template (REPO key is NOT read by client)
+├── .env / .env.example             # Dev plaintext config template (ALPHA_SERVER_URL + ALPHA_UPDATE_*)
 │
 ├── Configuration/
 │   ├── AppConfig.cs                # Reads all ALPHA_* env vars into typed config (see §14)
@@ -511,7 +631,7 @@ client/
 ├── Services/
 │   ├── LogCollectorService.cs      # ⭐ main BackgroundService: collect → resolve → sessions/items → heartbeat (no network I/O since 2026-08-11)
 │   ├── SyncService.cs              # ⭐ dedicated sync engine: drains unsent rows in byte-bounded chunks (gzip, polite pauses, exponential backoff)
-│   ├── AppUpdateService.cs         # ⭐ self-updater (2026-08-12): GitHub latest-release check → platform asset → download to user data dir → pkexec dpkg / silent Inno / dmg; ObservableObject state bound by the GUI; 24h auto-check loop
+│   ├── AppUpdateService.cs         # ⭐ self-updater: GET /api/v1/releases + /downloads; Windows queues SilentUpdateWorker; Linux pkexec dpkg / macOS dmg; ObservableObject for GUI Check updates
 │   ├── LiveStreamClient.cs         # ⭐ WebRTC VP8 publisher → GET /live-stream/push; ABR; send after PC connected
 │   ├── NetProbeService.cs          # Uplink probe → POST /live-stream/uplink-probe; SelectBitrateKbps ladder
 │   ├── ScreenCaptureService.cs     # Win GDI BitBlt + Linux portal/PipeWire → BGRA (DropOldest)
@@ -1005,6 +1125,7 @@ Watchers (IObservableEventSource)          EventCoordinator                 Jour
 | `ALPHA_UPDATE_ENABLED` | true | master switch for self-update (background checks + auto-install + GUI); requires `ALPHA_SERVER_URL` |
 | `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background update checks against the server (min 15); service + GUI |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install when a check finds a newer version (Linux still shows the polkit password dialog) |
+| `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` | 3600 | fleet per-machine silent download delay window (fleet); GUI force ≤30s |
 | `ALPHA_STREAM_ENABLED` | false | master switch for WebRTC live-stream publisher |
 | `ALPHA_STREAM_FPS` | 12 | capture / encode cadence (1–30); may drop under ABR degrade |
 | `ALPHA_STREAM_MAX_WIDTH` | 1920 | scale cap (hard-clamped 320–1920); may drop under ABR |
@@ -1092,7 +1213,7 @@ Two consequences worth knowing before you touch either file:
 | Gap | Severity | Details |
 |---|---|---|
 | **No crash handling** | 🔴 High | No `AppDomain.UnhandledException` subscription, no crash dumps, no telemetry. |
-| ~~**No auto-update**~~ (resolved 2026-08-12) | — | `AppUpdateService` checks GitHub Releases on a 24h cadence + on demand (GUI **Check updates**), auto-installs (Linux polkit / Windows silent Inno / macOS dmg) and relaunches itself. |
+| ~~**No auto-update**~~ (resolved 2026-08-12; local setup 2026-11-07) | — | `AppUpdateService` + Windows `SilentUpdateWorker` poll `GET /api/v1/releases` every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s); Windows silent Inno via LocalSystem; Linux polkit / macOS dmg. |
 | **SQLite unencrypted** | 🟠 Medium | `ALPHA_DB_ENCRYPTION_KEY` exists but sqlcipher is not wired in. |
 | **macOS CPU = 0%** | 🟠 Medium | macOS collector does not measure CPU. |
 | **macOS window capture limited** | 🟢 Low | Only foreground window via osascript; no EnumWindows equivalent. |
@@ -1145,9 +1266,11 @@ Two consequences worth knowing before you touch either file:
    Linux arch preference (`_amd64.deb` / `_arm64.deb`). No asset → "No installer for this platform".
 4. Compare vs installed version. Newer → proceed.
 5. **Windows (service that understands the pipe):** Range-download to `%ProgramData%\<APP_MUTEX>\updates\`
-   while the tracker runs; a detached SYSTEM PowerShell helper runs Inno `/VERYSILENT` (no `RunAs`)
-   and clears `update_in_progress` (no celebration toast). The GUI polls `GetUpdateStatus` and does
-   not elevate.
+   while the tracker runs; a detached SYSTEM PowerShell helper pre-stops the DLP service, runs Inno
+   `/VERYSILENT` (no `RunAs`; AppLocker SYSTEM allow for `updates\*`), clears `update_in_progress`,
+   writes `relaunch_tracker`, and `sc start`s only if Inno did not leave the service RUNNING
+   (Inno `InstallDlpService` normally creates+starts; watchdog relaunches the tracker). No
+   celebration toast. The GUI polls `GetUpdateStatus` and does not elevate.
    **Windows (installed service that answers `unknown_op`):** the GUI downloads the same bridge
    asset, requires the file length to match `asset.size` when that size is non-zero, then
    `Start-Process -Verb RunAs` (explicit UAC, not a silent bypass). `update_disabled`,
@@ -1167,7 +1290,7 @@ Two consequences worth knowing before you touch either file:
 
 ### Background loop
 
-- **Windows service:** `SilentUpdateWorker` 30-min tick + `ALPHA_UPDATE_AUTO_CHECK_HOURS` gate;
+- **Windows service:** `SilentUpdateWorker` every `ALPHA_UPDATE_CHECK_INTERVAL_SEC` (default 60s);
   independent of `ALPHA_DLP_ENABLED`; pipe ops `GetUpdateStatus` / `RequestUpdateCheck` always
   available on Windows.
 - **Client:** still auto-checks; on Windows auto-install defers to the service pipe.
@@ -1180,6 +1303,7 @@ Two consequences worth knowing before you touch either file:
 | `ALPHA_UPDATE_ENABLED` | true | master switch (service worker + GUI no-op when false) |
 | `ALPHA_UPDATE_CHECK_INTERVAL_SEC` | 60 | seconds between background checks |
 | `ALPHA_UPDATE_AUTO_INSTALL` | true | auto-download+install without a click |
+| `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` | 3600 | stable per-machine delay window before silent download (fleet admission); GUI force ≤30s |
 
 ⚠️ **Installers are not code-signed / checksum-verified** — the download is trusted over the API TLS
 (only size is checked against the release list). Signing is a future hardening step. First install still needs
@@ -1228,6 +1352,7 @@ Contract test: `test/contract-event-types.sh` (T5).
 | `IdleDetector` | hosted | 30 s poll | OS idle source (Mutter.IdleMonitor / X11 / GetLastInputInfo); emits `idle_start`/`idle_end` crossings |
 | `ScheduleCacheService` | hosted | login/resume + every 6 h | Mirrors the Phase 2 `GET /api/v1/schedules/me` response into local tables; login wakes it immediately and resume waits 10 s for network stabilization |
 | `LocalTimeSkewService` | hosted | startup/resume + every 15 min | Measures client↔server clock skew from `GET /api/v1/server-time`'s Date header; resume waits 10 s before measuring |
+| `TimeDateWarningWorker` | hosted | start + every `ALPHA_TA_TIMEDATE_CHECK_HOURS` (default 1h) | If `|skew|≥SKEW_SEC` or OS UTC offset ≠ IP/schedule IANA zone → write `timedatewarning/state.json` and spawn `client --timedatewarning` (sibling mutex). Never sets OS clock. Parked when `ALPHA_TA_ENABLED` or `ALPHA_TA_TIMEDATE_WARN_ENABLED` is false |
 | `AttendanceAggregator` | hosted | login + every 5 min | Rolls up arrival/last-seen, the union of idle+screen-lock time, active time, schedule overlap, holidays, lateness, absence, half-day, and off-shift time; legacy offset timestamps are normalized to UTC at the store boundary |
 
 DI order (finalplan §3): `ShutdownSentinel` is registered FIRST so .NET stops it LAST — guaranteeing
@@ -1259,7 +1384,11 @@ collection never blocks aggregation and vice versa.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `ALPHA_TA_ENABLED` | true | master switch; false parks SystemEventWatcher, IdleDetector, ScheduleCacheService, LocalTimeSkewService, AttendanceAggregator |
+| `ALPHA_TA_ENABLED` | true | master switch; false parks SystemEventWatcher, IdleDetector, ScheduleCacheService, LocalTimeSkewService, AttendanceAggregator, TimeDateWarningWorker |
+| `ALPHA_TA_TIMEDATE_WARN_ENABLED` | true | spawn `--timedatewarning` when clock/timezone unhealthy |
+| `ALPHA_TA_TIMEDATE_CHECK_HOURS` | 1 | hours between checks (first check is immediate at start) |
+| `ALPHA_TA_TIMEDATE_SKEW_SEC` | 60 | absolute skew vs server UTC that counts as unhealthy |
+| `ALPHA_TA_TIMEDATE_COOLDOWN_HOURS` | 4 | after Dismiss / window close, do not re-spawn for this long |
 | `ALPHA_IDLE_THRESHOLD_SEC` | 120 | seconds of no input before `idle_start` |
 | `ALPHA_IDLE_AWAY_THRESHOLD_SEC` | 600 | reserved for A.8 away classification |
 | `ALPHA_IDLE_POLL_SEC` | 30 | idle-source poll cadence |

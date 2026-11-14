@@ -37,6 +37,8 @@ public class AppConfig
     // USB / peripheral hotplug tracking (synced to the server since 2026-08-11;
     // never deleted client-side)
     public bool HardwareDevicesEnabled { get; init; } = true;
+    /// <summary>Full port/interface inventory scan (Hardware & Port Control).</summary>
+    public bool PortScanEnabled { get; init; } = true;
 
     // Software inventory — 100% EVENT-DRIVEN detection via InstalledSoftwareWatcher: it watches
     // the OS install locations (.desktop dirs, dpkg state, Start Menu, /Applications, package-
@@ -58,6 +60,12 @@ public class AppConfig
     public int SyncBackoffMaxSec { get; init; } = 300;       // exponential-backoff ceiling on failure (5 min)
     public bool SyncCompression { get; init; } = true;       // gzip request bodies (server: middleware.Decompress)
     public int SyncRetentionHours { get; init; } = 24;       // retention: synced app_items/app_sessions older than this are deleted client-side
+    /// <summary>
+    /// Max random delay (seconds) before the first post-login sync drain.
+    /// Spreads 09:00 login storms across ~N seconds so 1000 agents do not hit the API in the same second.
+    /// 0 = immediate (legacy behaviour).
+    /// </summary>
+    public int SyncLoginJitterSec { get; init; } = 120;
     // Account removal (R4, 2026-10-19): how long `client --remove-account` waits for the
     // final drain before wiping anyway. Bounded so a huge backlog / offline machine can
     // never block removal forever (Removal always proceeds; the unsent rows are the
@@ -74,6 +82,31 @@ public class AppConfig
     public int LockHysteresisSeconds { get; init; } = 30;   // screen_lock dedup window
     public int EventAggregationWindowSec { get; init; } = 300; // 5-min sync buckets (S1)
     public int TaMaxLocalRows { get; init; } = 50_000;       // unsynced row ceiling (S6)
+    /// <summary>Spawn <c>--timedatewarning</c> when clock/timezone is wrong (default on with T&amp;A).</summary>
+    public bool TimeDateWarnEnabled { get; init; } = true;
+    /// <summary>Hours between clock/timezone health checks (default 1). First check runs at start.</summary>
+    public int TimeDateCheckHours { get; init; } = 1;
+    /// <summary>Absolute skew vs server UTC (seconds) that triggers the warning (default 60).</summary>
+    public int TimeDateSkewSec { get; init; } = 60;
+    /// <summary>After Dismiss, do not re-spawn the warning window for this many hours (default 4).</summary>
+    public int TimeDateCooldownHours { get; init; } = 4;
+
+    // ─── Face verify (Windows --face-verify soft gate) ───
+    /// <summary>Spawn face verify on every Windows session start (boot restore / login).</summary>
+    public bool FaceVerifyEnabled { get; init; } = true;
+    /// <summary>Cosine threshold vs L2 embeddings (calibrate per office webcams).</summary>
+    /// <summary>Strict cosine floor ≥ 0.8 vs L2 buffalo_l embeddings (first + simple).</summary>
+    public double FaceMatchThreshold { get; init; } = 0.8;
+    /// <summary>
+    /// While soft-lock is open, kill non-critical user-session apps so CPU/GPU go to verify.
+    /// Never kills shell / DLP / tracker. Default true.
+    /// </summary>
+    public bool FaceVerifyKillApps { get; init; } = true;
+    /// <summary>
+    /// Optional HTTP URL override for buffalo_l recognition ONNX. Default: DeviceAuth download
+    /// of det_10g + w600k_r50 from GET /face-models/packages/{buffalo-l-det|buffalo-l-rec}.
+    /// </summary>
+    public string? FaceBuffaloRecUrl { get; init; }
 
     // ─── GPS & Location (Phase 3, finalplan §16) ───
     // Default OFF — requires OS location permission + employee consent.
@@ -115,6 +148,16 @@ public class AppConfig
     /// </summary>
     public int StreamDebugSendDelayMs { get; init; } = 0;
 
+    // ─── Offline-first screenshots (capture local → sync upload) ───
+    public bool ScreenshotEnabled { get; init; } = true;
+    public int ScreenshotIntervalSec { get; init; } = 30;
+    public int ScreenshotMaxWidth { get; init; } = 1280;
+    public int ScreenshotWebpQuality { get; init; } = 75;
+    public int ScreenshotMaxPending { get; init; } = 5000;
+    public int ScreenshotMaxPendingMb { get; init; } = 2048;
+    public int ScreenshotSyncBatch { get; init; } = 5;
+    public int ScreenshotSyncPollSec { get; init; } = 15;
+
     // ─── Control WebSocket (presence / keep-alive channel) ───
     // Long-lived outbound WS to GET /api/v1/ws (DeviceAuth). Independent of
     // LiveStreamClient. Default OFF — fleet opt-in + config.enc bake required.
@@ -123,8 +166,8 @@ public class AppConfig
     public int WsReconnectBaseSec { get; init; } = 2;
 
     // ─── Self-update (public releases bridge on ALPHA_SERVER_URL) ───
-    // GET {ServerUrl}/api/v1/releases + GET /api/v1/downloads/:assetId. No GitHub
-    // token on the client. (REPO= in .env is only for publish/release.sh / gh CLI.)
+    // GET {ServerUrl}/api/v1/releases + GET /api/v1/downloads/:assetId.
+    // Installers come from the API host's setup/ folder (RELEASES_DIR).
     public bool UpdateEnabled { get; init; } = true;          // master switch for all update behaviour
     public int UpdateCheckIntervalSec { get; init; } = 60;    // seconds between background checks against the server
     public bool UpdateAutoInstall { get; init; } = true;      // auto-download+install when a check finds a newer version
@@ -148,6 +191,7 @@ public class AppConfig
             BrowserHistoryPollSec = int.TryParse(GetEnv("ALPHA_BROWSER_HISTORY_POLL_SECONDS"), out var histPoll) ? histPoll : 10,
             FileJourneyEnabled = GetEnv("ALPHA_FILE_JOURNEY_ENABLED") is not ("0" or "false" or "False"),
             HardwareDevicesEnabled = GetEnv("ALPHA_HARDWARE_DEVICES_ENABLED") is not ("0" or "false" or "False"),
+            PortScanEnabled = GetEnv("ALPHA_PORT_SCAN_ENABLED") is not ("0" or "false" or "False"),
             InventoryWatchEnabled = GetEnv("ALPHA_INVENTORY_WATCH_ENABLED") is not ("0" or "false" or "False"),
             SyncIntervalSec = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_INTERVAL_SEC"), out var syncInt) ? syncInt : 60),
             SyncMaxRows = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_MAX_ROWS"), out var syncRows) ? syncRows : 1000),
@@ -157,6 +201,7 @@ public class AppConfig
             SyncBackoffMaxSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_SYNC_BACKOFF_MAX_SEC"), out var syncBack) ? syncBack : 300),
             SyncCompression = GetEnv("ALPHA_SYNC_COMPRESSION") is not ("0" or "false" or "False"),
             SyncRetentionHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_SYNC_RETENTION_HOURS"), out var syncRet) ? syncRet : 24),
+            SyncLoginJitterSec = Math.Max(0, int.TryParse(GetEnv("ALPHA_SYNC_LOGIN_JITTER_SEC"), out var syncJitter) ? syncJitter : 120),
             RemoveAccountSyncTimeoutSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_REMOVE_ACCOUNT_SYNC_TIMEOUT_SEC"), out var remTmo) ? remTmo : 120),
             UpdateEnabled = GetEnv("ALPHA_UPDATE_ENABLED") is not ("0" or "false" or "False"),
             UpdateCheckIntervalSec = Math.Max(15, int.TryParse(GetEnv("ALPHA_UPDATE_CHECK_INTERVAL_SEC"), out var updSec) ? updSec : 60),
@@ -168,6 +213,19 @@ public class AppConfig
             LockHysteresisSeconds = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_LOCK_HYSTERESIS_SEC"), out var lockHys) ? lockHys : 30),
             EventAggregationWindowSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_EVENT_AGGREGATION_WINDOW_SEC"), out var aggWin) ? aggWin : 300),
             TaMaxLocalRows = Math.Max(1000, int.TryParse(GetEnv("ALPHA_TA_MAX_LOCAL_ROWS"), out var taMax) ? taMax : 50_000),
+            TimeDateWarnEnabled = GetEnv("ALPHA_TA_TIMEDATE_WARN_ENABLED") is not ("0" or "false" or "False"),
+            TimeDateCheckHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_CHECK_HOURS"), out var tdCheck) ? tdCheck : 1),
+            TimeDateSkewSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_SKEW_SEC"), out var tdSkew) ? tdSkew : 60),
+            TimeDateCooldownHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_COOLDOWN_HOURS"), out var tdCool) ? tdCool : 4),
+            FaceVerifyEnabled = GetEnv("ALPHA_FACE_VERIFY_ENABLED") is not ("0" or "false" or "False"),
+            FaceMatchThreshold = Math.Max(0.8, Math.Clamp(
+                double.TryParse(GetEnv("ALPHA_FACE_MATCH_THRESHOLD"), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.8,
+                0.05, 0.99)),
+            FaceVerifyKillApps = GetEnv("ALPHA_FACE_VERIFY_KILL_APPS") is not ("0" or "false" or "False"),
+            FaceBuffaloRecUrl = FirstNonEmpty(
+                GetEnv("ALPHA_FACE_BUFFALO_REC_URL"),
+                GetEnv("ALPHA_FACE_ADAFACE_URL")),
             LocationEnabled = GetEnv("ALPHA_LOCATION_ENABLED") is ("1" or "true" or "True"),
             LocationPollSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_LOCATION_POLL_SEC"), out var locPoll) ? locPoll : 300),
             LocationIpFallback = GetEnv("ALPHA_LOCATION_IP_FALLBACK") is ("1" or "true" or "True"),
@@ -179,6 +237,14 @@ public class AppConfig
             StreamMinUplinkKbps = Math.Clamp(int.TryParse(GetEnv("ALPHA_STREAM_MIN_UPLINK_KBPS"), out var streamMinUp) ? streamMinUp : 300, 100, 15000),
             StreamVp8LagFrames = Math.Clamp(int.TryParse(GetEnv("ALPHA_STREAM_VP8_LAG_FRAMES"), out var streamLag) ? streamLag : 0, 0, 5),
             StreamDebugSendDelayMs = Math.Clamp(int.TryParse(GetEnv("ALPHA_STREAM_DEBUG_SEND_DELAY_MS"), out var streamDbgDelay) ? streamDbgDelay : 0, 0, 500),
+            ScreenshotEnabled = GetEnv("ALPHA_SCREENSHOT_ENABLED") is not ("0" or "false" or "False"),
+            ScreenshotIntervalSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_INTERVAL_SEC"), out var ssInt) ? ssInt : 30, 10, 600),
+            ScreenshotMaxWidth = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_MAX_WIDTH"), out var ssW) ? ssW : 1280, 320, 1920),
+            ScreenshotWebpQuality = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_WEBP_QUALITY"), out var ssQ) ? ssQ : 75, 1, 100),
+            ScreenshotMaxPending = Math.Max(100, int.TryParse(GetEnv("ALPHA_SCREENSHOT_MAX_PENDING"), out var ssPend) ? ssPend : 5000),
+            ScreenshotMaxPendingMb = Math.Max(64, int.TryParse(GetEnv("ALPHA_SCREENSHOT_MAX_PENDING_MB"), out var ssMb) ? ssMb : 2048),
+            ScreenshotSyncBatch = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_SYNC_BATCH"), out var ssBatch) ? ssBatch : 5, 1, 20),
+            ScreenshotSyncPollSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_SCREENSHOT_SYNC_POLL_SEC"), out var ssPoll) ? ssPoll : 15, 5, 120),
             WsEnabled = IsEnvTruthy(GetEnv("ALPHA_WS_ENABLED")),
             WsPingSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_WS_PING_SEC"), out var wsPing) ? wsPing : 30, 5, 300),
             WsReconnectBaseSec = Math.Clamp(int.TryParse(GetEnv("ALPHA_WS_RECONNECT_BASE_SEC"), out var wsRecon) ? wsRecon : 2, 1, 60),
@@ -202,6 +268,16 @@ public class AppConfig
     {
         var val = Environment.GetEnvironmentVariable(key);
         return string.IsNullOrWhiteSpace(val) ? null : val.Trim();
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+                return v.Trim();
+        }
+        return null;
     }
 
     private static string GenerateMachineId()

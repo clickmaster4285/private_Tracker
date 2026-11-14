@@ -2,9 +2,103 @@
 
 Procedures that need a running server (and for DLP, an installed Windows agent). Unit/CI tests live next to the code; this file is for **lab proof**.
 
-Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
+Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./newplan.md) (1000-agent scale), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
 
-*Last audited: 2026-11-06*
+*Last audited: 2026-11-11*
+
+---
+
+## File Transfer — DLP rules File Download / File Upload (Windows DlpService)
+
+Prereq: API restarted (migration **075**), Windows PC on client **2.2.1+** (or any build with FileTransferEnforcer), logged in, not paused.
+
+1. Web `/dlp-rules` → **Create Rule** → trigger **File Download (browser)**, action **Block**, Active
+   → Save, then **Publish** → toast shows `policy vN`.
+2. On the PC (within seconds): `reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v DownloadRestrictions`
+   → `0x3` (same under `Microsoft\Edge`). `chrome://policy` lists it.
+3. Download any file in Chrome / Edge → "Blocked by your organization".
+4. Add a **File Upload (browser)** rule with action Block → Publish → Gmail / Drive "Attach" /
+   "Choose file" opens nothing (`AllowFileSelectionDialogs = 0x0`).
+5. Tamper: as Administrator `reg delete "HKLM\SOFTWARE\Policies\Google\Chrome" /v DownloadRestrictions /f`
+   → value back within one Enforce tick (≤15 s) and a `/dlp-alerts?type=file_transfer_tamper` alert.
+6. Set the rules Inactive (or action Alert Only) → Publish → values removed (an org's own different
+   value stays).
+7. Pause lockdown for the machine → values removed until the pause ends.
+8. Protected uninstall → no `DownloadRestrictions` / `AllowFileSelectionDialogs` left.
+9. Bypass check: with `/allowlists/apps` allowing only Chrome/Edge, Firefox must not start.
+   Known gap: dragging a file from Explorer into a page still uploads.
+
+---
+
+## 24/7 antivirus guard (Windows DlpService)
+
+Needs: installed Windows build with `ALPHA_AV_ENFORCE=true` (default), tracker logged in, API with
+migrations **071–074**. Use a **lab VM** — the guard removes Defender exclusions it was not told about.
+
+1. **Status:** within ~5 min the PC appears on web **Security & DLP → Antivirus** (`/antivirus`) as
+   *Protected* with signature version / last quick scan. API: `GET /api/v1/antivirus/status`.
+2. **Detection (safe):** save the standard **EICAR test file** (eicar.org) to the Desktop. Defender
+   blocks + quarantines it; within ~1 min a `malware` alert (*Malware blocked*, action *Blocked*,
+   evidence threat name/path) shows in `/dlp-alerts?type=malware` and *Threats blocked · 24h* rises.
+3. **Tamper revert:** as admin, `Set-MpPreference -DisableRealtimeMonitoring $true` (only works with
+   Tamper Protection OFF). Within ~30 s real-time is ON again (`Get-MpComputerStatus`), an `av_tamper`
+   alert (*Antivirus tampering*, action *Blocked*) appears and the row shows a *Tampering* time.
+4. **Exclusion bypass:** `Add-MpPreference -ExclusionPath C:\evil` → removed within ~30 s
+   (`(Get-MpPreference).ExclusionPath`); the `av_tamper` alert lists `exclusion_path:C:\evil`.
+   Paths listed in `ALPHA_AV_ALLOWED_EXCLUSIONS` stay.
+5. **GPO bypass:** create `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` DWORD
+   `DisableAntiSpyware=1` → value deleted on the next pass.
+6. **Windows refused:** with Tamper Protection ON and real-time turned off in the Windows Security UI,
+   the guard cannot force it back → `av_tamper` *critical* / *Block failed* alert (≤ 1 per 30 min).
+7. **Third-party AV:** with another AV registered (Defender passive) the row shows *Third-party AV*;
+   the guard does not touch Defender.
+8. **Service logs:** `AntivirusGuardWorker running …`, `Antivirus guard reverted …`;
+   `%ProgramData%\<APP_MUTEX>\dlp\service.env` carries `ALPHA_AV_*`.
+
+---
+
+## Clock / timezone warning (`--timedatewarning`)
+
+1. Tracker running with `ALPHA_TA_ENABLED=true` and `ALPHA_TA_TIMEDATE_WARN_ENABLED=true` (defaults).
+2. Set the PC clock **5+ minutes** wrong (or set a wrong timezone vs your public IP location).
+3. Restart the tracker (or wait up to `ALPHA_TA_TIMEDATE_CHECK_HOURS`, default 1h — first check is at start).
+4. Expect a separate Avalonia window titled “… — Date & time” showing skew / expected vs PC local time.
+5. **Open Date & Time settings** → Windows Settings Date & time; fix clock / turn on automatic time.
+6. **Dismiss** (or ×) → `timedatewarning/state.json` gets `dismissedAt`; window must not reappear until cooldown (`ALPHA_TA_TIMEDATE_COOLDOWN_HOURS`, default 4) even if still wrong.
+7. Optional: `client.exe --timedatewarning` alone after a worker wrote `state.json` (mutex single-flight).
+
+## I. Scale admission (1000 agents) — smoke
+
+**Prereqs:** API with Redis; `ASYNQ_ENABLED=true`; client with `ALPHA_SYNC_LOGIN_JITTER_SEC`.
+
+1. Burst `POST /api/v1/auth/login` from one IP beyond `RATE_LIMIT_LOGIN_BURST` → **429** + `Retry-After`.
+2. Saturate sync with many concurrent DeviceAuth sync POSTs → some **503** + `Retry-After`; client leaves rows unsynced and retries.
+3. `GET /api/v1/dashboard/summary` twice within `DASHBOARD_CACHE_TTL_SEC` → second hit should be fast (Redis cache when Redis up).
+4. Server log shows asynq embedded worker **or** run `go run ./cmd/worker` when `ASYNQ_EMBED=false`.
+5. `/live-stream` network tab: employees request includes `onlineOnly` + `limit=200`.
+6. Full 1000-agent storm lab: see [newplan.md](./newplan.md) success criteria (not claimed done until measured).
+
+---
+
+## Screenshots — offline capture + lazy web grid
+
+**Prereqs:** migration **065**; API with `SCREENSHOTS_DIR`; client **1.0.10+** logged in (`ALPHA_SCREENSHOT_ENABLED=true`).
+
+1. Disconnect network (or stop API). Wait ≥30s → `%LocalAppData%\AlphaAITracker\screenshots\pending\` gains `.webp` + `.json`.
+2. Restore network → sync worker uploads; pending files disappear only after 2xx; files appear under `server/media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`.
+3. `/screenshots`: scroll the grid — Network tab shows image requests only as cards enter the viewport (not one giant dump).
+4. 429/503 with `Retry-After`: local file stays until a later OK.
+
+---
+
+## Live stream — Windows VP8 (`vpxmd` / VCRUNTIME140)
+
+**Prereqs:** Windows client **1.0.8+** (ships `vcruntime140.dll` app-local next to `vpxmd.dll`).
+
+1. Install/update on a PC that does **not** have VC++ 2015-2022 x64 installed (or rename/block system `VCRUNTIME140` only in a disposable lab VM).
+2. Confirm install dir contains `vpxmd.dll` + `vcruntime140.dll` (and usually `vcruntime140_1.dll`).
+3. Open `/live-stream`, watch the employee → tile shows real FPS (not `---`); SFU log `withTrack=true`.
+4. If broken: Device Specs / `app_status` `stream_encode_error` should name missing `vpxmd` / CRT (not a bare `DllNotFoundException` alone); `stream_ice_state=connected` with empty encode error means ICE was fine and encode failed.
 
 ---
 
@@ -25,7 +119,11 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [doc/plan.md](./
 11. Already-open forbidden apps (pre-lockdown) may still be killed by the sweeper — backup only.
 12. `/allowlists/apps` → pick Calculator from the inventory catalog → auto-publish → Calculator launches; Task Manager still blocked.
 13. Deactivate / delete Calculator → Calculator blocked again on next launch.
+13b. **Edge under Program Files (x86) (installer 1.3.7+):** allow Microsoft Edge from catalog (or path override). Expect Edge launches (org dialog gone). On the PC, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml` must be exactly `%PROGRAMFILES%\Microsoft\Edge\Application\*` — **never** `%PROGRAMFILES(X86)%` and **never** `%PROGRAMFILES% (x86)\…` (the latter was a client bug: matching `Program Files` before `Program Files (x86)`). Silent update (1.4.5+) clears update flags, restarts `AlphaAITracker.Service` (wait RUNNING), then watchdog relaunches `client.exe --background --restart`. If `update_in_progress` is stuck, delete it (or wait TTL). Publish should emit `Application\*` (not only `msedge.exe`) so versioned helpers stay allowed after Edge updates.
 14. If AppLocker apply fails / `verify=NOT_ENFORCING`: expect apply failure or ENFORCED warning; kill sweeper should still run. Check AppIDSvc, SKU, `%ProgramData%\<APP_MUTEX>\dlp\applocker.policy.xml`, Event Log.
+15. **Delete-block (ACL):** lockdown ON + `ALPHA_DLP_DELETE_BLOCK=true` → create/edit a file on Desktop OK; Delete → Access Denied. Same on a second Fixed partition and a USB Removable volume. Explorer desktop stays stable (no ~15s blank flicker). Service log: `Delete-block ACLs ENFORCED`. Marker: `%ProgramData%\<APP_MUTEX>\dlp\delete_block_roots.json`.
+16. Lockdown Off / pause / `ALPHA_DLP_DELETE_BLOCK=false` / protected teardown → Deny Delete ACE removed; delete works again.
+17. Caveat: apps that Save via temp→delete→rename (some Office paths) may fail while delete-block is ON — expected for NTFS Deny Delete (not a minifilter).
 
 **Network + hosts only (no HKLM URL policy):** lockdown and web-blocker deny use
 hosts DNS sink + AdvFirewall (`AlphaAI-DLP-*` / `AlphaAI-DLP-LOCK-*`). The service
@@ -35,6 +133,11 @@ clears leftovers from older builds.
 **Apps:** AppLocker **Exe + Appx** Enforce (Store + Win32 default-deny), MSI empty-deny,
 bootstrap A (product + Explorer/Start/shell Appx families). Catalog picks expand to
 **path** at Publish. Broad Microsoft publisher alone is never used for inbox apps.
+AppLocker path macros: `%PROGRAMFILES%` covers both Program Files roots (do not emit
+`%PROGRAMFILES(X86)%`). Edge/Chrome publish as `…\Application\*` when possible.
+
+**Delete-block:** NTFS Deny Delete + DeleteSubdirectoriesAndFiles for Authenticated Users
+on every Fixed/Removable volume root (create/write allowed). SYSTEM/Administrators not denied.
 
 ---
 
@@ -64,8 +167,23 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
    curl -I "$API/api/v1/downloads/$ASSET_ID"
    curl -v -H "Range: bytes=0-1023" -o range-test.bin "$API/api/v1/downloads/$ASSET_ID"   # 206, 1024 bytes
    ```
-4. Auto-update: install an older build on a Windows lab PC, drop a newer `vX.Y.Z.exe` in the setup folder → within ~1–2 min `%ProgramData%\<APP_MUTEX>\updates\update.log` shows the SYSTEM silent apply and the tracker relaunches on the new version. A failed apply writes `updates\apply_failed.txt` and that version is not retried for 1 hour.
-5. Negative: unknown `assetId` → 404; non-numeric → 400; missing setup folder → empty list (200).
+4. Auto-update: install an older build on a Windows lab PC, drop a newer `vX.Y.Z.exe` in the setup folder → within ~1–2 min `%ProgramData%\<APP_MUTEX>\updates\update.log` shows the SYSTEM silent apply (pre-stop service → Inno → clear flags) and **both** restart: service via Inno `InstallDlpService` (helper `sc start` only if not RUNNING), tracker via watchdog / `relaunch_tracker`. A failed apply writes `updates\apply_failed.txt` and that version is not retried for 1 hour.
+5. Under app lockdown (`ALPHA_DLP_APP_BLOCK=true` + published lockdown): staged `updates\v*.exe` must still launch (SYSTEM AppLocker allow for that folder, fingerprint `v7+`). If the EXE stays in `updates\` with no/failed `Installer finished` line in `update.log`, suspect AppLocker deny on the staged path.
+6. Negative: unknown `assetId` → 404; non-numeric → 400; missing setup folder → empty list (200).
+
+### Troubleshooting: older client polls `/releases` but never installs (e.g. 1.0.13 → 1.2.0)
+
+**Symptom:** API access log shows `GET /api/v1/releases` every ~60s (200) but **no** `GET /api/v1/downloads/...`. Discovery works; download/apply does not.
+
+**Why:** On Windows only `AlphaAITracker.Service` (`SilentUpdateWorker`) downloads and runs Inno. The GUI **Check updates / Install** only pipes `RequestUpdateCheck` — it does not download itself. Version compare `1.2.0 > 1.0.13` is fine; `v1.2.0.exe` in `setup/` is fine.
+
+Check on the stuck PC:
+
+1. `service.env` (under `%ProgramData%\<APP_MUTEX>\dlp\`) has `ALPHA_SERVER_URL` pointing at this API and `ALPHA_UPDATE_ENABLED=true` / `ALPHA_UPDATE_AUTO_INSTALL=true`. Missing URL → worker state `no_server_url`.
+2. Pipe/Health update fields (`GetUpdateStatus`) — look for `no_server_url`, `update_disabled`, `apply_failed_retry_later`, `update_in_progress`, `unknown_op` (service too old).
+3. `%ProgramData%\<APP_MUTEX>\updates\`: `update.log`, `apply_failed.txt` (1h cooldown for that version), stuck `update_in_progress`, staged `v*.exe` (download OK / apply blocked — often AppLocker before `v7`, or service DLL lock).
+4. After fixing env, restart `AlphaAITracker.Service` and watch the API log for `/downloads/{assetId}`.
+5. Dev `dotnet run` without the installed service can poll `/releases` forever and never install on Windows.
 
 ---
 
@@ -82,7 +200,7 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 
 ### B. USBSTOR coarse block + alert
 
-1. With a published `usb_storage` **block** rule and `ALPHA_DLP_USB_BLOCK=true`, plug a USB mass-storage stick. (Local switches: set `ALPHA_DLP_USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK=false` in `service.env`, restart the service → that blocker clears within ~15s and `dlp.db` `enforcement_audit` shows `state=disabled_local` for lockdown/AppLocker.)
+1. With a published `usb_storage` **block** rule and `ALPHA_DLP_USB_BLOCK=true`, plug a USB mass-storage stick. (Local switches: set `ALPHA_DLP_USB_BLOCK` / `WEB_BLOCK` / `NETWORK_LOCKDOWN` / `APP_BLOCK` / `DELETE_BLOCK=false` in `service.env`, restart the service → that blocker clears within ~15s and `dlp.db` `enforcement_audit` shows `state=disabled_local` for lockdown/AppLocker/delete-block.)
 2. Expect: Removable volumes unavailable / USBSTOR disabled (coarse — whole class, not per-file).
 3. Web `/dlp-alerts` within ≤ `ALPHA_DLP_ALERT_SYNC_SEC`: new row (`actionTaken` `blocked` or `alerted`), `policyVersion` matches.
 4. Open the row → detail dialog → change status/notes → **Save** → History shows `dlp_alert_events` entries. Status must **not** update on dropdown change alone.
@@ -104,6 +222,7 @@ Fixed/Roaming Start/Stop is deleted (migration **058**). There is no mode API, n
 4. **Linux expect:** HTTP `removal-verify` (token from `~/.local/share/alpha-ai-tracker/data/*.db`) → drain → wipe → LocalAppData / `/var/lib/<pkg>/dlp` `teardown.ok`; then `sudo apt remove` / `dpkg -r` allowed.
 5. Apps & features / `.deb` remove succeeds with gate. Replay the same code → verify fails. Without `teardown.ok`, Inno / `prerm` refuses.
 6. Windows before unlock: Services.msc **Stop** on the DLP service fails for Administrators (query-only DACL).
+7. If `pipeUnlock=False` or Apps & features shows **Error 1260** / apps stay “blocked by your organization” after uninstall: follow **[`removeTracker.md`](./removeTracker.md)** (AppLocker/SRP purge, hosts/FW COM wipe, reboot for AppID). Client **1.4.7+** clears AppLocker in elevated teardown even when the pipe times out; still reboot if AppID keeps a stale Exe deny set.
 
 ### C.1 Plain `--remove-account` (local wipe — not product uninstall)
 

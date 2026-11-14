@@ -12,9 +12,9 @@ DLP (USB / Web Blocker / alerts / protected uninstall).
 
 Current client version: see [`client/VERSION`](./client/VERSION). Release history: [`RELEASE_NOTES.md`](./RELEASE_NOTES.md).
 
-**Public downloads:** `/releases` lists every published GitHub Release and streams Windows `.exe` / Linux `.deb` installers through the API (`GET /api/v1/releases`, `GET /api/v1/downloads/:assetId`) so the GitHub repo can stay private. Configure `GITHUB_TOKEN` (Contents: Read) on the server — see [`doc/plan.md`](./doc/plan.md) and `server/.env.example`.
+**Public downloads:** drop installers in `server/setup/` (e.g. `v1.2.0.exe`; set `RELEASES_DIR` if needed). The API lists them on `GET /api/v1/releases` and streams them on `GET /api/v1/downloads/:assetId` (no GitHub). Publish with `bash client/publish/release.sh`. See `server/.env.example`.
 
-Deep docs: [`AGENTS.md`](./AGENTS.md) (rules) · [`WORKFLOW.md`](./WORKFLOW.md) · [`TESTING.md`](./TESTING.md) · [`plan.md`](./plan.md) · [`doc/plan.md`](./doc/plan.md) (releases bridge) · [`FILE_HIERARCHY.md`](./FILE_HIERARCHY.md).
+Deep docs: [`AGENTS.md`](./AGENTS.md) (rules) · [`WORKFLOW.md`](./WORKFLOW.md) · [`TESTING.md`](./TESTING.md) · [`removeTracker.md`](./removeTracker.md) (Windows AppLocker / DLP leftover cleanup) · [`plan.md`](./plan.md) · [`FILE_HIERARCHY.md`](./FILE_HIERARCHY.md).
 
 ---
 
@@ -28,7 +28,6 @@ Deep docs: [`AGENTS.md`](./AGENTS.md) (rules) · [`WORKFLOW.md`](./WORKFLOW.md) 
 | **PostgreSQL** | Server DB |
 | **Redis** | Secrets TTL, live-stream presence/tickets |
 | **Git** | Clone / release tags |
-| **GitHub CLI (`gh`)** | Optional — GitHub Releases |
 | **Inno Setup** (Windows) / **Wine+ISCC** (Linux→Win) | Windows installer |
 | **dpkg** | Linux `.deb` |
 | **create-dmg** (macOS) | `.dmg` |
@@ -50,8 +49,7 @@ cd alpha-ai-tracker
 cd server
 cp .env.example .env    # or: make setup-env
 # Edit DB_*, REDIS_*, JWT_SECRET, ADMIN_*, SERVER_PORT (default 8080)
-# For public /releases downloads from a private GitHub repo, also set:
-#   GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN (fine-grained PAT, Contents: Read)
+# Drop client installers in setup/ (or set RELEASES_DIR) for /api/v1/releases
 make setup              # deps + build
 ```
 
@@ -193,6 +191,7 @@ alpha-ai-tracker/
 ├── AGENTS.md        Architecture + mandatory rules
 ├── WORKFLOW.md      Daily loop, packaging, release procedure
 ├── TESTING.md       Lab playbooks (DLP, USB, Web Blocker, …)
+├── removeTracker.md Windows protected-uninstall leftovers (AppLocker / hosts / FW / USB)
 ├── plan.md          Security & DLP roadmap
 └── RELEASE_NOTES.md Version history
 ```

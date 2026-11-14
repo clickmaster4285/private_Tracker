@@ -9,10 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/cache"
 	"github.com/alpha-ai-tracker/server/internal/config"
 	"github.com/alpha-ai-tracker/server/internal/database"
 	"github.com/alpha-ai-tracker/server/internal/handlers"
 	"github.com/alpha-ai-tracker/server/internal/jobs"
+	"github.com/alpha-ai-tracker/server/internal/queue"
 	goredis "github.com/alpha-ai-tracker/server/internal/redis"
 	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/router"
@@ -34,7 +36,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("[server] failed to load config: %v", err)
 	}
-	log.Printf("[server] configured for %s", cfg.ServerAddr())
+	log.Printf("[server] configured for http://%s", cfg.ServerAddr())
 
 	// ────────────────
 	// Database
@@ -90,6 +92,9 @@ func main() {
 	dlpService := services.NewDlpService(dlpRepo, cfg.DlpRemovalCodeTTLMin).
 		WithPlatformAllow(services.CompilePlatformAllowHosts(cfg)).
 		WithDeviceRepo(deviceRepo)
+	portRepo := repository.NewPortRepo(pool)
+	antivirusService := services.NewAntivirusService(repository.NewAntivirusRepo(pool))
+	portService := services.NewPortService(portRepo, dlpService)
 	rbacService := services.NewRBACService(rbacRepo)
 	shiftService := services.NewShiftService(shiftRepo, cfg.DefaultShiftTimezone)
 	timeAttendanceService := services.NewTimeAttendanceService(timeAttendanceRepo)
@@ -107,6 +112,8 @@ func main() {
 	newSchemaHandler := handlers.NewNewSchemaHandler(newSchemaService, authService)
 	monitoringHandler := handlers.NewMonitoringHandler(monitoringService)
 	dlpHandler := handlers.NewDlpHandler(dlpService, employeeRepo)
+	portHandler := handlers.NewPortHandler(portService)
+	antivirusHandler := handlers.NewAntivirusHandler(antivirusService)
 	rbacHandler := handlers.NewRBACHandler(rbacService)
 	shiftHandler := handlers.NewShiftHandler(shiftService)
 	timeAttendanceHandler := handlers.NewTimeAttendanceHandler(timeAttendanceService)
@@ -144,6 +151,9 @@ func main() {
 		InstanceID:     instanceID,
 	})
 	defer presenceHub.Close()
+	// Push "policy_changed" over the presence socket on every DLP publish so PCs pull now
+	// instead of waiting for ALPHA_DLP_POLICY_POLL_SEC (was: rules looked "restart-only").
+	dlpService.SetPolicyNotifier(presenceHub.BroadcastPolicyChanged)
 
 	// Phase 2: when Redis is up, share presence + watch tickets + publisher routing.
 	if redisClient != nil {
@@ -180,6 +190,13 @@ func main() {
 	dashboardService := services.NewDashboardService(
 		dashboardRepo, employeeRepo, timeAttendanceRepo, timeAttendanceService, streamHub, presenceHub,
 	)
+	if redisClient != nil && cfg.Scale.DashboardCacheTTLSec > 0 {
+		dashboardService.WithCache(
+			cache.New(redisClient.Underlying()),
+			time.Duration(cfg.Scale.DashboardCacheTTLSec)*time.Second,
+		)
+		log.Printf("[server] dashboard summary Redis cache ttl=%ds", cfg.Scale.DashboardCacheTTLSec)
+	}
 	dashboardHandler := handlers.NewDashboardHandler(dashboardService)
 
 	logInsightsRepo := repository.NewLogInsightsRepo(pool)
@@ -191,11 +208,55 @@ func main() {
 	logGraphicalHandler := handlers.NewLogGraphicalHandler(logGraphicalService)
 
 	releaseService := services.NewLocalReleaseService(cfg.Releases.Dir)
-	releaseHandler := handlers.NewReleaseHandler(releaseService)
+	releaseHandler := handlers.NewReleaseHandler(
+		releaseService,
+		cfg.Releases.MaxConcurrentDownloads,
+		cfg.Releases.DownloadRetryAfterSec,
+	)
 	if st, err := os.Stat(releaseService.Dir()); err == nil && st.IsDir() {
-		log.Printf("[server] releases served from %s (/api/v1/releases, /api/v1/downloads)", releaseService.Dir())
+		log.Printf("[server] releases served from %s (/api/v1/releases, /api/v1/downloads maxConcurrent=%d)",
+			releaseService.Dir(), cfg.Releases.MaxConcurrentDownloads)
 	} else {
 		log.Printf("[server] WARNING: releases dir %s not found — /api/v1/releases returns an empty list until installers are added", releaseService.Dir())
+	}
+
+	screenshotRepo := repository.NewScreenshotRepo(pool)
+	screenshotService := services.NewScreenshotService(
+		screenshotRepo, cfg.Screenshots.Dir, cfg.Screenshots.MaxUploadBytes,
+	)
+	if err := os.MkdirAll(screenshotService.RootDir(), 0o755); err != nil {
+		log.Printf("[server] WARNING: could not create screenshots dir %s: %v", screenshotService.RootDir(), err)
+	} else {
+		log.Printf("[server] screenshots store %s (max upload %d bytes; no retention purge)",
+			screenshotService.RootDir(), screenshotService.MaxBytes())
+	}
+	screenshotHandler := handlers.NewScreenshotHandler(screenshotService)
+
+	faceRepo := repository.NewFaceRepo(pool)
+	faceService := services.NewFaceService(
+		faceRepo, employeeRepo, cfg.Face.Dir, cfg.Face.MaxUploadBytes, cfg.Face.MaxFilesPerJob,
+	)
+	faceService.SetWorkerPush(cfg.Face.WorkerURL, cfg.Face.WorkerAPIKey)
+	if err := faceService.SetEmbeddingKeySecret(cfg.Face.EmbeddingKeySecret); err != nil {
+		log.Fatalf("[server] face embedding key: %v", err)
+	}
+	if err := os.MkdirAll(faceService.RootDir(), 0o750); err != nil {
+		log.Printf("[server] WARNING: could not create face media dir %s: %v", faceService.RootDir(), err)
+	} else {
+		log.Printf("[server] face media store %s (max %d bytes/file, max %d files/job)",
+			faceService.RootDir(), faceService.MaxBytes(), faceService.MaxFiles())
+	}
+	faceHandler := handlers.NewFaceHandler(
+		faceService,
+		cfg.Face.WorkerAPIKey,
+		cfg.Face.ModelsDir,
+		cfg.Face.BuffaloDetPackagePath,
+		cfg.Face.BuffaloRecPackagePath,
+	)
+	if cfg.Face.WorkerAPIKey == "" {
+		log.Printf("[server] FACE_WORKER_API_KEY empty — /api/v1/internal/face-worker/* rejects until set")
+	} else if cfg.Face.WorkerURL != "" {
+		log.Printf("[server] face_worker push → %s/v1/process", cfg.Face.WorkerURL)
 	}
 
 	// ────────────────
@@ -222,19 +283,50 @@ func main() {
 	}
 
 	// ────────────────
-	// Background jobs
+	// Background jobs (Asynq when Redis+enabled; else in-process tickers)
 	// ────────────────
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
 	defer sweepCancel()
-	stalenessSweep := jobs.NewStalenessSweep(pool, cfg.LinkStaleDays)
-	stalenessSweep.Start(sweepCtx)
-	log.Printf("[server] staleness sweep started (stale window: %d days)", cfg.LinkStaleDays)
 
-	retentionWorker := jobs.NewRetentionWorker(pool)
-	go retentionWorker.Start(sweepCtx)
+	useAsynq := cfg.Scale.AsynqEnabled && redisClient != nil
+	if useAsynq && cfg.Scale.AsynqEmbed {
+		opt := queue.RedisOpt(redisAddr, cfg.Redis.Password, cfg.Redis.DB)
+		deps := queue.NewJobDeps(pool, cfg.LinkStaleDays)
+		sessionEvery := time.Duration(cfg.Scale.SessionSweepSec) * time.Second
+		if sessionEvery <= 0 {
+			sessionEvery = time.Minute
+		}
+		if _, err := queue.SchedulePeriodic(sweepCtx, opt, sessionEvery, time.Hour, time.Hour); err != nil {
+			log.Printf("[server] WARNING: asynq scheduler failed (%v) — falling back to in-process tickers", err)
+			useAsynq = false
+		} else {
+			go func() {
+				if err := queue.RunWorker(sweepCtx, opt, cfg.Scale.AsynqConcurrency, deps); err != nil {
+					log.Printf("[server] asynq worker stopped: %v", err)
+				}
+			}()
+			log.Printf("[server] asynq embedded worker+scheduler (concurrency=%d) — set ASYNQ_EMBED=false and run cmd/worker for split deploy",
+				cfg.Scale.AsynqConcurrency)
+		}
+	} else if useAsynq && !cfg.Scale.AsynqEmbed {
+		log.Println("[server] ASYNQ_ENABLED=true ASYNQ_EMBED=false — start `go run ./cmd/worker` for background jobs")
+	}
 
-	sessionLifecycleSweep := jobs.NewSessionLifecycleSweep(pool)
-	go sessionLifecycleSweep.Start(sweepCtx)
+	if !useAsynq {
+		stalenessSweep := jobs.NewStalenessSweep(pool, cfg.LinkStaleDays)
+		stalenessSweep.Start(sweepCtx)
+		log.Printf("[server] staleness sweep started (stale window: %d days)", cfg.LinkStaleDays)
+
+		retentionWorker := jobs.NewRetentionWorker(pool)
+		go retentionWorker.Start(sweepCtx)
+
+		sessionLifecycleSweep := jobs.NewSessionLifecycleSweep(pool)
+		go sessionLifecycleSweep.Start(sweepCtx)
+	}
+
+	log.Printf("[server] scale: syncMaxConcurrent=%d loginRPS=%.1f syncRPS=%.1f liveMaxStreams=%d dbPool=%d",
+		cfg.Scale.SyncMaxConcurrent, cfg.Scale.LoginRPS, cfg.Scale.SyncRPS,
+		cfg.LiveStream.MaxStreams, cfg.Database.MaxOpenConns)
 
 	// ────────────────
 	// Setup Echo
@@ -243,14 +335,15 @@ func main() {
 	e.HideBanner = true
 	e.HidePort = true
 
-	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, releaseHandler)
+	router.Setup(e, cfg, authService, deviceRepo, userRepo, authHandler, userHandler, employeeHandler, departmentHandler, newSchemaHandler, monitoringHandler, rbacHandler, shiftHandler, timeAttendanceHandler, geofenceHandler, streamHandler, wsHandler, dashboardHandler, logInsightsHandler, logGraphicalHandler, dlpHandler, portHandler, releaseHandler, screenshotHandler, faceHandler, antivirusHandler)
 
 	// ────────────────
 	// Graceful Shutdown
 	// ────────────────
 	go func() {
-		log.Printf("[server] listening on %s", cfg.ServerAddr())
-		if err := e.Start(cfg.ServerAddr()); err != nil {
+		addr := cfg.ServerAddr()
+		log.Printf("[server] listening on http://%s", addr)
+		if err := e.Start(addr); err != nil {
 			log.Printf("[server] server stopped: %v", err)
 		}
 	}()

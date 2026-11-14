@@ -64,6 +64,10 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"LockHysteresisSeconds={cfg.LockHysteresisSeconds}");
     Console.WriteLine($"EventAggregationWindowSec={cfg.EventAggregationWindowSec}");
     Console.WriteLine($"TaMaxLocalRows={cfg.TaMaxLocalRows}");
+    Console.WriteLine($"TimeDateWarnEnabled={cfg.TimeDateWarnEnabled}");
+    Console.WriteLine($"TimeDateCheckHours={cfg.TimeDateCheckHours}");
+    Console.WriteLine($"TimeDateSkewSec={cfg.TimeDateSkewSec}");
+    Console.WriteLine($"TimeDateCooldownHours={cfg.TimeDateCooldownHours}");
     Console.WriteLine($"LocationEnabled={cfg.LocationEnabled}");
     Console.WriteLine($"LocationIpFallback={cfg.LocationIpFallback}");
     Console.WriteLine($"LocationPollSec={cfg.LocationPollSec}");
@@ -75,6 +79,10 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"StreamMinUplinkKbps={cfg.StreamMinUplinkKbps}");
     Console.WriteLine($"StreamVp8LagFrames={cfg.StreamVp8LagFrames}");
     Console.WriteLine($"StreamDebugSendDelayMs={cfg.StreamDebugSendDelayMs}");
+    Console.WriteLine($"ScreenshotEnabled={cfg.ScreenshotEnabled}");
+    Console.WriteLine($"ScreenshotIntervalSec={cfg.ScreenshotIntervalSec}");
+    Console.WriteLine($"ScreenshotMaxWidth={cfg.ScreenshotMaxWidth}");
+    Console.WriteLine($"ScreenshotWebpQuality={cfg.ScreenshotWebpQuality}");
     Console.WriteLine($"WsEnabled={cfg.WsEnabled}");
     Console.WriteLine($"WsPingSec={cfg.WsPingSec}");
     Console.WriteLine($"WsReconnectBaseSec={cfg.WsReconnectBaseSec}");
@@ -202,6 +210,11 @@ if (OperatingSystem.IsWindows())
 
 EnvLoader.Load();
 
+// Live-stream VP8 (Windows): resolve vpxmd.dll from the install dir and preload
+// app-local VCRUNTIME140 before any encode path runs.
+if (OperatingSystem.IsWindows())
+    client.Services.Streaming.VpxNativeBootstrap.EnsureWindows();
+
 // Elevated-only hosts/USB/DLP cleanup after unelevated protected-uninstall wrote teardown.ok.
 // Spawned via UAC (runas) from WindowsTeardownCleanup.TryElevateCleanupViaUac.
 if (isTeardownCleanupElevated)
@@ -235,6 +248,74 @@ if (isTeardownCleanupElevated)
 if (args.Contains("--celebrate-update") && !args.Contains("--background"))
     return;
 
+// Dedicated clock/timezone warning UI (spawned by TimeDateWarningWorker).
+// Sibling mutex; no tracker host / SQLite collectors.
+if (args.Contains("--timedatewarning") && !args.Contains("--background"))
+{
+    client.Services.CliConsole.DetachForGui();
+    var warnMutex = new Mutex(true, client.Services.TimeDateWarning.TimeDateWarningState.MutexName, out var warnCreated);
+    if (!warnCreated)
+    {
+        try { warnMutex.Dispose(); } catch { /* ignore */ }
+        return;
+    }
+
+    try
+    {
+        EnvLoader.Load();
+        App.TimeDateWarningMode = true;
+        App.AllowShutdown = true;
+        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    }
+    finally
+    {
+        try { warnMutex.ReleaseMutex(); } catch { /* ignore */ }
+        try { warnMutex.Dispose(); } catch { /* ignore */ }
+    }
+    return;
+}
+
+// Windows face soft-locker (spawned after login / session restore).
+// Sibling mutex; no tracker host; WinForms UI (not Avalonia). Soft-lock ≠ Winlogon.
+if (args.Contains("--face-verify") && !args.Contains("--background"))
+{
+    client.Services.CliConsole.DetachForGui();
+    if (!OperatingSystem.IsWindows())
+        return;
+    var faceMutex = new Mutex(true, client.Services.FaceVerify.FacePaths.MutexName, out var faceCreated);
+    if (!faceCreated)
+    {
+        try { faceMutex.Dispose(); } catch { /* ignore */ }
+        return;
+    }
+
+    try
+    {
+        EnvLoader.Load();
+        client.Core.FaceVerifyYield.Set("soft_lock");
+        client.Services.FaceVerify.FaceVerifyAppKiller.StartIfEnabled();
+        try
+        {
+            System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
+                System.Diagnostics.ProcessPriorityClass.High;
+        }
+        catch { /* ignore */ }
+#if FACE_WINFORMS_LOCKER
+        client.Services.FaceVerify.WinForms.FaceVerifyLockerHost.Run();
+#else
+        // Non-Windows TFM build: face-verify unsupported.
+#endif
+    }
+    finally
+    {
+        client.Services.FaceVerify.FaceVerifyAppKiller.Stop();
+        client.Core.FaceVerifyYield.Clear();
+        try { faceMutex.ReleaseMutex(); } catch { /* ignore */ }
+        try { faceMutex.Dispose(); } catch { /* ignore */ }
+    }
+    return;
+}
+
 var isBackground = args.Contains("--background");
 var isMinimized = args.Contains("--minimized");
 var isGuiAgent = args.Contains("--gui");
@@ -244,7 +325,9 @@ var isGuiAgent = args.Contains("--gui");
 // background/minimized relaunches (e.g. auto-start firing twice, or systemd
 // Restart=always racing) must exit quietly so they never disturb the user.
 var isUserLaunch = !isBackground && !isMinimized && !isGuiAgent
-    && !args.Contains("--celebrate-update");
+    && !args.Contains("--celebrate-update")
+    && !args.Contains("--timedatewarning")
+    && !args.Contains("--face-verify");
 
 // L2: unsupervised `client --background` (autostart / menu / scripts) must hand
 // off to the user systemd unit BEFORE taking the mutex. Restart=always only
@@ -427,6 +510,24 @@ if (isProtectedUninstall && !coldCodeAlreadyApproved)
 
 var config = AppConfig.FromEnv();
 
+// Face-verify early launch (Windows): open local modal before Host.Build so reboot
+// cold-start can show the camera in ~2s when models+templates are already cached.
+if (OperatingSystem.IsWindows()
+    && isBackground
+    && !isRemoveAccount
+    && !isProtectedUninstall
+    && config.FaceVerifyEnabled)
+{
+    try
+    {
+        client.Services.FaceVerify.FaceVerifyLauncher.TryLaunchEarly(config, trigger: "boot");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[client] Early face-verify launch skipped: {ex.Message}");
+    }
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Logging.ClearProviders();
@@ -505,6 +606,11 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.Id
 builder.Services.AddSingleton<client.Services.LocalTimeSkewService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.LocalTimeSkewService>());
 
+// Clock/timezone health: startup + hourly check → spawn --timedatewarning when wrong.
+builder.Services.AddSingleton<client.Services.TimeDateWarning.TimeDateWarningWorker>();
+builder.Services.AddHostedService(sp =>
+    sp.GetRequiredService<client.Services.TimeDateWarning.TimeDateWarningWorker>());
+
 // ────────────────────────────────────────────────────────────────────────────
 // Time & Attendance (Phase 1, A.6): ScheduleCacheService mirrors the employee's
 // shift + holidays from GET /api/v1/schedules/me every 6h (BUG-6 fix). No-op
@@ -542,12 +648,22 @@ if (!isProtectedUninstall && !isRemoveAccount)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.LiveStreamClient>());
 }
 
-// HTTP Client
-builder.Services.AddSingleton<HttpClient>(sp =>
+// Offline-first screenshots: capture (local WebP) + sync (upload then delete).
+builder.Services.AddSingleton<client.Services.Screenshots.ScreenshotCaptureWorker>();
+builder.Services.AddSingleton<client.Services.Screenshots.ScreenshotSyncWorker>();
+if (!isProtectedUninstall && !isRemoveAccount)
 {
-    var client = new HttpClient();
-    client.Timeout = TimeSpan.FromSeconds(30);
-    return client;
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<client.Services.Screenshots.ScreenshotCaptureWorker>());
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<client.Services.Screenshots.ScreenshotSyncWorker>());
+}
+
+// HTTP Client — plain HTTP to the API (no custom TLS trust).
+builder.Services.AddSingleton<HttpClient>(_ =>
+{
+    var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+    return http;
 });
 
 // Installed App Detector (cross-platform)
@@ -664,6 +780,12 @@ if (config.FileJourneyEnabled)
 if (config.HardwareDevicesEnabled && !isProtectedUninstall && !isRemoveAccount)
 {
     builder.Services.AddHostedService<HardwareDeviceWatcherService>();
+}
+
+// Hardware & Port Control — full port/interface inventory scan (synced to server)
+if (config.PortScanEnabled && !isProtectedUninstall && !isRemoveAccount)
+{
+    builder.Services.AddHostedService<client.Services.PortDeviceCollector>();
 }
 
 // Main ViewModel + the per-page ViewModels it composes (pages 4–6).

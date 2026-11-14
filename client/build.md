@@ -1,5 +1,10 @@
 # Alpha AI Tracker — Build & Installers
 
+> **2026-11-10:** Windows live-stream VP8 — `publish/ensure-vpx-native.ps1` runs after
+> `dotnet build`/`publish` and from `build-installer.sh`, copying `vcruntime140.dll` (+ `_1`)
+> next to `vpxmd.dll`. Optional `ALPHA_BUNDLE_VC_REDIST=1` downloads `vc_redist.x64.exe` into
+> `publish/windows/redist/` for a quiet Inno install. Client **1.0.8+**.
+
 ## Prerequisites
 
 ### .NET 10 SDK (required for publishing)

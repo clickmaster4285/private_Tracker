@@ -4,7 +4,7 @@ Annotated node tree for the whole monorepo. Every directory that holds source is
 
 **How to read it:** ⭐ marks an entry point or a single-source-of-truth file — start there. 🔒 marks a file with a rule attached; changing it without reading the rule breaks something in the field. Generated / vendored trees are marked and should never be edited by hand.
 
-*Last audited: 2026-10-30 (roaming Start/Stop UX through client 2.3.12 — `newplan.md`). Companion docs: [AGENTS.md](./AGENTS.md), [WORKFLOW.md](./WORKFLOW.md), [TESTING.md](./TESTING.md), [plan.md](./plan.md), [newplan.md](./newplan.md) (Fixed/Roaming), [doc/plan.md](./doc/plan.md), [client/ARCHITECTURE.md](./client/ARCHITECTURE.md), [client/UI_ARCHITECTURE.md](./client/UI_ARCHITECTURE.md), [server/ARCHITECTURE.md](./server/ARCHITECTURE.md), [web/ARCHITECTURE.md](./web/ARCHITECTURE.md).*
+*Last audited: 2026-11-13 (File Download / File Upload DLP rules). Previously 2026-11-11 (24/7 antivirus guard); before that 2026-10-30 (roaming Start/Stop UX through client 2.3.12 — `newplan.md`). Companion docs: [AGENTS.md](./AGENTS.md), [WORKFLOW.md](./WORKFLOW.md), [TESTING.md](./TESTING.md), [plan.md](./plan.md), [newplan.md](./newplan.md) (Fixed/Roaming), [doc/plan.md](./doc/plan.md), [client/ARCHITECTURE.md](./client/ARCHITECTURE.md), [client/UI_ARCHITECTURE.md](./client/UI_ARCHITECTURE.md), [server/ARCHITECTURE.md](./server/ARCHITECTURE.md), [web/ARCHITECTURE.md](./web/ARCHITECTURE.md).*
 
 ---
 
@@ -18,7 +18,8 @@ Alpha-AI-TrackerV2.0/
 ├── WORKFLOW.md               dev loop, rebrand, add-a-page, release pipeline, DLP installer knobs
 ├── plan.md                   Security & DLP phased roadmap (P0+P1 shipped; P2 Web Blocker largely done)
 ├── newplan.md                Fixed/Roaming + Start/Stop + hourly control (P0 spine shipped source-build)
-├── doc/plan.md               feature plans (public releases / private GitHub download bridge)
+├── doc/plan.md               feature plans (historical; releases now use local setup/)
+├── newplan.md                Scale plan (~1000 agents / one Postgres / Asynq)
 ├── client/                   .NET 10 / Avalonia desktop agent + Windows DlpService
 ├── server/                   Go API + Postgres + Redis (the collector of record)
 └── web/                      Next.js dashboard (the human-facing console)
@@ -82,7 +83,11 @@ client/
 │   ├── SyncService.cs               dedicated sync drain (byte-bounded, gzip, backoff)
 │   ├── LiveStreamClient.cs          WebRTC VP8 publisher → /live-stream/push (ABR + connected-gated send)
 │   ├── NetProbeService.cs           Uplink probe → POST /live-stream/uplink-probe; bitrate ladder
-│   ├── ScreenCaptureService.cs      Windows multi-path GDI BitBlt → BGRA (DropOldest; Win11 hardened)
+│   ├── ScreenCaptureService.cs      Windows multi-path GDI BitBlt → BGRA (+ CaptureStill for screenshots)
+│   └── Screenshots/                 Offline capture + sync workers (WebP pending/ → DeviceAuth upload)
+│   ├── Face/                        (Phase 5+ biometric sync/engine — directory reserved)
+│   ├── face_worker/README.md        → relocated to server/face_worker (not the employee agent)
+│   ├── TimeDateWarning/             Hourly clock/TZ health → spawn `--timedatewarning` Avalonia window
 │   ├── ClientIdentityHeaders.cs     X-Client-Version / X-Client-Platform on DeviceAuth HTTP+WS
 │   ├── WsClient.cs                  presence WS → /api/v1/ws (Online/Offline; not media)
 │   ├── Streaming/
@@ -105,9 +110,14 @@ client/
 │   ├── Program.cs · AlphaAITracker.Service.csproj · install-service.ps1 · uninstall-service.ps1
 │   ├── PolicyPullWorker · EnforceWorker · DnsBlockPinWorker · UsbStorEnforcer · RemovableDriveMonitor
 │   ├── LockdownNetworkEnforcer.cs   P1 default-deny 80/443 (AlphaAI-DLP-LOCK-*)
+│   ├── AppAllowEnforcer.cs · AppProcessGuard.cs   P3 AppLocker Exe+Appx + kill sweeper
+│   ├── DeleteBlockAclEnforcer.cs    NTFS Deny Delete on Fixed/Removable roots (ALPHA_DLP_DELETE_BLOCK)
+│   ├── FileTransferEnforcer.cs      DLP file_download/file_upload → Chromium HKLM policy (ALPHA_DLP_FILE_TRANSFER_BLOCK)
+│   ├── DefenderGuard.cs · AntivirusGuardWorker.cs   24/7 AV guard: Defender always-on, tamper revert,
+│   │                            detections → DLP alerts, status → /antivirus/status/sync (ALPHA_AV_*)
 │   ├── DomainBlockEnforcer · TcpConnectionKiller · DnsCacheReader
 │   ├── AlertSyncWorker · PolicyStore · NamedPipeHost · ServiceAclHardener · TrackerWatchdogWorker
-│   └── DeviceCredentialStore · TeardownGate · UserSessionProcessLauncher · DlpConfig · WebBlockState
+│   └── DeviceCredentialStore · TeardownGate · UserSessionProcessLauncher · DlpConfig · WebBlockState · EnvBootstrap
 │
 ├── Platform/                        one ProcessCollector.cs per OS — the only place OS branching lives
 │   ├── Linux/  Windows/  MacOS/
@@ -130,6 +140,7 @@ client/
 │
 ├── Views/
 │   ├── MainWindow.axaml(.cs)     ⭐ ROUTER: 4 exclusive states + 246px nav rail
+│   ├── TimeDateWarningWindow.axaml(.cs)  `--timedatewarning` sibling process (clock/TZ)
 │   └── Pages/                       one UserControl per screen, each with x:DataType
 │       ├── SplashPage           (1)  ├── DashboardPage      (4)
 │       ├── LoginPage            (2)  ├── SystemSpecsPage    (5)
@@ -167,7 +178,11 @@ client/
 
 ```
 server/
-├── cmd/server/main.go        ⭐ entry point: config, DB, Redis, router, listen
+├── cmd/server/main.go        ⭐ entry point: config, DB, Redis, router, listen (+ optional Asynq embed)
+├── cmd/worker/main.go           Asynq worker+scheduler (when ASYNQ_EMBED=false)
+├── internal/admit/              rate limit + sync concurrency gate (Retry-After)
+├── internal/cache/              Redis JSON cache + singleflight
+├── internal/queue/              Asynq task types + worker mux
 ├── go.mod / go.sum              module github.com/alpha-ai-tracker/server
 ├── Makefile                     build / run / migrate targets
 │
@@ -186,7 +201,7 @@ server/
 │   │   ├── department_handler.go
 │   │   ├── monitoring_handler.go    types/categories/apps/websites classification
 │   │   ├── rbac_handler.go          GET /modules + roles CRUD
-│   │   ├── release_handler.go       public GET /releases + GET|HEAD /downloads/:assetId (private GitHub bridge)
+│   │   ├── release_handler.go       public GET /releases + GET|HEAD /downloads/:assetId (local setup/)
 │   │   └── new_schema_handler.go    the client-ingest surface (sessions, apps, packages, hardware) +
 │   │                                 ListAppSessions + ListAppSessionsUsage (per-app aggregate for /employee-journey/apps) +
 │   │                                 ListAppSessionsForApp (per-app paginated list, fired on chevron expand)
@@ -194,7 +209,7 @@ server/
 │   ├── services/                business rules — the only layer allowed to orchestrate repos
 │   │   ├── auth_service.go · user_service.go · employee_service.go
 │   │   ├── department_service.go · new_schema_service.go · monitoring_service.go · rbac_service.go
-│   │   ├── github_release_service.go  private-repo Releases API + streaming download bridge (+ tests)
+│   │   ├── local_release_service.go   scans RELEASES_DIR (setup/) for .exe/.deb/.dmg (+ tests)
 │   │   └── redis_interface.go       seam that keeps services testable without a live Redis
 │   │
 │   ├── repository/              SQL only — one file per aggregate
@@ -207,6 +222,8 @@ server/
 │   │                            status_tables · rbac · refresh_token · dlp.go
 │   ├── dto/                     wire shapes: user_dto · employee_dto · new_schema_dto · rbac_dto · dlp_dto · releases_dto
 │   ├── handlers/ · services/    … + dlp_handler.go / dlp_service.go (+ dlp_publish_smoke_test.go)
+│   │                            + antivirus_handler.go / antivirus_service.go / repository/antivirus_repo.go
+│   │                            (migration 068 antivirus_status; dto/antivirus_dto.go)
 │   ├── jobs/                    staleness_sweep.go (stale catalog links)
 │   │                            · retention_sweep.go (hourly data purge, RETENTION_DAYS)
 │   │                            · session_lifecycle_sweep.go (1-min ACTIVE→STALE→CLOSED sweep)
@@ -214,10 +231,17 @@ server/
 │   ├── scale/instance.go        INSTANCE_ID resolution
 │   └── stream/                  live preview WebRTC SFU — hub.go + sfu.go (preview only; no DB frames)
 │
-├── migrations/               ⭐ sequential SQL files (001…052+). Append-only: never edit applied migrations.
-│                                051_dlp_security.sql · 052_dlp_alert_history.sql
+├── migrations/               ⭐ sequential SQL files (001…068+). Append-only: never edit applied migrations.
+│                                … · 065_screenshots.sql · 066/067_port_control · 068_face_enrollment.sql
+├── media/faces/              Protected enrollment originals (FACE_MEDIA_DIR)
+├── face_worker/              Server-side Python face worker (OpenCV face-check; ONNX later)
+├── cmd/faceworker/README.md  Deploy pointer → server/face_worker
 └── bin/                      ⚠️ build output
 ```
+
+Plan docs: `doc/face-attendance-plan.md`, `doc/face-preprocess-v1.md`.
+Web enroll UI: `web/src/components/employees/EnrollFaceDialog.tsx`, `web/src/lib/face-enrollment.ts`,
+`web/src/app/(app)/employees/face/page.tsx` (gallery).
 
 **The `new_schema_*` triple** (`handler` / `service` / `repo` / `dto`) is the client-facing ingest path — that is where a client-side contract change lands on the server, not in the employee/user files. Live-stream signaling lands in `internal/stream/` + the stream handler from `router.go`.
 
@@ -244,7 +268,7 @@ web/
     │       │                        /roles is a real-API CRUD page since 2026-08-25)
     │       ├── employee-journey    per-employee journey behind the shared EmployeePage shell +
     │       │                       EmployeeSelector picker (?employeeId= deep-link): timeline ·
-    │       │                       apps · web are real-API; screenshots · location placeholders
+    │       │                       apps · web · screenshots are real-API; location placeholder
     │       ├── device-specs        per-employee machine picture over GET /employees/:id/detail:
     │       │                       hardware · software · peripherals · permissions
     │       ├── configuration       apps · websites · categories (monitoring classification, 2026-08-22)
@@ -252,6 +276,7 @@ web/
     │       ├── charts (activity · productivity) · reports · ai-summary
     │       ├── attendance · shifts · timesheets · hours-insights
     │       ├── dlp-alerts · dlp-rules · web-blocker (domains/paths/schedule) · audit-log · emails
+    │       ├── antivirus (24/7 AV guard fleet health; threats → /dlp-alerts?type=malware)
     │       ├── goals · kpis · projects · productivity-scoring
     │       ├── screenshots · live-stream (WebRTC SFU; FPS; Open theater → /live-stream/theater) · gps-location
     │       └── settings (billing · compliance · notifications · security ·
@@ -316,4 +341,4 @@ web/
 | New API endpoint | `server/internal/router/router.go` + `handlers/` + `services/` + `repository/` (+ `dto/`, + a new numbered migration if the schema moves) |
 | New dashboard page | `web/src/app/(app)/<route>/` + `lib/api.ts` + a sidebar entry in `components/layout/AppSidebar.tsx` + a module in `lib/permissions.tsx`; per-employee pages reuse the `EmployeePage` shell + `EmployeeSelector` |
 | Public (no-login) page | `web/src/app/(public)/<route>/` — **not** under `(app)`; no sidebar RBAC module |
-| Public installer download | `server` `GITHUB_*` env + `github_release_service` / `release_handler` + web `lib/releases.ts` — never put the token in `NEXT_PUBLIC_*` |
+| Public installer download | `server` `RELEASES_DIR` (default `setup/`) + `local_release_service` / `release_handler` + web `lib/releases.ts` |

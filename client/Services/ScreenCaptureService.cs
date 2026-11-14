@@ -88,6 +88,84 @@ public sealed class ScreenCaptureService : BackgroundService
 
     public ChannelReader<ScreenFrame> Frames => _frames.Reader;
 
+    /// <summary>
+    /// One-shot still for offline screenshots — independent of live-stream
+    /// <see cref="_streamActive"/>. Uses the same GDI / Linux capture path with a
+    /// temporary max-width override. Returns null when capture is unavailable.
+    /// </summary>
+    public ScreenFrame? CaptureStill(int maxWidth)
+    {
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
+            return null;
+
+        var prevOverride = _maxWidthOverride;
+        try
+        {
+            var capped = Math.Clamp(maxWidth <= 0 ? _config.StreamMaxWidth : maxWidth, 320, 1920);
+            _maxWidthOverride = capped;
+
+            if (OperatingSystem.IsWindows())
+            {
+                lock (_monitorGate)
+                {
+                    RefreshMonitorsUnlocked();
+                    if (_monitors.Count == 0) return null;
+                    // Prefer primary monitor for periodic screenshots.
+                    var primary = _monitors.FindIndex(m => m.IsPrimary);
+                    if (primary >= 0)
+                    {
+                        _selectedIndex = primary;
+                        ApplySelectedBoundsUnlocked();
+                    }
+                }
+                return CaptureFrame();
+            }
+
+            // Linux: reuse a short-lived portal capturer when live stream is idle.
+            _linuxCapturer ??= new LinuxScreenCapturer(_config, _logger);
+            lock (_monitorGate)
+            {
+                RefreshMonitorsUnlocked();
+                var primary = _monitors.FindIndex(m => m.IsPrimary);
+                if (primary >= 0) _selectedIndex = primary;
+            }
+            _linuxCapturer.SetSelectedMonitor(_selectedIndex);
+            _linuxCapturer.SetMaxWidth(EffectiveMaxWidth);
+            var startedHere = false;
+            if (!_streamActive)
+            {
+                _linuxCapturer.Start();
+                startedHere = true;
+            }
+            try
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(8);
+                while (DateTime.UtcNow < deadline)
+                {
+                    var frame = CaptureFrameLinux();
+                    if (frame is not null) return frame;
+                    Thread.Sleep(50);
+                }
+                return null;
+            }
+            finally
+            {
+                if (startedHere && !_streamActive)
+                    _linuxCapturer.Stop();
+            }
+        }
+        catch (Exception ex)
+        {
+            _lastCaptureError = ex.Message;
+            _logger.LogDebug(ex, "CaptureStill failed");
+            return null;
+        }
+        finally
+        {
+            _maxWidthOverride = prevOverride;
+        }
+    }
+
     public IReadOnlyList<StreamMonitorInfo> GetMonitors()
     {
         lock (_monitorGate)
@@ -245,11 +323,19 @@ public sealed class ScreenCaptureService : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            if (!_streamActive)
+            if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield || !_streamActive)
             {
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
+                    _streamActive = false;
                 adaptiveFps = fps;
                 interval = TimeSpan.FromMilliseconds(1000.0 / adaptiveFps);
-                try { Task.Delay(200, stoppingToken).GetAwaiter().GetResult(); }
+                try
+                {
+                    Task.Delay(
+                            client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield ? 1000 : 200,
+                            stoppingToken)
+                        .GetAwaiter().GetResult();
+                }
                 catch (OperationCanceledException) { break; }
                 continue;
             }

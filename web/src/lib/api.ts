@@ -129,6 +129,47 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
   return JSON.parse(text) as T;
 }
 
+/** Multipart upload (do not set Content-Type — browser adds boundary). */
+async function requestFormData<T>(endpoint: string, form: FormData, options: { _retried?: boolean } = {}): Promise<T> {
+  const url = `${API_BASE}${endpoint}`;
+  let response = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  });
+
+  if (response.status === 401 && !options._retried) {
+    if (!refreshInFlight) {
+      refreshInFlight = performRefresh().finally(() => {
+        refreshInFlight = null;
+      });
+    }
+    const refreshed = await refreshInFlight;
+    if (refreshed) {
+      return requestFormData<T>(endpoint, form, { _retried: true });
+    }
+    forceLoginRedirect();
+  }
+
+  if (!response.ok) {
+    let errorData: { message?: string; detail?: string } = {};
+    try {
+      errorData = await response.json();
+    } catch {
+      // ignore
+    }
+    throw new ApiError(
+      errorData.message || `Request failed with status ${response.status}`,
+      response.status,
+      errorData.detail,
+    );
+  }
+
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
+}
+
 // ──────────────────────────
 // Auth API
 // ──────────────────────────
@@ -279,6 +320,8 @@ export interface Employee {
   /** True when a row in the users table exists for this employee's employee_id.
    *  Projected server-side via an indexed EXISTS() so it costs O(1) per row. */
   hasUserLogin: boolean;
+  /** True when an active face profile exists (enrollment complete). */
+  faceEnrolled?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -396,7 +439,96 @@ export const employeesApi = {
 
   // All non-deleted employees as flat rows for the Excel download.
   export: () => request<EmployeeExportRow[]>('/employees/export'),
+
+  // Face enrollment (original images → server job; embeddings via FaceWorker).
+  createFaceEnrollment: (id: string, form: FormData) =>
+    requestFormData<FaceEnrollmentCreateResponse>('/employees/' + id + '/face-enrollment', form),
+
+  retryFaceEnrollment: (id: string, jobId: string, form: FormData) =>
+    requestFormData<FaceEnrollmentJobResponse>(
+      '/employees/' + id + '/face-enrollment/' + jobId + '/retry',
+      form,
+    ),
+
+  getFaceEnrollmentJob: (id: string, jobId: string) =>
+    request<FaceEnrollmentJobResponse>('/employees/' + id + '/face-enrollment/' + jobId),
+
+  getFaceProfileSamples: (id: string) =>
+    request<FaceProfileSamplesResponse>('/employees/' + id + '/face-profile/samples'),
+
+  getFaceProfile: (id: string) =>
+    request<FaceProfile>('/employees/' + id + '/face-profile'),
+
+  revokeFaceProfile: (id: string) =>
+    request<{ revoked: boolean }>('/employees/' + id + '/face-profile', { method: 'DELETE' }),
+
+  /** Same-origin image path for an enrollment sample (cookies via rewrite). */
+  faceSampleImagePath: (employeeId: string, sampleId: string) =>
+    '/api/v1/employees/' + employeeId + '/face-enrollment/samples/' + sampleId + '/image',
 };
+
+export interface FaceEnrollmentJob {
+  id: string;
+  employeeId: string;
+  profileId?: string;
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'needs_more_samples' | string;
+  attemptCount: number;
+  errorCode?: string;
+  errorMessage?: string;
+  sampleCount?: number;
+  processedSamples?: number;
+  rejectedSamples?: number;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+export interface FaceEnrollmentSample {
+  id: string;
+  jobId: string;
+  employeeId?: string;
+  poseId: string;
+  contentType: string;
+  byteSize: number;
+  qualityScore: number;
+  clientSampleId?: string;
+  processStatus?: 'uploaded' | 'processing' | 'validated' | 'embedded' | 'rejected' | string;
+  rejectReason?: string;
+  faceCount?: number;
+  imageUrl?: string;
+  createdAt?: string;
+}
+
+export interface FaceProfile {
+  id: string;
+  employeeId: string;
+  status: string;
+  profileVersion: number;
+  enrollmentVersion: number;
+  modelId: string;
+  modelVersion: string;
+  preprocessVersion: string;
+  embeddingDims: number;
+  activatedAt?: string;
+  revokedAt?: string;
+  lastError?: string;
+  embeddingCount?: number;
+}
+
+export interface FaceEnrollmentCreateResponse {
+  job: FaceEnrollmentJob;
+  profile: FaceProfile;
+  samples: FaceEnrollmentSample[];
+}
+
+export interface FaceEnrollmentJobResponse {
+  job: FaceEnrollmentJob;
+  samples: FaceEnrollmentSample[];
+}
+
+export interface FaceProfileSamplesResponse {
+  job?: FaceEnrollmentJob;
+  samples: FaceEnrollmentSample[];
+}
 
 // ──────────────────────────
 // Shifts API (relational CRUD)
@@ -1427,6 +1559,45 @@ export const liveStreamApi = {
 };
 
 // ──────────────────────────
+// Screenshots (offline-first WebP; lazy image URLs)
+// ──────────────────────────
+
+export interface ScreenshotRow {
+  id: string;
+  employeeId: string;
+  employeeName?: string;
+  machineId: string;
+  capturedAt: string;
+  byteSize: number;
+  width: number;
+  height: number;
+  contentType: string;
+  /** Relative API path — load with credentials / same-origin rewrite. */
+  imageUrl: string;
+}
+
+export const screenshotsApi = {
+  list: (params?: {
+    employeeId?: string;
+    /** YYYY-MM-DD or RFC3339 — server expands date-only to day bounds. */
+    from?: string;
+    to?: string;
+    /** HH:mm clock filter (server-side, optional). */
+    timeFrom?: string;
+    timeTo?: string;
+    /** IANA zone for timeFrom/timeTo (default UTC on server). */
+    timeZone?: string;
+    cursor?: string;
+    limit?: number;
+  }) =>
+    request<{ data: ScreenshotRow[]; nextCursor: string; hasMore: boolean }>('/screenshots', {
+      params: params as Record<string, string | number | boolean | undefined>,
+    }),
+  /** Absolute path for <img src> through the Next rewrite (cookies included). */
+  imageSrc: (id: string) => `${API_BASE}/screenshots/${encodeURIComponent(id)}/image`,
+};
+
+// ──────────────────────────
 // Dashboard summary (home)
 // ──────────────────────────
 
@@ -1627,7 +1798,9 @@ export type DlpTrigger =
   | 'software_uninstall'
   | 'cloud_sync_folder'
   | 'file_transfer'
-  | 'email';
+  | 'email'
+  | 'file_download'
+  | 'file_upload';
 
 export type DlpAction = 'alert' | 'block' | 'alert_block';
 export type DlpSeverity = 'critical' | 'high' | 'medium' | 'low';
@@ -2030,6 +2203,63 @@ export const dlpApi = {
   },
 };
 
+// ── Hardware & Port Control ──────────────────────────────────────────────────
+
+export interface MachinePort {
+  id: number;
+  machineId: string;
+  instanceId: string;
+  category: number; // 1=external 2=internal 3=wireless/virtual
+  pnpClass: string;
+  classGuid: string;
+  busType: string;
+  friendlyName: string;
+  manufacturer: string;
+  present: boolean;
+  status: string;
+  blockable: boolean;
+  lastSeenAt: string;
+}
+
+export type DeviceControlScope = 'global' | 'department' | 'employee' | 'machine';
+
+export interface DeviceControlRule {
+  id: number;
+  targetKind: 'class' | 'instance';
+  targetValue: string;
+  label: string;
+  pnpClass: string;
+  action: 'block' | 'allow' | 'alert';
+  scope: DeviceControlScope;
+  scopeValue: string;
+  enabled: boolean;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const portControlApi = {
+  listPorts: (employeeId: string, machineId?: string) =>
+    request<{ ports: MachinePort[] }>('/hardware-ports', {
+      params: { employeeId, machineId },
+    }),
+  listRules: () => request<{ rules: DeviceControlRule[] }>('/device-control/rules'),
+  createRule: (data: {
+    targetKind: 'class' | 'instance';
+    targetValue: string;
+    label?: string;
+    pnpClass?: string;
+    action?: 'block' | 'allow' | 'alert';
+    scope?: DeviceControlScope;
+    scopeValue?: string;
+    note?: string;
+  }) => request<DeviceControlRule>('/device-control/rules', { method: 'POST', body: data }),
+  updateRule: (id: number, data: { action?: string; enabled?: boolean; note?: string }) =>
+    request<DeviceControlRule>(`/device-control/rules/${id}`, { method: 'PATCH', body: data }),
+  removeRule: (id: number) =>
+    request<void>(`/device-control/rules/${id}`, { method: 'DELETE' }),
+};
+
 export const shadowItApi = {
   list: (params?: {
     q?: string; authStatus?: string; page?: number; perPage?: number;
@@ -2043,4 +2273,195 @@ export const shadowItApi = {
     request<ShadowItApp>(`/shadow-it/apps/${id}`, { method: 'PATCH', body: data }),
 };
 
+export interface FaceVerifyEvent {
+  id: string;
+  clientEventId: string;
+  employeeId: string;
+  employeeName?: string;
+  machineId: string;
+  mode: string;
+  trigger: string;
+  poseId?: string;
+  result: string;
+  score?: number | null;
+  threshold?: number | null;
+  detail?: string;
+  clientCreatedAt: string;
+  syncedAt: string;
+}
+
+export interface FaceVerifyEventListResponse {
+  events: FaceVerifyEvent[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export const faceVerifyApi = {
+  list: (params?: {
+    q?: string;
+    employeeId?: string;
+    result?: string;
+    mode?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    page?: number;
+    perPage?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.q) sp.set('q', params.q);
+    if (params?.employeeId) sp.set('employeeId', params.employeeId);
+    if (params?.result) sp.set('result', params.result);
+    if (params?.mode) sp.set('mode', params.mode);
+    if (params?.dateFrom) sp.set('dateFrom', params.dateFrom);
+    if (params?.dateTo) sp.set('dateTo', params.dateTo);
+    if (params?.page) sp.set('page', String(params.page));
+    if (params?.perPage) sp.set('perPage', String(params.perPage));
+    const qs = sp.toString();
+    return request<FaceVerifyEventListResponse>('/face-verify/events' + (qs ? `?${qs}` : ''));
+  },
+  get: (id: string) => request<FaceVerifyEvent>(`/face-verify/events/${id}`),
+};
+
+// ─── Antivirus (24/7 guard fleet view) ────────────────────────────────────────
+
+export type AntivirusHealth =
+  | 'protected'
+  | 'outdated'
+  | 'realtime_off'
+  | 'disabled'
+  | 'third_party'
+  | 'unavailable'
+  | 'unknown';
+
+export interface AntivirusStatusRow {
+  id: number;
+  employeeId: string;
+  employeeName: string;
+  machineId: string;
+  hostname: string;
+  health: AntivirusHealth;
+  productName: string;
+  runningMode: string;
+  realTimeEnabled: boolean;
+  behaviorMonitorEnabled: boolean;
+  onAccessEnabled: boolean;
+  ioavEnabled: boolean;
+  tamperProtected: boolean;
+  cloudEnabled: boolean;
+  puaEnabled: boolean;
+  networkProtectionEnabled: boolean;
+  signatureVersion: string;
+  signatureAgeDays: number;
+  signatureUpdatedAt: string | null;
+  quickScanAt: string | null;
+  fullScanAt: string | null;
+  engineVersion: string;
+  thirdPartyProducts: string;
+  exclusionCount: number;
+  /** Advanced hardening state (Phase 2). */
+  asrConfigured: number;
+  asrBlock: number;
+  controlledFolderAccess: 'off' | 'audit' | 'block';
+  networkProtectionMode: 'off' | 'audit' | 'block';
+  smartScreenEnabled: boolean;
+  memoryIntegrityEnabled: boolean;
+  credentialGuardEnabled: boolean;
+  emailScanEnabled: boolean;
+  exploitProtectionEnabled: boolean;
+  quarantinedThreatCount: number;
+  hardeningEnabled: boolean;
+  guardEnabled: boolean;
+  lastEnforceAt: string | null;
+  lastTamperAt: string | null;
+  tamperCount24h: number;
+  agentVersion: string;
+  error: string;
+  reportedAt: string;
+  syncedAt: string;
+  /** Server-projected: no report for 30 min (agent offline / PC off). */
+  isStale: boolean;
+  /** Server-projected: malware alerts on this machine in the last 24 h. */
+  threats24h: number;
+}
+
+export interface AntivirusHealthCounts {
+  total: number;
+  protected: number;
+  outdated: number;
+  realtimeOff: number;
+  disabled: number;
+  thirdParty: number;
+  unavailable: number;
+  stale: number;
+  threats24h: number;
+  tampered24h: number;
+}
+
+export interface AntivirusStatusListResponse {
+  data: AntivirusStatusRow[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+  counts: AntivirusHealthCounts;
+}
+
+export type AntivirusCommandType =
+  | 'scan_quick'
+  | 'scan_full'
+  | 'scan_custom'
+  | 'scan_offline'
+  | 'update_signatures'
+  | 'remove_threats'
+  | 'remove_threat'
+  | 'restore_threat';
+
+export type AntivirusCommandStatus = 'pending' | 'running' | 'done' | 'failed' | 'expired';
+
+export interface AntivirusCommandRow {
+  id: number;
+  employeeId: string;
+  employeeName: string;
+  machineId: string;
+  hostname: string;
+  type: AntivirusCommandType;
+  arg: string;
+  status: AntivirusCommandStatus;
+  result: string;
+  requestedBy: string | null;
+  requestedByName: string;
+  createdAt: string;
+  dispatchedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface AntivirusCommandListResponse {
+  data: AntivirusCommandRow[];
+  total: number;
+  page: number;
+  perPage: number;
+  totalPages: number;
+}
+
+export const antivirusApi = {
+  listStatus: (params?: { search?: string; health?: string; page?: number; perPage?: number }) =>
+    request<AntivirusStatusListResponse>('/antivirus/status', {
+      params: params as Record<string, string | number | undefined>,
+    }),
+  queueCommand: (body: { employeeId: string; machineId: string; type: AntivirusCommandType; arg?: string }) =>
+    request<{ id: number; queued: boolean; reused?: boolean }>('/antivirus/commands', { method: 'POST', body }),
+  listCommands: (params: {
+    employeeId: string;
+    machineId?: string;
+    status?: AntivirusCommandStatus | '';
+    type?: AntivirusCommandType | '';
+    search?: string;
+    page?: number;
+    perPage?: number;
+  }) =>
+    request<AntivirusCommandListResponse>('/antivirus/commands', {
+      params: params as Record<string, string | number | undefined>,
+    }),
+};
 export { ApiError };

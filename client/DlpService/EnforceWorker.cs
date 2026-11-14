@@ -25,6 +25,14 @@ public sealed class EnforceWorker : BackgroundService
     private DateTimeOffset _lastLockdownWarn = DateTimeOffset.MinValue;
     private string? _lastAppLockdownState;
     private DateTimeOffset _lastAppLockdownWarn = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextAppSweepDue = DateTimeOffset.MinValue;
+    private string _lastAppSweepAllowFp = "\0";
+    private string? _lastDeleteBlockState;
+    private string? _lastFileTransferState;
+    private DateTimeOffset _lastFileTransferTamperAlert = DateTimeOffset.MinValue;
+    private static readonly TimeSpan FileTransferTamperAlertEvery = TimeSpan.FromMinutes(10);
+    private string _lastPortFingerprint = "\0";
+    private bool _portApplyStable;
 
     public EnforceWorker(
         DlpConfig cfg,
@@ -66,18 +74,51 @@ public sealed class EnforceWorker : BackgroundService
             {
                 _logger.LogWarning(ex, "AppLocker clear on park failed");
             }
+            try
+            {
+                var delClear = await Task.Run(DeleteBlockAclEnforcer.Clear, stoppingToken);
+                if (delClear.Changed)
+                    _logger.LogWarning("Parked: cleared delete-block ACLs ({Detail})", delClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Delete-block ACL clear on park failed");
+            }
+            try
+            {
+                var ftClear = await Task.Run(FileTransferEnforcer.Clear, stoppingToken);
+                if (ftClear.Changed)
+                    _logger.LogWarning("Parked: cleared file-transfer browser policies ({Detail})", ftClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "File-transfer clear on park failed");
+            }
+            try
+            {
+                var portClear = await Task.Run(PortDeviceEnforcer.Clear, stoppingToken);
+                if (portClear.Changed)
+                    _logger.LogWarning("Parked: cleared port control ({Detail})", portClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Port control clear on park failed");
+            }
             return;
         }
 
         await _store.InitializeAsync(stoppingToken);
         _logger.LogInformation(
-            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App})",
-            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock);
+            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App}, deleteBlock={Del}, portBlock={Port}, fileTransferBlock={Ft})",
+            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock, _cfg.DeleteBlock, _cfg.PortBlock,
+            _cfg.FileTransferBlock);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                // Pick up service.env changes written by PolicyPullWorker after a new policy.
+                _cfg.RefreshLocalSwitches();
                 await ApplyAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -91,7 +132,9 @@ public sealed class EnforceWorker : BackgroundService
 
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+                // Idle enforce cadence (independent of policy pull). Policy publish wakes immediately.
+                var tickSec = Math.Clamp(_cfg.EnforceTickSec, 5, 120);
+                await DlpSignals.WaitEnforceAsync(TimeSpan.FromSeconds(tickSec), stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -99,6 +142,12 @@ public sealed class EnforceWorker : BackgroundService
             }
         }
     }
+
+    /// <summary>
+    /// Immediate full enforce pass (USB / network lockdown / AppLocker / web).
+    /// Used after tracker login before the one-shot reboot.
+    /// </summary>
+    public Task ForceApplyOnceAsync(CancellationToken ct) => ApplyAsync(ct);
 
     private async Task ApplyAsync(CancellationToken ct)
     {
@@ -136,7 +185,227 @@ public sealed class EnforceWorker : BackgroundService
         // Lockdown (allow-world) first; explicit web-block domains below still apply inside it.
         await ApplyLockdownAsync(bundle, ct);
         await ApplyAppLockdownAsync(bundle, ct);
+        await ApplyDeleteBlockAsync(bundle, ct);
+        await ApplyFileTransferAsync(bundle, version, ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
+        await ApplyPortControlAsync(bundle, version, ct);
+    }
+
+    /// <summary>
+    /// Hardware/port control: disable blocked device classes (Device Installation
+    /// Restrictions) + instances (Disable-PnpDevice). Independent of network lockdown;
+    /// gated by the local ALPHA_DLP_PORT_BLOCK switch. Clears when off / empty.
+    /// Fingerprint advances only when the live OS state matches the desired set
+    /// (missing devices stay Pending and are retried every tick).
+    /// </summary>
+    private async Task ApplyPortControlAsync(PolicyBundle bundle, long version, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var instances = _cfg.PortBlock ? PolicyBundleParser.BlockedInstances(bundle) : Array.Empty<string>();
+        var classes = _cfg.PortBlock ? PolicyBundleParser.BlockedClasses(bundle) : Array.Empty<string>();
+        var allows = _cfg.PortBlock ? PolicyBundleParser.AllowedInstances(bundle) : Array.Empty<string>();
+        var fp = (_cfg.PortBlock ? "on" : "off")
+                 + "|i=" + string.Join(",", instances)
+                 + "|c=" + string.Join(",", classes)
+                 + "|a=" + string.Join(",", allows);
+
+        if (!_cfg.PortBlock || (instances.Count == 0 && classes.Count == 0))
+        {
+            // Only clear once per empty desired set (fingerprint short-circuit for clear path).
+            if (fp == _lastPortFingerprint)
+                return;
+            var clear = await Task.Run(PortDeviceEnforcer.Clear, ct);
+            if (clear.Changed || clear.Detail.StartsWith("error", StringComparison.Ordinal))
+            {
+                await _store.AuditAsync("port_control_clear",
+                    $"switch={(_cfg.PortBlock ? "on" : "off")} detail={clear.Detail}", ct);
+                _logger.LogInformation("Port control CLEARED (detail={Detail})", clear.Detail);
+            }
+            if (clear.Applied)
+            {
+                _lastPortFingerprint = fp;
+                _portApplyStable = true;
+            }
+            return;
+        }
+
+        // Skip full Apply when policy fingerprint is unchanged, last Apply was stable, and
+        // PortGuard has not reported a reblock. Guard still catches re-enables between ticks.
+        var needsReconcile = PortDeviceEnforcer.ConsumeNeedsFullReconcile();
+        if (fp == _lastPortFingerprint && _portApplyStable && !needsReconcile)
+            return;
+
+        var result = await Task.Run(() => PortDeviceEnforcer.Apply(instances, classes, allows), ct);
+        await _store.AuditAsync("port_control_apply",
+            $"instances={instances.Count} classes={classes.Count} allows={allows.Count} " +
+            $"applied={result.Applied} pending={result.Pending} changed={result.Changed} detail={result.Detail}", ct);
+
+        if (result.Detail == "access_denied_need_admin")
+        {
+            _logger.LogWarning("Port control needs Administrator / LocalSystem — not applied");
+            _lastPortFingerprint = "\0"; // force retry awareness
+            _portApplyStable = false;
+            return;
+        }
+        if (!result.Applied)
+        {
+            _lastPortFingerprint = "\0";
+            _portApplyStable = false;
+            if (result.Pending)
+            {
+                _logger.LogDebug(
+                    "Port control PENDING (waiting for device plug-in): {Detail}", result.Detail);
+            }
+            else
+            {
+                _logger.LogWarning("Port control not applied: {Detail}", result.Detail);
+            }
+            return;
+        }
+
+        if (result.Changed || fp != _lastPortFingerprint)
+        {
+            _logger.LogInformation(
+                "Port control ENFORCED (instances={Inst}, classes={Cls}, changed={Changed}, detail={Detail})",
+                instances.Count, classes.Count, result.Changed, result.Detail);
+        }
+
+        if (result.Changed && fp != _lastPortFingerprint)
+        {
+            await _store.EnqueueAlertAsync(
+                Guid.NewGuid().ToString(), null, version, "device_control", "high", "blocked",
+                DateTimeOffset.UtcNow,
+                JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["instances"] = string.Join(",", instances),
+                    ["classes"] = string.Join(",", classes),
+                    ["detail"] = result.Detail,
+                }),
+                ct);
+        }
+
+        _lastPortFingerprint = fp;
+        // Stable only when nothing pending — Guard covers re-enable fights until next wake.
+        _portApplyStable = !result.Pending;
+    }
+
+    /// <summary>
+    /// File Transfer: Chromium HKLM DownloadRestrictions / AllowFileSelectionDialogs from
+    /// published DLP rules (triggers <c>file_download</c> / <c>file_upload</c>, action block /
+    /// alert_block). Independent of network lockdown; honours the
+    /// machine pause and the local ALPHA_DLP_FILE_TRANSFER_BLOCK switch. Runs every tick:
+    /// a write while the desired state is unchanged means the policy was removed/changed
+    /// on the PC → restored + rate-limited <c>file_transfer_tamper</c> alert.
+    /// </summary>
+    private async Task ApplyFileTransferAsync(PolicyBundle bundle, long version, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var active = _cfg.FileTransferBlock && hasCreds && !paused;
+        var downloadRule = PolicyBundleParser.BlockingRule(bundle, "file_download");
+        var uploadRule = PolicyBundleParser.BlockingRule(bundle, "file_upload");
+        var wantDownload = active && downloadRule is not null;
+        var wantUpload = active && uploadRule is not null;
+        var state = !_cfg.FileTransferBlock ? "disabled_local"
+            : paused ? "paused"
+            : !hasCreds ? "no_device"
+            : $"dl={(wantDownload ? 1 : 0)},ul={(wantUpload ? 1 : 0)}";
+
+        var result = await Task.Run(() => FileTransferEnforcer.Apply(wantDownload, wantUpload), ct);
+        if (!result.Applied)
+        {
+            await _store.AuditAsync("file_transfer_apply_failed", result.Detail, ct);
+            _logger.LogWarning("File-transfer policy apply failed: {Detail}", result.Detail);
+            return;
+        }
+
+        var sameAsLast = _lastFileTransferState == state;
+        if (result.Changed)
+        {
+            var written = string.Join(", ", result.Written.Take(20));
+            await _store.AuditAsync(
+                (wantDownload || wantUpload) ? "file_transfer_apply" : "file_transfer_clear",
+                $"state={state} {result.Detail} values=[{written}]", ct);
+            _logger.LogInformation(
+                "File-transfer browser policies {Action} (state={State}, {Detail})",
+                (wantDownload || wantUpload) ? "ENFORCED" : "CLEARED", state, result.Detail);
+
+            // Desired state unchanged but we had to write = someone removed/changed the policy.
+            var now = DateTimeOffset.UtcNow;
+            if (sameAsLast && (wantDownload || wantUpload) &&
+                now - _lastFileTransferTamperAlert >= FileTransferTamperAlertEvery)
+            {
+                _lastFileTransferTamperAlert = now;
+                var evidence = JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["detail"] = "Browser download/upload block was removed or changed on this PC and restored automatically",
+                    ["changes"] = written,
+                });
+                var rule = downloadRule ?? uploadRule;
+                await _store.EnqueueAlertAsync(Guid.NewGuid().ToString(), rule?.Id, version,
+                    "file_transfer_tamper", rule?.Severity ?? "high", "blocked", now, evidence, ct);
+            }
+        }
+        _lastFileTransferState = state;
+    }
+
+    /// <summary>
+    /// NTFS Deny Delete on Fixed/Removable roots when lockdown is ON (create/edit stay allowed).
+    /// </summary>
+    private async Task ApplyDeleteBlockAsync(PolicyBundle bundle, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var want = _cfg.DeleteBlock && hasCreds && !paused && bundle.LockdownEnabled;
+
+        if (!want)
+        {
+            var clear = await Task.Run(DeleteBlockAclEnforcer.Clear, ct);
+            var state = !_cfg.DeleteBlock ? "disabled_local" : paused ? "paused" : "off";
+            if (clear.Changed || _lastDeleteBlockState is not (null or "off" or "paused" or "disabled_local"))
+            {
+                await _store.AuditAsync("delete_block_clear", $"state={state} detail={clear.Detail}", ct);
+                _logger.LogInformation("Delete-block ACLs CLEARED (state={State}, detail={Detail})", state, clear.Detail);
+            }
+            if (clear.Applied)
+                _lastDeleteBlockState = state;
+            return;
+        }
+
+        var result = await Task.Run(
+            () => DeleteBlockAclEnforcer.Apply(TimeSpan.FromSeconds(_cfg.DeleteRecheckSec)), ct);
+        if (result.Detail.StartsWith("skipped", StringComparison.Ordinal))
+            return;
+        if (result.Applied)
+        {
+            if (result.Changed || _lastDeleteBlockState != "on")
+            {
+                await _store.AuditAsync("delete_block_apply", result.Detail, ct);
+                _logger.LogInformation(
+                    "Delete-block ACLs ENFORCED ({Detail}) — Authenticated Users cannot delete on Fixed/Removable volumes",
+                    result.Detail);
+            }
+            _lastDeleteBlockState = "on";
+        }
+        else
+        {
+            await _store.AuditAsync("delete_block_apply_failed", result.Detail, ct);
+            _logger.LogWarning("Delete-block ACL apply failed: {Detail}", result.Detail);
+        }
     }
 
     /// <summary>
@@ -201,12 +470,27 @@ public sealed class EnforceWorker : BackgroundService
             _lastAppLockdownState = "on";
         }
 
-        // AppLocker does not kill already-running apps. Sweep every tick while lockdown is ON.
+        // AppLocker does not kill already-running apps. Adaptive sweep: within 5s after a kill
+        // or AppLocker change; otherwise every ALPHA_DLP_APP_SWEEP_SEC while lockdown is ON.
+        var allowFp = AppProcessGuard.AllowAppsFingerprint(apps);
+        var now = DateTimeOffset.UtcNow;
+        var policyChanged = allowFp != _lastAppSweepAllowFp || result.Changed;
+        if (policyChanged)
+            _nextAppSweepDue = DateTimeOffset.MinValue;
+        if (now < _nextAppSweepDue && !policyChanged)
+            return;
+
         var sweep = await Task.Run(() => AppProcessGuard.Sweep(apps), ct);
+        _lastAppSweepAllowFp = allowFp;
         if (sweep.Killed > 0)
         {
             await _store.AuditAsync("app_process_kill", sweep.Detail, ct);
             _logger.LogWarning("App allowlist killed {Count} process(es): {Detail}", sweep.Killed, sweep.Detail);
+            _nextAppSweepDue = now.AddSeconds(5);
+        }
+        else
+        {
+            _nextAppSweepDue = now.AddSeconds(Math.Max(5, _cfg.AppSweepSec));
         }
     }
 

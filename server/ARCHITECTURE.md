@@ -1,7 +1,85 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-07 (releases from setup folder)
+> **Last audited:** 2026-11-14 (auth cookies match main)
 > **Changelog:**
+> - 2026-11-14: **Auth cookies match `main`.** Dropped `COOKIE_SECURE` env and
+>   `ConfigureAuthCookies`; `auth_token` / `refresh_token` hardcode `Secure: false`.
+>   Restart API.
+> - 2026-11-14: **TLS/HTTPS removed.** Echo always `Start` (no `StartTLS`); `TLS_*` config
+>   gone. face_worker always uses `http://` and no longer loads `TLS_CA_FILE` /
+>   `REQUESTS_CA_BUNDLE`. Restart API + `python worker.py`.
+> - 2026-11-13: **DLP rule triggers `file_download` / `file_upload`.** Migration **075** widens
+>   `dlp_rules_trigger_check`; `allowedTriggers` accepts both. Enforced on Windows by DlpService when an
+>   enabled rule with action block / alert_block is published (rides the existing bundle `rules[]`; no
+>   new tables or routes). New alert type `file_transfer_tamper` rides `/dlp/alerts/sync`.
+> - 2026-11-11: **Antivirus fleet status.** Migrations **071–074** (`antivirus_status` + advanced +
+>   commands + threats) + `idx_dlp_alerts_type_machine_occurred`. DeviceAuth
+>   `POST /antivirus/status/sync` (syncAdmit) → upsert; JWT `GET /antivirus/status` (search / health /
+>   `stale`, paginated, health counts, projected `isStale` + `threats24h`). Detections/tamper are DLP
+>   alerts (`malware`, `av_tamper`). RBAC `security-dlp/antivirus` seeded. Files:
+>   `antivirus_{dto,repo,service,handler}.go`.
+> - 2026-11-13: **Face verify activity.** Migration **070** `face_verify_events`; DeviceAuth
+>   `GET /face-profiles/me/samples` + image; `POST /face-profiles/verify-events/sync`;
+>   JWT `GET /face-verify/events`; RBAC `users/face-verify`.
+> - 2026-11-13: **Face models hub.** `face_worker/models/` shared by worker `ensure_models()`
+>   (YuNet auto-download; AdaFace disk / `FACE_ADAFACE_DOWNLOAD_URL`) and DeviceAuth
+>   `GET /face-models/packages/yunet|adaface-ir50`. Env `FACE_MODELS_DIR`, `FACE_YUNET_ONNX`.
+>
+> - 2026-11-12: **face_worker is Python** under `server/face_worker` (`worker.py`, OpenCV).
+>   Same internal claim/result/complete HTTP contract; not the Avalonia agent.
+>
+> - 2026-11-12: **Face enrollment retry + gallery + face_worker under `server/face_worker`.**
+>   JWT `POST /employees/:id/face-enrollment/:jobId/retry`, `GET …/face-profile/samples`;
+>   per-sample `process_status` (069). Worker is server-side only (not Avalonia).
+>   RBAC route `users/face-enrollment` → `/employees/face`. Embeddings still deferred
+>   (`embeddings_deferred`) until AdaFace ONNX license (`doc/face-preprocess-v1.md`).
+>
+> - 2026-11-12: **Face enrollment APIs + migration 068.** JWT multipart enrollment uploads original
+>   images to `FACE_MEDIA_DIR`; `face_enrollment_jobs` queue; FaceWorker claim/fail under
+>   `/api/v1/internal/face-worker/*` (`FACE_WORKER_API_KEY`). DeviceAuth `GET /face-profiles/me`,
+>   `POST /face-profiles/sync-ack`, `GET /face-models/manifest`. RBAC `users/face-enrollment`.
+>   ONNX embedding generation still blocked on license gate (`doc/face-preprocess-v1.md`).
+>
+> - Prior: 2026-11-11 (Edge/Chrome allow path widen)
+>
+> **Last audited (prior):** 2026-11-11 (Edge/Chrome allow path widen)
+> **Changelog (continued):**
+> - 2026-11-11: **Browser allow paths widen to `Application\*`.** `WidenBrowserAllowPath`
+>   (repo) turns Edge/Chrome/EdgeWebView single-EXE inventory paths into
+>   `…\Application\*` so AppLocker covers versioned helpers after updates. Applied in
+>   `resolveInstallIdentity`, `ExpandEnabledAllowApps`, and `CreateAllowApp`.
+>   `wellKnownWindowsAllowPath` adds Microsoft Edge fallback
+>   `C:\Program Files (x86)\Microsoft\Edge\Application\*` when inventory has no path.
+>   Windows inventory join appends `.exe` when `binary_name` lacks an extension.
+>   Verified: `go build`/`go vet` repository+services. Restart API so Publish re-expands.
+> - 2026-11-10: **Screenshots store + API.** Migration **065** `screenshots` index. Files under
+>   `SCREENSHOTS_DIR` (`media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`). DeviceAuth
+>   `POST /screenshots/upload` (multipart WebP, size cap, `RATE_LIMIT_SCREENSHOT_*`); JWT
+>   `GET /screenshots` (cursor infinite scroll) + `GET /screenshots/:id/image` (`ServeContent`).
+>   **No retention purge** this ship. Verified: `go build`/`go vet`.
+> - 2026-11-10: **Scale foundation (one Postgres).** `admit` rate limits (login/sync/admin GET) +
+>   sync concurrency gate (`503`/`429` + `Retry-After`); Redis `cache` for dashboard summary;
+>   Asynq embedded worker/scheduler (or `cmd/worker`) for session/retention/staleness with
+>   `ASYNQ_CONCURRENCY` cap; `LIVE_STREAM_MAX_STREAMS` default 100; `ScaleConfig` env knobs.
+>   Verified: `go build`/`go vet`, `go test` admit+cache.
+> - 2026-11-10: **Allow-app create resolves usable Windows paths.** `CreateAllowApp` accepts an
+>   optional path override; maps well-known Windows Settings to
+>   `C:\Windows\ImmersiveControlPanel\SystemSettings.exe` + Appx product
+>   `windows.immersivecontrolpanel_cw5n1h2txyewy` when inventory only has Linux
+>   cinnamon/gnome entries. `ResolveCatalogApp` prefers active inventory paths, falls back to
+>   inactive, and drops bare shell tokens AppLocker cannot use (`isUsableAllowPath`). Duplicate
+>   catalog allow is idempotent (`GetAllowAppByCatalogID` → return existing). Handler maps
+>   catalog/path client errors to HTTP 400 via `isAllowAppClientErr`.
+> **Last audited:** 2026-11-07 (hardware & port control)
+> **Changelog:**
+> - 2026-11-07: **Hardware & Port Control.** Migration **066** (`machine_ports` inventory;
+>   `device_control_rules` with `scope`/`scope_value`; `dlp_policy_device_control` snapshot) + **067**
+>   (idempotent re-create; renumbered after screenshots **065**). New `PortRepo`/`PortService`/`PortHandler`:
+>   DeviceAuth `POST /hardware-ports/sync` (machine-scoped), JWT `GET /hardware-ports` +
+>   `/device-control/rules` CRUD (auto-publish via `DlpService.Publish`). `DlpRepo.AssembleBundleJSON`
+>   emits `deviceControl`; `Publish` calls `SnapshotDeviceControl` (global rules); `PullPolicy` overlays
+>   employee/machine/department rules per device (`ResolveScopedDeviceControl` + `mergeDeviceControl`).
+>   Verified: `go build`, `go vet`. Restart API for 066/067.
 > - 2026-11-07: **Releases from local `setup/` folder; GitHub bridge removed.** `GitHubReleaseService`
 >   + `GITHUB_*` env deleted. `LocalReleaseService` scans `RELEASES_DIR` (default `setup`) and keeps the
 >   same `/releases` + `/downloads/:assetId` contract (web + clients unchanged on the wire). Downloads via
@@ -364,7 +442,7 @@ server/
 │   └── 032_app_sessions_usage_index.sql # composite index (employee_id, started_at DESC, app_display_name) for /app-sessions/usage aggregation
 │
 └── internal/
-    ├── config/config.go         # Loads env vars, builds Config struct (incl. LINK_STALE_DAYS, DEFAULT_SHIFT_TIMEZONE, GitHubConfig)
+    ├── config/config.go         # Loads env vars, builds Config struct (incl. LINK_STALE_DAYS, DEFAULT_SHIFT_TIMEZONE, ReleasesConfig)
     ├── database/postgres.go     # pgxpool creation, migration runner
     ├── redis/
     │   ├── redis.go             # Secrets: StoreSecret / ValidateSecret / DeleteSecret

@@ -120,6 +120,19 @@ Follow the full definitions in `AGENTS.md`. In particular:
   ceiling (`ALPHA_TA_MAX_LOCAL_ROWS` / `old_data_dropped`) is the existing exception and must
   stay. A full disk is logged; it is not a reason to purge unsynced alerts. A device token
   recovered for protected uninstall does not skip `POST /devices/removal-verify`.
+- **Single PostgreSQL only.** All API / Asynq worker / streaming processes share **one** Postgres.
+  Do not introduce a second database, per-service DBs, or sharding. Size every `DB_MAX_OPEN_CONNS`
+  so the **sum across processes** fits under `max_connections` with headroom.
+- **Scale / admission (1000 agents).** DeviceAuth sync and login storms use rate limits + a sync
+  concurrency gate that return honest `429`/`503` with `Retry-After`. Clients must **not** mark
+  `is_synced=1` on those responses; honor `Retry-After` and use login jitter
+  (`ALPHA_SYNC_LOGIN_JITTER_SEC`). Background sweeps run via Asynq with a hard concurrency cap —
+  never unbounded `go` per job. Live watches cap at `LIVE_STREAM_MAX_STREAMS` (product target 100).
+  **Installer downloads** (`GET /api/v1/downloads`) use a global concurrency gate
+  (`RELEASE_DOWNLOAD_MAX_CONCURRENT`, default 25) with `429` + `Retry-After`; Windows
+  `SilentUpdateWorker` spreads starts with `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` (default 3600) and
+  resumes Range after Retry-After — do not rely on per-IP limits alone for a fleet stampede.
+  Canonical plan: `newplan.md`.
 
 ## Verification
 

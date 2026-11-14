@@ -66,6 +66,12 @@ public sealed class IdleDetector : BackgroundService
         {
             try
             {
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    continue;
+                }
+
                 var idleSeconds = await GetIdleSecondsAsync(stoppingToken);
                 if (idleSeconds.HasValue)
                 {

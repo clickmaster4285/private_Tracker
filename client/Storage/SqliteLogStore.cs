@@ -2600,6 +2600,118 @@ public class SqliteLogStore : ILogStore, IDisposable
     }
 
     // ────────────────────────────────────────
+    // Hardware & Port Control — full scanned inventory (synced; client owns present)
+    // ────────────────────────────────────────
+
+    /// <summary>
+    /// Upsert the full scan result, then mark any previously-present device that
+    /// vanished from this scan as present=0 (is_synced=0) so the removal syncs.
+    /// A bad/empty scan is a no-op so it can never wipe the inventory.
+    /// </summary>
+    public async Task ReplaceMachinePortScanAsync(IReadOnlyList<MachinePort> scanned, CancellationToken ct)
+    {
+        if (_connection == null || scanned.Count == 0) return;
+        await _connectionGate.WaitAsync(ct);
+        try
+        {
+            await using var tx = await _connection.BeginTransactionAsync(ct);
+
+            var cmd = _connection.CreateCommand();
+            ((DbCommand)cmd).Transaction = (DbTransaction)tx;
+            cmd.CommandText = DatabaseSchema.UpsertMachinePortSql;
+            var pInstance = cmd.Parameters.Add("$instance_id", SqliteType.Text);
+            var pCategory = cmd.Parameters.Add("$category", SqliteType.Integer);
+            var pClass = cmd.Parameters.Add("$pnp_class", SqliteType.Text);
+            var pGuid = cmd.Parameters.Add("$class_guid", SqliteType.Text);
+            var pBus = cmd.Parameters.Add("$bus_type", SqliteType.Text);
+            var pName = cmd.Parameters.Add("$friendly_name", SqliteType.Text);
+            var pVendor = cmd.Parameters.Add("$manufacturer", SqliteType.Text);
+            var pPresent = cmd.Parameters.Add("$present", SqliteType.Integer);
+            var pStatus = cmd.Parameters.Add("$status", SqliteType.Text);
+            var pBlockable = cmd.Parameters.Add("$blockable", SqliteType.Integer);
+
+            foreach (var p in scanned)
+            {
+                pInstance.Value = p.InstanceId;
+                pCategory.Value = p.Category;
+                pClass.Value = p.PnpClass;
+                pGuid.Value = p.ClassGuid;
+                pBus.Value = p.BusType;
+                pName.Value = p.FriendlyName;
+                pVendor.Value = p.Manufacturer;
+                pPresent.Value = p.Present ? 1 : 0;
+                pStatus.Value = p.Status;
+                pBlockable.Value = p.Blockable ? 1 : 0;
+                await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            // Mark vanished devices removed. Build a parameterized NOT IN list.
+            var absent = _connection.CreateCommand();
+            ((DbCommand)absent).Transaction = (DbTransaction)tx;
+            var names = new List<string>(scanned.Count);
+            for (var i = 0; i < scanned.Count; i++)
+            {
+                var key = "$k" + i;
+                names.Add(key);
+                absent.Parameters.AddWithValue(key, scanned[i].InstanceId);
+            }
+            absent.CommandText =
+                "UPDATE machine_ports SET present = 0, is_synced = 0 " +
+                "WHERE present = 1 AND instance_id NOT IN (" + string.Join(",", names) + ")";
+            await absent.ExecuteNonQueryAsync(ct);
+
+            await tx.CommitAsync(ct);
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
+    }
+
+    public async Task<IReadOnlyList<MachinePort>> GetUnsentMachinePortsAsync(int limit, CancellationToken ct)
+    {
+        if (_connection == null) return Array.Empty<MachinePort>();
+        await _connectionGate.WaitAsync(ct);
+        try
+        {
+            var cmd = _connection.CreateCommand();
+            cmd.CommandText =
+                "SELECT instance_id, category, pnp_class, class_guid, bus_type, friendly_name, " +
+                "manufacturer, present, status, blockable FROM machine_ports " +
+                "WHERE is_synced = 0 ORDER BY scanned_at ASC LIMIT $limit";
+            cmd.Parameters.AddWithValue("$limit", limit);
+            var results = new List<MachinePort>();
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                results.Add(new MachinePort
+                {
+                    InstanceId = reader.GetString(0),
+                    Category = reader.GetInt32(1),
+                    PnpClass = reader.GetString(2),
+                    ClassGuid = reader.GetString(3),
+                    BusType = reader.GetString(4),
+                    FriendlyName = reader.GetString(5),
+                    Manufacturer = reader.GetString(6),
+                    Present = reader.GetInt32(7) != 0,
+                    Status = reader.GetString(8),
+                    Blockable = reader.GetInt32(9) != 0,
+                });
+            }
+            return results;
+        }
+        finally
+        {
+            _connectionGate.Release();
+        }
+    }
+
+    public async Task MarkMachinePortsSentAsync(IReadOnlyList<string> ids, CancellationToken ct)
+    {
+        await MarkSentCoreAsync("machine_ports", "instance_id", ids, ct);
+    }
+
+    // ────────────────────────────────────────
     // Location samples (Phase 3 GPS — synced; never deleted client-side)
     // ────────────────────────────────────────
 
@@ -3217,6 +3329,12 @@ public class SqliteLogStore : ILogStore, IDisposable
                     tables.Add(reader.GetString(0));
                 }
             }
+
+            // Face verify caches (models + biometric.db + session handoff) live under
+            // LocalAppData/…/face — wipe with the account so a re-login cannot reuse
+            // another employee's templates.
+            try { client.Services.FaceVerify.FacePaths.WipeAll(); }
+            catch { /* best-effort */ }
 
             // Foreign-key enforcement is turned OFF for the sweep. sqlite_master returns
             // tables in CREATION order, not dependency order, so deleting a parent

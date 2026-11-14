@@ -1,6 +1,7 @@
 package services
 
 import (
+	"log"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -23,6 +24,8 @@ var allowedTriggers = map[string]bool{
 	"usb_storage": true, "usb_file": true,
 	"software_install": true, "software_uninstall": true, "cloud_sync_folder": true,
 	"file_transfer": true, "email": true,
+	// Enforced by the Windows DlpService (FileTransferEnforcer) when action blocks.
+	"file_download": true, "file_upload": true,
 }
 var allowedActions = map[string]bool{"alert": true, "block": true, "alert_block": true}
 var allowedSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
@@ -35,6 +38,14 @@ type DlpService struct {
 	deviceRepo        *repository.DeviceRepo // optional; pause unlock on policy pull
 	platformHosts     []string
 	removalCodeTTLMin int
+	// policyNotifier is called after every successful Publish (e.g. presence hub
+	// broadcast "policy_changed" so connected PCs pull immediately). Optional.
+	policyNotifier func() int
+}
+
+// SetPolicyNotifier attaches the post-publish push (nil = poll-only, previous behaviour).
+func (s *DlpService) SetPolicyNotifier(fn func() int) {
+	s.policyNotifier = fn
 }
 
 func NewDlpService(repo *repository.DlpRepo, removalCodeTTLMin int) *DlpService {
@@ -406,6 +417,10 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts, allowApps); err != nil {
 		return nil, err
 	}
+	// Device/port control is fleet-wide and independent of network lockdown.
+	if err := s.repo.SnapshotDeviceControl(ctx, ver.Version); err != nil {
+		return nil, err
+	}
 	final, err := s.repo.AssembleBundleJSON(ctx, ver.Version)
 	if err != nil {
 		return nil, err
@@ -414,6 +429,11 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	finalHash := "sha256:" + hex.EncodeToString(sum[:])
 	if err := s.repo.UpdatePolicyHash(ctx, ver.Version, finalHash); err != nil {
 		return nil, err
+	}
+
+	if s.policyNotifier != nil {
+		n := s.policyNotifier()
+		log.Printf("[dlp] policy v%d published — pushed policy_changed to %d connected device(s)", ver.Version, n)
 	}
 
 	return &dto.PublishDlpPolicyResponse{
@@ -623,13 +643,35 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 		if len(resolved.Paths) > 0 {
 			path = resolved.Paths[0]
 		}
+		// Admin path override (e.g. Windows Settings when catalog only has Linux cinnamon entries).
+		if override := strings.TrimSpace(req.Path); override != "" {
+			path = override
+		}
+		if path == "" {
+			path = wellKnownWindowsAllowPath(resolved.BinaryName, resolved.AppName)
+		}
+		path = repository.WidenBrowserAllowPath(path)
+		if product == "" || product == resolved.AppName {
+			if pkg := wellKnownWindowsAppxProduct(resolved.BinaryName, resolved.AppName, path); pkg != "" {
+				product = pkg
+			}
+		}
 		if publisher == "" && path == "" {
-			return nil, fmt.Errorf("catalog app has no publisher or install path from inventory yet")
+			return nil, fmt.Errorf(
+				"catalog app has no publisher or install path from inventory yet — "+
+					"pick a Windows EXE with a synced path, or enter an install path "+
+					"(Windows Settings: C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe). "+
+					"Linux entries like cinnamon-settings / gnome-control-center will not unlock Windows Settings")
 		}
 		row, err := s.repo.InsertAllowApp(ctx, resolved.ID, resolved.AppName, publisher, product, sha, path, note, enabled, uid)
 		if err != nil {
 			if isUniqueViolation(err) {
-				return nil, fmt.Errorf("application already on the allow list")
+				// Idempotent: already allowed — return existing so auto-publish still runs.
+				existing, getErr := s.repo.GetAllowAppByCatalogID(ctx, resolved.ID)
+				if getErr != nil {
+					return nil, fmt.Errorf("application already on the allow list")
+				}
+				return ptrAllowApp(mapAllowApp(*existing)), nil
 			}
 			return nil, err
 		}
@@ -642,11 +684,51 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if !ok {
 		return nil, fmt.Errorf("each allow app needs installedApplicationId, path, publisher, and/or sha256 (64 hex)")
 	}
-	row, err := s.repo.InsertAllowApp(ctx, "", rowIn.Product, rowIn.Publisher, rowIn.Product, rowIn.Sha256, rowIn.Path, note, enabled, uid)
+	rowIn.Path = repository.WidenBrowserAllowPath(rowIn.Path)
+	appName := rowIn.Product
+	if appName == "" {
+		appName = rowIn.Path
+	}
+	if pkg := wellKnownWindowsAppxProduct("", appName, rowIn.Path); pkg != "" && rowIn.Product == "" {
+		rowIn.Product = pkg
+	}
+	row, err := s.repo.InsertAllowApp(ctx, "", appName, rowIn.Publisher, rowIn.Product, rowIn.Sha256, rowIn.Path, note, enabled, uid)
 	if err != nil {
 		return nil, err
 	}
 	return ptrAllowApp(mapAllowApp(*row)), nil
+}
+
+// wellKnownWindowsAllowPath maps common Windows identities when inventory is missing.
+// Edge uses Application\* so AppLocker covers the stub + versioned helpers after updates.
+func wellKnownWindowsAllowPath(binaryName, appName string) string {
+	key := strings.ToLower(strings.TrimSpace(binaryName) + " " + strings.TrimSpace(appName))
+	switch {
+	case strings.Contains(key, "systemsettings"),
+		strings.Contains(key, "immersivecontrolpanel"),
+		strings.TrimSpace(strings.ToLower(appName)) == "settings" && strings.Contains(key, "systemsettings"):
+		return `C:\Windows\ImmersiveControlPanel\SystemSettings.exe`
+	}
+	bin := strings.ToLower(strings.TrimSpace(binaryName))
+	if bin == "systemsettings.exe" || bin == "systemsettings" {
+		return `C:\Windows\ImmersiveControlPanel\SystemSettings.exe`
+	}
+	if bin == "msedge" || bin == "msedge.exe" ||
+		strings.Contains(key, "microsoft edge") ||
+		(strings.Contains(key, "msedge") && !strings.Contains(key, "webview")) {
+		return `C:\Program Files (x86)\Microsoft\Edge\Application\*`
+	}
+	return ""
+}
+
+func wellKnownWindowsAppxProduct(binaryName, appName, path string) string {
+	key := strings.ToLower(binaryName + " " + appName + " " + path)
+	if strings.Contains(key, "systemsettings") ||
+		strings.Contains(key, "immersivecontrolpanel") ||
+		strings.Contains(key, `\systemsettings.exe`) {
+		return "windows.immersivecontrolpanel_cw5n1h2txyewy"
+	}
+	return ""
 }
 
 func ptrAllowApp(r dto.AllowAppRow) *dto.AllowAppRow { return &r }
@@ -848,6 +930,17 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 	if err != nil {
 		return nil, err
 	}
+	// Overlay device-control rules scoped to THIS employee/machine/department on top
+	// of the global snapshot already in the bundle (per-device enforcement).
+	scoped, err := s.repo.ResolveScopedDeviceControl(ctx, employeeID, machineID)
+	if err != nil {
+		return nil, err
+	}
+	if len(scoped) > 0 {
+		if merged, mErr := mergeDeviceControl(bundle, scoped); mErr == nil {
+			bundle = merged
+		}
+	}
 	if sinceVersion > 0 && sinceVersion >= latest.Version {
 		return &dto.DlpPolicyPullResponse{
 			PolicyVersion:       latest.Version,
@@ -865,6 +958,30 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 		Bundle:              bundle,
 		LockdownPausedUntil: pauseUntil,
 	}, nil
+}
+
+// mergeDeviceControl appends scoped device-control entries to the bundle's
+// "deviceControl" array and re-marshals. Returns the original bundle on any error.
+func mergeDeviceControl(bundle json.RawMessage, scoped []map[string]any) (json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(bundle, &m); err != nil {
+		return bundle, err
+	}
+	existing := make([]map[string]any, 0)
+	if raw, ok := m["deviceControl"]; ok && len(raw) > 0 {
+		_ = json.Unmarshal(raw, &existing)
+	}
+	existing = append(existing, scoped...)
+	encoded, err := json.Marshal(existing)
+	if err != nil {
+		return bundle, err
+	}
+	m["deviceControl"] = encoded
+	out, err := json.Marshal(m)
+	if err != nil {
+		return bundle, err
+	}
+	return out, nil
 }
 
 func (s *DlpService) Health(ctx context.Context, _ dto.DlpHealthRequest) (*dto.DlpHealthResponse, error) {

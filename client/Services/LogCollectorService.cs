@@ -5,6 +5,7 @@ using client.Core;
 using client.Core.Abstractions;
 using client.Core.BrowserAccessibility;
 using client.Core.Models;
+using client.Services.FaceVerify;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -220,6 +221,7 @@ public class LogCollectorService : BackgroundService
         _scheduleCache.RequestImmediatePull();
         _attendanceAggregator.RequestImmediateAggregation();
         _ = PersistInstalledClientVersionAsync();
+        _ = TryFaceWarmupAsync();
 
         if (OperatingSystem.IsWindows())
         {
@@ -232,6 +234,22 @@ public class LogCollectorService : BackgroundService
             {
                 _logger.LogDebug(ex, "Failed to set Windows execution state");
             }
+        }
+    }
+
+    private async Task TryFaceWarmupAsync()
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows() || !_config.FaceVerifyEnabled) return;
+            var info = await _store.GetEmployeeInfoAsync(CancellationToken.None);
+            if (info == null) return;
+            new client.Services.FaceVerify.FaceWarmupService(_config, _logger)
+                .TryStartBackground(info);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Face warm-up kickoff failed");
         }
     }
 
@@ -334,6 +352,16 @@ public class LogCollectorService : BackgroundService
         {
             StartTracking();
             _logger.LogInformation("Session restored from SQLite — tracking started in background mode");
+            try
+            {
+                var info = await _store.GetEmployeeInfoAsync(stoppingToken);
+                if (info != null)
+                    FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Face verify launch after headless restore failed");
+            }
         }
 
         // ─── Reconcile stale sessions from previous crashes ───
@@ -382,8 +410,44 @@ public class LogCollectorService : BackgroundService
         {
             try
             {
+                if (ClientProcessMode.ParkTrackingWork || UpdatePriority.ShouldYield || FaceVerifyYield.ShouldYield)
+                {
+                    await Task.Delay(
+                        UpdatePriority.ShouldYield || FaceVerifyYield.ShouldYield ? 10_000 : 5000,
+                        stoppingToken);
+                    continue;
+                }
+
                 if (!_trackingEnabled)
                 {
+                    // Soft face-verify / GUI login must not leave the --background tracker
+                    // parked forever: GUI SaveEmployeeInfo writes SQLite while this process
+                    // had no credentials at boot. Poll and StartTracking when a session appears.
+                    try
+                    {
+                        var pending = await _store.GetEmployeeInfoAsync(stoppingToken);
+                        if (pending != null
+                            && !string.IsNullOrWhiteSpace(pending.EmployeeId)
+                            && (!string.IsNullOrWhiteSpace(pending.Token)
+                                || !string.IsNullOrWhiteSpace(pending.DeviceToken)))
+                        {
+                            SetEmployeeInfo(
+                                pending.EmployeeId,
+                                pending.Name,
+                                pending.Token ?? string.Empty);
+                            StartTracking();
+                            // Every session start must open face-verify (GUI login race may lose).
+                            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, pending);
+                            _logger.LogInformation(
+                                "Session appeared in SQLite while waiting — tracking started + face-verify launch");
+                            continue;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Login poll while waiting for tracking failed");
+                    }
+
                     await Task.Delay(5000, stoppingToken);
                     continue;
                 }

@@ -337,6 +337,7 @@ func employeeToResponse(e *models.Employee) dto.EmployeeResponse {
 		Avatar:          e.Avatar,
 		AvatarColor:     e.AvatarColor,
 		HasUserLogin:    e.HasUserLogin,
+		FaceEnrolled:    e.FaceEnrolled,
 		CreatedAt:       e.CreatedAt,
 		UpdatedAt:       e.UpdatedAt,
 		DeletedAt:       e.DeletedAt,

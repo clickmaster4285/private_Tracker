@@ -6,23 +6,30 @@ namespace AlphaAITracker.Service;
 /// <summary>
 /// Pulls versioned DLP policy bundles (GET /api/v1/dlp/policy) on a poll interval.
 /// Parks when ALPHA_DLP_ENABLED=false. Waits (does not exit) until ServerUrl/DeviceToken exist.
+/// When credentials appear mid-run (tracker login) and <c>ALPHA_DLP_LOGIN_REBOOT</c> is on:
+/// pre-kill → pull → force-apply blockers → one-shot reboot (no loop after restart).
 /// </summary>
 public sealed class PolicyPullWorker : BackgroundService
 {
     private readonly DlpConfig _cfg;
     private readonly PolicyStore _store;
+    private readonly EnforceWorker _enforce;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<PolicyPullWorker> _logger;
     private bool _loggedWaiting;
+    /// <summary>Set when credentials appear mid-run; cleared after reboot is queued.</summary>
+    private bool _pendingLoginReboot;
 
     public PolicyPullWorker(
         DlpConfig cfg,
         PolicyStore store,
+        EnforceWorker enforce,
         IHttpClientFactory httpFactory,
         ILogger<PolicyPullWorker> logger)
     {
         _cfg = cfg;
         _store = store;
+        _enforce = enforce;
         _httpFactory = httpFactory;
         _logger = logger;
     }
@@ -36,8 +43,12 @@ public sealed class PolicyPullWorker : BackgroundService
         }
 
         await _store.InitializeAsync(stoppingToken);
-        var interval = TimeSpan.FromSeconds(Math.Max(30, _cfg.PolicyPollSec));
+        // Lab may set ALPHA_DLP_POLICY_POLL_SEC=1; ship default is 300. Floor is 1s.
+        // The interval is re-read every pass (RefreshLocalSwitches updates it from
+        // service.env), and a server push (pipe op RequestPolicyPull) ends the wait early.
         var waitInterval = TimeSpan.FromSeconds(15);
+        // While a login reboot is pending, re-try hardening quickly instead of the long poll.
+        var pendingInterval = TimeSpan.FromSeconds(10);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -75,11 +86,26 @@ public sealed class PolicyPullWorker : BackgroundService
                 {
                     _logger.LogWarning(flushEx, "Post-login DNS/pin flush failed (continuing pull)");
                 }
+
+                // Only when creds appeared mid-run (not already present at service boot).
+                if (_cfg.LoginReboot && OperatingSystem.IsWindows())
+                {
+                    _pendingLoginReboot = true;
+                    _logger.LogWarning(
+                        "Post-login hardening armed (ALPHA_DLP_LOGIN_REBOOT=true) — " +
+                        "kill → sync allowset → apply blockers → reboot");
+                }
             }
 
             try
             {
+                if (_pendingLoginReboot)
+                    await PreKillOutsideBootstrapAsync(stoppingToken);
+
                 await PullOnceAsync(stoppingToken);
+
+                if (_pendingLoginReboot)
+                    await TryFinishLoginRebootAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -90,8 +116,84 @@ public sealed class PolicyPullWorker : BackgroundService
                 _logger.LogWarning(ex, "DLP policy pull failed");
             }
 
-            try { await Task.Delay(interval, stoppingToken); }
+            var delay = _pendingLoginReboot
+                ? pendingInterval
+                : TimeSpan.FromSeconds(Math.Max(1, _cfg.PolicyPollSec));
+            try
+            {
+                if (await DlpSignals.WaitPullAsync(delay, stoppingToken))
+                    _logger.LogInformation("Policy pull requested (server push) — pulling now");
+            }
             catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>
+    /// Kill running EXEs outside Bootstrap A before the allowset arrives (fail-closed).
+    /// Explorer is killable under lockdown; critical OS names are not (see <see cref="AppProcessGuard"/>).
+    /// </summary>
+    private async Task PreKillOutsideBootstrapAsync(CancellationToken ct)
+    {
+        try
+        {
+            var sweep = await Task.Run(
+                () => AppProcessGuard.Sweep(Array.Empty<AllowAppEntry>()),
+                ct);
+            await _store.AuditAsync("login_pre_kill", sweep.Detail, ct);
+            if (sweep.Killed > 0)
+            {
+                _logger.LogWarning(
+                    "Post-login pre-kill: {Count} process(es) — {Detail}",
+                    sweep.Killed, sweep.Detail);
+            }
+            else
+            {
+                _logger.LogInformation("Post-login pre-kill: {Detail}", sweep.Detail);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-login pre-kill failed (continuing)");
+        }
+    }
+
+    private async Task TryFinishLoginRebootAsync(CancellationToken ct)
+    {
+        if (UpdatePaths.IsUpdateInProgress() || UpdatePaths.IsUpdatePriorityActive())
+        {
+            _logger.LogWarning("Post-login reboot deferred — silent update in progress");
+            return;
+        }
+
+        try
+        {
+            await _enforce.ForceApplyOnceAsync(ct);
+            await _store.AuditAsync("login_force_apply", "ok", ct);
+            _logger.LogInformation("Post-login force-apply of DLP blockers completed");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Post-login force-apply failed — will retry before reboot");
+            await _store.AuditAsync("login_force_apply_failed", ex.GetType().Name, ct);
+            return;
+        }
+
+        var reboot = LoginReboot.TrySchedule(delaySeconds: _cfg.LoginRebootDelaySec);
+        await _store.AuditAsync(
+            reboot.Ok ? "login_reboot_queued" : "login_reboot_failed",
+            reboot.Detail,
+            ct);
+        if (reboot.Ok)
+        {
+            _pendingLoginReboot = false;
+            _logger.LogWarning(
+                "Post-login reboot queued ({Detail}). PC will restart; " +
+                "after boot blockers stay from policy (no second reboot).",
+                reboot.Detail);
+        }
+        else
+        {
+            _logger.LogWarning("Post-login reboot failed ({Detail}) — will retry", reboot.Detail);
         }
     }
 
@@ -165,5 +267,31 @@ public sealed class PolicyPullWorker : BackgroundService
             bundle = "{}";
         }
         await _store.SavePolicyAsync(newVersion, hash, bundle, ct);
+        // Apply right away instead of waiting out EnforceWorker's 15 s tick.
+        DlpSignals.RequestEnforce();
+
+        // Heal / sync service.env (incl. ALPHA_DLP_PORT_BLOCK) and refresh live switches
+        // so EnforceWorker picks up PortBlock without a service restart.
+        try
+        {
+            var synced = EnvBootstrap.SyncServiceEnvAfterPolicyApply();
+            _cfg.RefreshLocalSwitches();
+            if (synced.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Synced service.env after policy v{Version}: {Keys}; portBlock={Port}",
+                    newVersion, string.Join(", ", synced), _cfg.PortBlock);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "service.env reload after policy v{Version}; portBlock={Port}",
+                    newVersion, _cfg.PortBlock);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "service.env sync after policy v{Version} failed", newVersion);
+        }
     }
 }

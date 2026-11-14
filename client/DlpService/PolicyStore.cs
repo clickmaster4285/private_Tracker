@@ -123,6 +123,17 @@ public sealed class PolicyStore : IAsyncDisposable
                     path TEXT NOT NULL DEFAULT ''
                 );
 
+                -- Hardware & Port Control: the deviceControl entries from the applied
+                -- bundle, persisted so enforcement survives offline and across restarts
+                -- (offline-first). kind = 'instance' | 'class'.
+                CREATE TABLE IF NOT EXISTS policy_device_control (
+                    seq INTEGER PRIMARY KEY,
+                    kind TEXT NOT NULL DEFAULT '',
+                    value TEXT NOT NULL DEFAULT '',
+                    pnp_class TEXT NOT NULL DEFAULT '',
+                    action TEXT NOT NULL DEFAULT 'block'
+                );
+
                 CREATE TABLE IF NOT EXISTS policy_kv (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL DEFAULT ''
@@ -539,6 +550,7 @@ public sealed class PolicyStore : IAsyncDisposable
                 DELETE FROM policy_extensions;
                 DELETE FROM policy_allow_hosts;
                 DELETE FROM policy_allow_apps;
+                DELETE FROM policy_device_control;
                 UPDATE policy_lockdown SET lockdown = 0 WHERE id = 1;
                 """;
             await clear.ExecuteNonQueryAsync();
@@ -563,6 +575,7 @@ public sealed class PolicyStore : IAsyncDisposable
         await InsertAllowHostsAsync("platform", root, "platformAllow");
         await InsertAllowHostsAsync("allow", root, "allow");
         await InsertAllowAppsAsync(root);
+        await InsertDeviceControlAsync(root);
 
         if (root.TryGetProperty("rules", out var rules) && rules.ValueKind == JsonValueKind.Array)
         {
@@ -675,6 +688,69 @@ public sealed class PolicyStore : IAsyncDisposable
             cmd.Parameters.AddWithValue("$h", sha);
             cmd.Parameters.AddWithValue("$a", path);
             await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    private async Task InsertDeviceControlAsync(JsonElement root)
+    {
+        if (!root.TryGetProperty("deviceControl", out var dc) || dc.ValueKind != JsonValueKind.Array)
+            return;
+        var seq = 0;
+        foreach (var el in dc.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.Object) continue;
+            var kind = (el.TryGetProperty("kind", out var k) ? k.GetString() ?? "" : "").Trim().ToLowerInvariant();
+            var value = (el.TryGetProperty("value", out var v) ? v.GetString() ?? "" : "").Trim();
+            var cls = (el.TryGetProperty("pnpClass", out var c) ? c.GetString() ?? "" : "").Trim();
+            var action = (el.TryGetProperty("action", out var a) ? a.GetString() ?? "block" : "block").Trim().ToLowerInvariant();
+            if (value.Length == 0 || (kind != "instance" && kind != "class")) continue;
+            if (action != "block" && action != "allow" && action != "alert") action = "block";
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO policy_device_control (seq, kind, value, pnp_class, action) VALUES ($i,$k,$v,$c,$a)";
+            cmd.Parameters.AddWithValue("$i", seq++);
+            cmd.Parameters.AddWithValue("$k", kind);
+            cmd.Parameters.AddWithValue("$v", value);
+            cmd.Parameters.AddWithValue("$c", cls);
+            cmd.Parameters.AddWithValue("$a", action);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>Generic policy_kv read (null when absent).</summary>
+    public async Task<string?> GetKvAsync(string key, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            EnsureOpen();
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = "SELECT value FROM policy_kv WHERE key = $k";
+            cmd.Parameters.AddWithValue("$k", key);
+            return await cmd.ExecuteScalarAsync(ct) as string;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Generic policy_kv upsert.</summary>
+    public async Task SetKvAsync(string key, string value, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct);
+        try
+        {
+            EnsureOpen();
+            await using var cmd = _conn!.CreateCommand();
+            cmd.CommandText = "INSERT OR REPLACE INTO policy_kv (key, value) VALUES ($k, $v)";
+            cmd.Parameters.AddWithValue("$k", key);
+            cmd.Parameters.AddWithValue("$v", value);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -849,6 +925,24 @@ public sealed class PolicyStore : IAsyncDisposable
             }
         }
 
+        var deviceControl = new List<Dictionary<string, object?>>();
+        await using (var dcCmd = _conn!.CreateCommand())
+        {
+            dcCmd.CommandText =
+                "SELECT kind, value, pnp_class, action FROM policy_device_control ORDER BY seq";
+            await using var dcr = await dcCmd.ExecuteReaderAsync(ct);
+            while (await dcr.ReadAsync(ct))
+            {
+                deviceControl.Add(new Dictionary<string, object?>
+                {
+                    ["kind"] = dcr.GetString(0),
+                    ["value"] = dcr.GetString(1),
+                    ["pnpClass"] = dcr.GetString(2),
+                    ["action"] = dcr.GetString(3),
+                });
+            }
+        }
+
         // version 0: omit lockdown so parser treats it as default ON (no Publish yet).
         // version > 0: emit explicit true/false from the last applied snapshot.
         var dict = new Dictionary<string, object?>
@@ -867,6 +961,7 @@ public sealed class PolicyStore : IAsyncDisposable
                 ["publishers"] = Array.Empty<string>(),
                 ["appNames"] = Array.Empty<string>(),
             },
+            ["deviceControl"] = deviceControl,
         };
         if (version > 0)
             dict["lockdown"] = lockdown == 1;

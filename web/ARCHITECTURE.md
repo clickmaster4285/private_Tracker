@@ -1,7 +1,62 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-07 (releases copy)
+> **Last audited:** 2026-11-14 (plain HTTP only — TLS removed)
 > **Changelog:**
+> - 2026-11-14: **TLS/HTTPS removed.** `npm run dev` is plain `next dev` (deleted
+>   `scripts/dev-https.mjs`). `.env` uses `API_PROXY_TARGET=http://…` and
+>   `NEXT_PUBLIC_WS_URL=ws://…`; default rewrite target is `http://localhost:8080`.
+> - 2026-11-13: **`/dlp-rules` File Download / File Upload triggers.** `DlpTrigger` gains
+>   `file_download` / `file_upload`; form shows an inline hint for them (Block / Alert + Block blocks
+>   Chrome/Edge/Brave downloads or the file picker on every Windows PC). Alert labels
+>   `file_download` / `file_upload` / `file_transfer_tamper`. No new route or sidebar entry.
+> - 2026-11-11: **`/antivirus` page.** `antivirusApi.listStatus` + types; infinite scroll;
+>   URL-synced `search`/`health` chips (`useUrlQueryState`); tiles link to
+>   `/dlp-alerts?type=malware|av_tamper`. Sidebar Security & DLP → Antivirus (`module:"antivirus"`,
+>   catalog parity), page title in `AppLayout`; `ALERT_TYPE_LABELS` gains `malware` / `av_tamper`.
+> - 2026-11-12: **Face gallery + per-image Verified/Retry.** `/employees/face` (RBAC
+>   `users/face-enrollment`) lists enrollment thumbs with status chips; Enroll dialog polls
+>   job samples live (Checking / Verified / Retry) and `retryFaceEnrollment` replaces rejected
+>   poses only. Sidebar entry under HR. Plan: `doc/face-attendance-plan.md`.
+> - 2026-11-12: **Employees face enrollment dialog.** `/employees` ⋮ → **Enroll Face…** opens
+>   `EnrollFaceDialog` (multi-angle webcam, quality heuristics, multipart original-image upload via
+>   `employeesApi.createFaceEnrollment`). No client-side authoritative embeddings. Helpers in
+>   `lib/face-enrollment.ts`. Plan: `doc/face-attendance-plan.md`.
+> - 2026-11-10: **`/screenshots` live grid.** `screenshotsApi` + `ScreenshotGrid` infinite scroll
+>   with per-card IntersectionObserver lazy `<img>` (never bulk-loads blobs). URL filters via
+>   `useUrlActivityFilter` + employee picker. Journey `/employee-journey/screenshots` reuses the
+>   grid scoped by employee. Verified: `npx tsc --noEmit`.
+> - 2026-11-10: **Theater false LIVE on offline tiles.** Watch SFU `ontrack` could stick
+>   `status=live` with no frames; status ticks kept LIVE even when `clientConnected=false`.
+>   `useLiveStreamSocket` now clears to `offline` + drops the MediaStream when the publisher
+>   is gone; `LiveStreamWatchTile` shows Offline overlay/badge and only paints LIVE when
+>   decoded FPS is measured. Verified: `npx tsc --noEmit`.
+
+> - 2026-11-10: **Live-stream employee list bounded.** `/live-stream` and theater poll
+>   `liveStreamApi.employees({ onlineOnly, limit: 200 })` instead of unbounded `ListAll` every 2s.
+>   Verified: `npx tsc --noEmit`.
+> - 2026-11-10: **`/allowlists/apps` Windows Settings preset + path override.** Add dialog offers
+>   **Windows Settings (Win10/11)** (posts
+>   `C:\Windows\ImmersiveControlPanel\SystemSettings.exe` + ImmersiveControlPanel Appx product)
+>   alongside the inventory catalog picker; optional install-path override; Linux
+>   cinnamon/gnome/WSL Settings catalog rows are labeled and blocked unless a Windows path is
+>   supplied. Auto-publish unchanged.
+> **Last audited:** 2026-11-10 (same-site API proxy)
+> **Changelog:**
+> - 2026-11-10: **Auth 401 on `/auth/refresh` fixed — same-site API proxy restored.** `web/.env` pointed
+>   `NEXT_PUBLIC_API_URL` at `http://192.168.88.44:8000/api/v1`, so a page on `localhost:3000` called the
+>   API cross-site; the server's `SameSite=Lax` httpOnly cookies were never sent (no `Cookie` header) and
+>   `/auth/check` / `/auth/refresh` always failed → bounce to `/login`. `next.config.ts` had no rewrites
+>   despite the docs. Added `rewrites()` `/api/v1/:path*` → `NEXT_PUBLIC_API_URL` (server-side env, default
+>   `http://localhost:8080`); `.env` now leaves `NEXT_PUBLIC_API_URL` unset (client uses relative
+>   `/api/v1`). `<body suppressHydrationWarning>` for extension-injected attributes (ColorZilla).
+>   WebSockets still use `NEXT_PUBLIC_WS_URL` (ticket auth, not cookies). Verified via `localhost:3000`:
+>   login 200 → check authenticated → refresh 200 → logout 200; `npx tsc --noEmit`.
+> - 2026-11-07: **Ports Control page.** New route `/device-specs/ports` (Monitoring → Device Specs →
+>   Ports Control, module `device-specs`) — per-employee port/device inventory grouped by category with
+>   plain-language per-device descriptions, overview stats, a scope selector (this employee / this
+>   computer / everyone) and Block / Alert / Unblock. `portControlApi` (listPorts, listRules, create/
+>   remove rule) + `MachinePort` / `DeviceControlRule` types in `lib/api.ts`. Video outputs + system
+>   disks render as alert-only. Verified: `npx tsc --noEmit`.
 > - 2026-11-07: `/releases` copy no longer mentions GitHub — installers come from the API server's
 >   `setup/` folder (same `/api/v1/releases` contract). Verified: `npx tsc --noEmit`.
 > - 2026-11-05: **P3 App Allow List catalog picker.** `/allowlists/apps` selects from

@@ -759,6 +759,10 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	if err != nil {
 		return nil, err
 	}
+	deviceControl, err := r.listPolicyDeviceControl(ctx, version)
+	if err != nil {
+		return nil, err
+	}
 
 	bundle := struct {
 		PolicyVersion int64  `json:"policyVersion"`
@@ -777,6 +781,7 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 			Publishers []string `json:"publishers"`
 			AppNames   []string `json:"appNames"`
 		} `json:"shadowDeny"`
+		DeviceControl []map[string]any `json:"deviceControl"`
 	}{
 		PolicyVersion: version,
 		PublishedAt:   header.PublishedAt.UTC().Format(time.RFC3339),
@@ -786,12 +791,125 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	bundle.PlatformAllow.Hosts = platformHosts
 	bundle.Allow.Hosts = allowHosts
 	bundle.Allow.Apps = allowApps
+	bundle.DeviceControl = deviceControl
 	bundle.ShadowDeny.Domains = shadowDomains
 	bundle.ShadowDeny.Publishers = []string{}
 	bundle.ShadowDeny.AppNames = []string{}
 	// Always emit lockdown true|false. Agents default-deny after login when the
 	// field is missing or true; explicit false is the admin opt-out.
 	return json.Marshal(bundle)
+}
+
+// SnapshotDeviceControl folds enabled draft device-control rules into the
+// immutable bundle snapshot for a published version. Called from Publish.
+func (r *DlpRepo) SnapshotDeviceControl(ctx context.Context, version int64) error {
+	rows, err := r.pool.Query(ctx, `
+		SELECT target_kind, target_value, pnp_class, action
+		FROM device_control_rules
+		WHERE enabled=TRUE AND scope='global' ORDER BY id LIMIT $1`, MaxDeviceControlRules)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type dc struct{ kind, value, class, action string }
+	list := make([]dc, 0)
+	for rows.Next() {
+		var x dc
+		if err := rows.Scan(&x.kind, &x.value, &x.class, &x.action); err != nil {
+			return err
+		}
+		// Never publish Net adapter disables — that takes the PC offline.
+		if isNetAdapterDeviceControl(x.class, x.value, x.action) {
+			continue
+		}
+		list = append(list, x)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i, x := range list {
+		if _, err := r.pool.Exec(ctx, `
+			INSERT INTO dlp_policy_device_control
+			    (policy_version, seq, target_kind, target_value, pnp_class, action)
+			VALUES ($1,$2,$3,$4,$5,$6)`,
+			version, i, x.kind, x.value, x.class, x.action); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ResolveScopedDeviceControl returns enabled NON-global device-control entries that
+// apply to one device: scope=employee matching this employee, scope=machine matching
+// this machine, or scope=department matching the employee's department. Merged into
+// the device's pulled bundle on top of the global snapshot.
+func (r *DlpRepo) ResolveScopedDeviceControl(ctx context.Context, employeeID, machineID string) ([]map[string]any, error) {
+	if employeeID == "" {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT dcr.target_kind, dcr.target_value, dcr.pnp_class, dcr.action
+		FROM device_control_rules dcr
+		WHERE dcr.enabled = TRUE AND dcr.scope <> 'global' AND (
+		    (dcr.scope = 'employee'   AND dcr.scope_value = $1)
+		 OR (dcr.scope = 'machine'    AND dcr.scope_value = $2)
+		 OR (dcr.scope = 'department' AND dcr.scope_value = (
+		        SELECT COALESCE(department_id::text, '') FROM employees WHERE employee_id = $1))
+		)
+		ORDER BY dcr.id LIMIT $3`, employeeID, machineID, MaxDeviceControlRules)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var kind, value, class, action string
+		if err := rows.Scan(&kind, &value, &class, &action); err != nil {
+			return nil, err
+		}
+		if isNetAdapterDeviceControl(class, value, action) {
+			continue
+		}
+		out = append(out, map[string]any{
+			"kind": kind, "value": value, "pnpClass": class, "action": action,
+		})
+	}
+	return out, rows.Err()
+}
+
+// Net setup-class GUID — disabling NICs cuts the management channel.
+const netClassGUID = "{4d36e972-e325-11ce-bfc1-08002be10318}"
+
+func isNetAdapterDeviceControl(pnpClass, value, action string) bool {
+	if !strings.EqualFold(strings.TrimSpace(action), "block") {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(pnpClass), "Net") {
+		return true
+	}
+	v := strings.TrimSpace(value)
+	return strings.EqualFold(v, "Net") || strings.EqualFold(v, netClassGUID)
+}
+
+func (r *DlpRepo) listPolicyDeviceControl(ctx context.Context, version int64) ([]map[string]any, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT target_kind, target_value, pnp_class, action
+		FROM dlp_policy_device_control WHERE policy_version=$1 ORDER BY seq`, version)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]map[string]any, 0)
+	for rows.Next() {
+		var kind, value, class, action string
+		if err := rows.Scan(&kind, &value, &class, &action); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"kind": kind, "value": value, "pnpClass": class, "action": action,
+		})
+	}
+	return out, rows.Err()
 }
 
 func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int64) ([]string, error) {
@@ -931,19 +1049,23 @@ func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) 
 	if err != nil {
 		return nil, err
 	}
+	// Prefer active inventory; fall back to inactive so a retired PC's path still unlocks allow.
 	rows, err := r.pool.Query(ctx, `
-		SELECT DISTINCT COALESCE(publisher, ''), COALESCE(install_path, '')
+		SELECT DISTINCT COALESCE(publisher, ''), COALESCE(install_path, ''), COALESCE(is_active, FALSE)
 		FROM employee_installed_applications
-		WHERE installed_application_id = $1 AND is_active = TRUE`, id)
+		WHERE installed_application_id = $1
+		ORDER BY COALESCE(is_active, FALSE) DESC`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	pubSet := map[string]struct{}{}
 	pathSet := map[string]struct{}{}
+	var inactivePaths []string
 	for rows.Next() {
 		var pub, path string
-		if err := rows.Scan(&pub, &path); err != nil {
+		var active bool
+		if err := rows.Scan(&pub, &path, &active); err != nil {
 			return nil, err
 		}
 		pub = strings.TrimSpace(pub)
@@ -954,17 +1076,29 @@ func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) 
 				out.Publishers = append(out.Publishers, pub)
 			}
 		}
-		if path != "" {
-			resolved := resolveInstallIdentity(path, out.BinaryName)
-			key := strings.ToLower(resolved)
-			if _, ok := pathSet[key]; !ok {
-				pathSet[key] = struct{}{}
-				out.Paths = append(out.Paths, resolved)
-			}
+		if path == "" {
+			continue
+		}
+		resolved := resolveInstallIdentity(path, out.BinaryName)
+		if !isUsableAllowPath(resolved) {
+			continue
+		}
+		key := strings.ToLower(resolved)
+		if _, ok := pathSet[key]; ok {
+			continue
+		}
+		pathSet[key] = struct{}{}
+		if active {
+			out.Paths = append(out.Paths, resolved)
+		} else {
+			inactivePaths = append(inactivePaths, resolved)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if len(out.Paths) == 0 {
+		out.Paths = append(out.Paths, inactivePaths...)
 	}
 	return &out, nil
 }
@@ -974,22 +1108,88 @@ func resolveInstallIdentity(installPath, binaryName string) string {
 	bin := strings.TrimSpace(binaryName)
 	lower := strings.ToLower(p)
 	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".com") || strings.HasSuffix(lower, ".bin") {
-		return p
+		return WidenBrowserAllowPath(p)
 	}
 	if bin != "" {
-		if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
-			return p + bin
+		// Inventory binary_name is usually without extension (msedge, chrome).
+		binFile := bin
+		binLower := strings.ToLower(bin)
+		if !strings.HasSuffix(binLower, ".exe") && !strings.HasSuffix(binLower, ".com") &&
+			!strings.HasSuffix(binLower, ".bin") && looksLikeWindowsDrivePath(p) {
+			binFile = bin + ".exe"
 		}
-		return p + `\` + bin
+		var joined string
+		if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
+			joined = p + binFile
+		} else if !strings.ContainsAny(p, `/\`) && !looksLikeWindowsDrivePath(p) {
+			// Linux-style command tokens (e.g. "cinnamon-settings accessibility") are not paths.
+			return ""
+		} else {
+			joined = p + `\` + binFile
+		}
+		return WidenBrowserAllowPath(joined)
 	}
 	if p == "" {
 		return ""
 	}
+	if !strings.ContainsAny(p, `/\`) && !looksLikeWindowsDrivePath(p) {
+		return ""
+	}
 	// Directory allow for AppLocker path rules.
 	if strings.HasSuffix(p, `\`) || strings.HasSuffix(p, "/") {
-		return p + `*`
+		return WidenBrowserAllowPath(p + `*`)
 	}
-	return p + `\*`
+	return WidenBrowserAllowPath(p + `\*`)
+}
+
+// WidenBrowserAllowPath turns a single Edge/Chrome EXE under Application\ into a
+// directory wildcard so AppLocker covers versioned helper binaries after updates.
+func WidenBrowserAllowPath(path string) string {
+	p := strings.TrimSpace(path)
+	if p == "" {
+		return p
+	}
+	orig := strings.ReplaceAll(p, "/", `\`)
+	lower := strings.ToLower(orig)
+	for _, marker := range []string{
+		`\microsoft\edge\application`,
+		`\google\chrome\application`,
+		`\microsoft\edgewebview\application`,
+	} {
+		idx := strings.Index(lower, marker)
+		if idx < 0 {
+			continue
+		}
+		end := idx + len(marker)
+		prefix := orig[:end]
+		if strings.HasSuffix(strings.ToLower(prefix), `\application`) {
+			return prefix + `\*`
+		}
+	}
+	return orig
+}
+
+func looksLikeWindowsDrivePath(p string) bool {
+	return len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/')
+}
+
+// isUsableAllowPath rejects bare shell commands (Linux desktop entries) that AppLocker cannot use.
+func isUsableAllowPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	lower := strings.ToLower(p)
+	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".com") {
+		return true
+	}
+	if looksLikeWindowsDrivePath(p) {
+		return true
+	}
+	if strings.HasPrefix(p, `\`) || strings.HasPrefix(p, "/") || strings.Contains(p, `:\`) {
+		return true
+	}
+	return false
 }
 
 // ExpandEnabledAllowApps flattens enabled draft rows into concrete agent identities.
@@ -1038,7 +1238,7 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 			}
 			if resolved != nil {
 				for _, p := range resolved.Paths {
-					add(LockdownAllowAppRow{Path: p, Product: resolved.AppName})
+					add(LockdownAllowAppRow{Path: WidenBrowserAllowPath(p), Product: resolved.AppName})
 				}
 				// Path-first: only emit publisher when no paths (unsigned/missing inventory path).
 				if len(resolved.Paths) == 0 {
@@ -1048,7 +1248,7 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 				}
 			}
 		}
-		add(LockdownAllowAppRow{Publisher: publisher, Product: product, Sha256: sha, Path: path})
+		add(LockdownAllowAppRow{Publisher: publisher, Product: product, Sha256: sha, Path: WidenBrowserAllowPath(path)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1238,10 +1438,7 @@ func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, enable
 }
 
 func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, error) {
-	var row AllowAppListRow
-	var createdByNS, updatedByNS *string
-	var catalogNS *string
-	err := r.pool.QueryRow(ctx, `
+	return r.scanAllowAppRow(ctx, `
 		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
 		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
@@ -1250,7 +1447,32 @@ func (r *DlpRepo) GetAllowApp(ctx context.Context, id int64) (*AllowAppListRow, 
 		FROM dlp_lockdown_allow_apps a
 		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
 		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
-		WHERE a.id = $1`, id).Scan(
+		WHERE a.id = $1`, id)
+}
+
+// GetAllowAppByCatalogID returns the draft row for a catalog application, if any.
+func (r *DlpRepo) GetAllowAppByCatalogID(ctx context.Context, catalogID string) (*AllowAppListRow, error) {
+	id := strings.TrimSpace(catalogID)
+	if id == "" {
+		return nil, pgx.ErrNoRows
+	}
+	return r.scanAllowAppRow(ctx, `
+		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
+		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
+		       a.created_by::text, COALESCE(cu.name, ''),
+		       a.updated_by::text, COALESCE(uu.name, ''),
+		       a.created_at, a.updated_at
+		FROM dlp_lockdown_allow_apps a
+		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
+		LEFT JOIN users uu ON uu.id = a.updated_by AND uu.deleted_at IS NULL
+		WHERE a.installed_application_id = $1`, id)
+}
+
+func (r *DlpRepo) scanAllowAppRow(ctx context.Context, query string, arg any) (*AllowAppListRow, error) {
+	var row AllowAppListRow
+	var createdByNS, updatedByNS *string
+	var catalogNS *string
+	err := r.pool.QueryRow(ctx, query, arg).Scan(
 		&row.ID, &catalogNS, &row.AppName,
 		&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 		&createdByNS, &row.CreatedByName,

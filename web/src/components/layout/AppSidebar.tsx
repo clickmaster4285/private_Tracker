@@ -69,6 +69,16 @@ const navSections: NavSection[] = [
             module: "users",
           },
           {
+            label: "Face Enrollment",
+            path: "/employees/face",
+            module: "users/face-enrollment",
+          },
+          {
+            label: "Face Verify",
+            path: "/face-verify",
+            module: "users/face-verify",
+          },
+          {
             label: "Departments",
             path: "/departments",
             module: "departments",
@@ -200,6 +210,11 @@ const navSections: NavSection[] = [
           {
             label: "Peripherals",
             path: "/device-specs/peripherals",
+            module: "device-specs",
+          },
+          {
+            label: "Ports Control",
+            path: "/device-specs/ports",
             module: "device-specs",
           },
           {
@@ -357,6 +372,11 @@ const navSections: NavSection[] = [
             label: "Shadow IT",
             path: "/shadow-it",
             module: "shadow-it",
+          },
+          {
+            label: "Antivirus",
+            path: "/antivirus",
+            module: "antivirus",
           },
         ],
       },

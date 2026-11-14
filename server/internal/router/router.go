@@ -1,6 +1,9 @@
 package router
 
 import (
+	"strings"
+
+	"github.com/alpha-ai-tracker/server/internal/admit"
 	"github.com/alpha-ai-tracker/server/internal/config"
 	"github.com/alpha-ai-tracker/server/internal/handlers"
 	appMiddleware "github.com/alpha-ai-tracker/server/internal/middleware"
@@ -33,7 +36,11 @@ func Setup(
 	logInsightsHandler *handlers.LogInsightsHandler,
 	logGraphicalHandler *handlers.LogGraphicalHandler,
 	dlpHandler *handlers.DlpHandler,
+	portHandler *handlers.PortHandler,
 	releaseHandler *handlers.ReleaseHandler,
+	screenshotHandler *handlers.ScreenshotHandler,
+	faceHandler *handlers.FaceHandler,
+	antivirusHandler *handlers.AntivirusHandler,
 ) {
 	// ─────────────────────────────
 	// Global Middleware
@@ -68,13 +75,35 @@ func Setup(
 	})
 	e.GET("/api/v1/server-time", timeAttendanceHandler.ServerTime)
 
+	// FaceWorker internal claim API (shared secret; disabled when FACE_WORKER_API_KEY empty).
+	if faceHandler != nil {
+		internalFace := e.Group("/api/v1/internal/face-worker")
+		internalFace.POST("/claim", faceHandler.WorkerClaimJob)
+		internalFace.POST("/jobs/:jobId/lease", faceHandler.WorkerLeaseJob)
+		internalFace.POST("/jobs/:jobId/fail", faceHandler.WorkerFailJob)
+		internalFace.POST("/jobs/:jobId/complete", faceHandler.WorkerCompleteJob)
+		internalFace.POST("/jobs/:jobId/embeddings", faceHandler.WorkerSubmitEmbeddings)
+		internalFace.POST("/jobs/:jobId/samples/:sampleId/result", faceHandler.WorkerSampleResult)
+		internalFace.GET("/samples/:sampleId/image", faceHandler.WorkerSampleImage)
+	}
+
+	// ─────────────────────────────
+	// Admission control (1000-agent scale)
+	// ─────────────────────────────
+	loginRL := admit.NewLimiter(cfg.Scale.LoginRPS, cfg.Scale.LoginBurst)
+	syncRL := admit.NewLimiter(cfg.Scale.SyncRPS, cfg.Scale.SyncBurst)
+	screenshotRL := admit.NewLimiter(cfg.Scale.ScreenshotUploadRPS, cfg.Scale.ScreenshotUploadBurst)
+	adminRL := admit.NewLimiter(cfg.Scale.AdminSearchRPS, cfg.Scale.AdminSearchBurst)
+	syncGate := admit.NewSyncGate(int64(cfg.Scale.SyncMaxConcurrent))
+	byIP := func(c echo.Context) string { return c.RealIP() }
+
 	// ─────────────────────────────
 	// Public Routes (no auth required)
 	// ─────────────────────────────
 	a := e.Group("/api/v1/auth")
-	a.POST("/login", authHandler.Login)
+	a.POST("/login", authHandler.Login, loginRL.Middleware(byIP))
 	a.POST("/refresh", authHandler.Refresh)
-	a.POST("/employee-login", authHandler.EmployeeLogin)
+	a.POST("/employee-login", authHandler.EmployeeLogin, loginRL.Middleware(byIP))
 
 	// Public releases from the server's setup folder (RELEASES_DIR).
 	// No JWT / DeviceAuth — /releases visitors and desktop updaters download without login.
@@ -91,37 +120,62 @@ func Setup(
 	if deviceRepo != nil {
 		syncGroup.Use(appMiddleware.DeviceAuth(deviceRepo, userRepo, authService))
 	}
+	// Rate-limit + gate only the *sync POST* surface (not presence WS / live push).
+	syncAdmit := e.Group("/api/v1")
+	if deviceRepo != nil {
+		syncAdmit.Use(appMiddleware.DeviceAuth(deviceRepo, userRepo, authService))
+	}
+	syncAdmit.Use(syncRL.Middleware(byIP))
+	syncAdmit.Use(syncGate.Middleware())
 
-	// Phase 1 sync endpoints
-	syncGroup.POST("/device-hardware/sync", newSchemaHandler.SyncDeviceHardware)
-	syncGroup.POST("/installed-apps/sync", newSchemaHandler.SyncInstalledApps)
-	syncGroup.POST("/installed-packages/sync", newSchemaHandler.SyncInstalledPackages)
-	syncGroup.POST("/network-info/sync", newSchemaHandler.SyncNetworkInfo)
-	syncGroup.POST("/session-events/sync", newSchemaHandler.SyncSessionEvents)
-
-	// Phase 2 sync endpoints
-	syncGroup.POST("/app-sessions/sync", newSchemaHandler.SyncAppSessions)
-	syncGroup.POST("/app-items/sync", newSchemaHandler.SyncAppItems)
-
-	// Phase 3 sync endpoints
-	syncGroup.POST("/app-status/sync", newSchemaHandler.SyncAppStatus)
-	syncGroup.POST("/hardware-devices/sync", newSchemaHandler.SyncHardwareDevices)
-	syncGroup.POST("/permission-status/sync", newSchemaHandler.SyncPermissionStatus)
-	syncGroup.POST("/storage-devices/sync", newSchemaHandler.SyncStorageDevices)
-	syncGroup.POST("/location-samples/sync", newSchemaHandler.SyncLocationSamples)
+	// Phase 1–3 sync POSTs (admission-controlled)
+	syncAdmit.POST("/device-hardware/sync", newSchemaHandler.SyncDeviceHardware)
+	syncAdmit.POST("/installed-apps/sync", newSchemaHandler.SyncInstalledApps)
+	syncAdmit.POST("/installed-packages/sync", newSchemaHandler.SyncInstalledPackages)
+	syncAdmit.POST("/network-info/sync", newSchemaHandler.SyncNetworkInfo)
+	syncAdmit.POST("/session-events/sync", newSchemaHandler.SyncSessionEvents)
+	syncAdmit.POST("/app-sessions/sync", newSchemaHandler.SyncAppSessions)
+	syncAdmit.POST("/app-items/sync", newSchemaHandler.SyncAppItems)
+	syncAdmit.POST("/app-status/sync", newSchemaHandler.SyncAppStatus)
+	syncAdmit.POST("/hardware-devices/sync", newSchemaHandler.SyncHardwareDevices)
+	syncAdmit.POST("/permission-status/sync", newSchemaHandler.SyncPermissionStatus)
+	syncAdmit.POST("/storage-devices/sync", newSchemaHandler.SyncStorageDevices)
+	syncAdmit.POST("/location-samples/sync", newSchemaHandler.SyncLocationSamples)
+	if portHandler != nil {
+		syncAdmit.POST("/hardware-ports/sync", portHandler.SyncPorts)
+	}
+	// 24/7 antivirus guard — Windows DlpService engine-health report (DeviceAuth).
+	if antivirusHandler != nil {
+		syncAdmit.POST("/antivirus/status/sync", antivirusHandler.SyncStatus)
+		// Remote-fix command channel: device claims pending commands and reports results.
+		syncAdmit.GET("/antivirus/commands/pending", antivirusHandler.PullCommands)
+		syncAdmit.POST("/antivirus/commands/result", antivirusHandler.ReportResult)
+	}
 	// "Remove the account" signal (R4/R5): called by the client AFTER it has drained its
 	// unsynced rows. Marks the CALLING machine 'old' and the employee untracked; the client
 	// then wipes its local DB + machine id. Lives in the DeviceAuth group because a device
 	// token (not a web-admin session) identifies the machine.
-	syncGroup.POST("/devices/self-remove", newSchemaHandler.SelfRemoveAccount)
+	syncAdmit.POST("/devices/self-remove", newSchemaHandler.SelfRemoveAccount)
+
 	syncGroup.GET("/schedules/me", timeAttendanceHandler.GetMySchedule)
+	if faceHandler != nil {
+		syncGroup.GET("/face-profiles/me", faceHandler.GetMyFaceProfile)
+		syncGroup.GET("/face-profiles/me/embeddings", faceHandler.GetMyEmbeddings)
+		syncGroup.GET("/face-profiles/me/samples", faceHandler.ListMySamples)
+		syncGroup.GET("/face-profiles/me/samples/:sampleId/image", faceHandler.GetMySampleImage)
+		syncGroup.POST("/face-profiles/sync-ack", faceHandler.SyncAck)
+		syncGroup.POST("/face-profiles/verify-event", faceHandler.VerifyEvent)
+		syncAdmit.POST("/face-profiles/verify-events/sync", faceHandler.SyncVerifyEvents)
+		syncGroup.GET("/face-models/manifest", faceHandler.ModelManifest)
+		syncGroup.GET("/face-models/packages/:packageId", faceHandler.DownloadModelPackage)
+	}
 
 	// Security & DLP — device surface (policy pull, alert sync, health, removal verify)
 	if dlpHandler != nil {
 		syncGroup.GET("/dlp/policy", dlpHandler.GetPolicy)
-		syncGroup.POST("/dlp/alerts/sync", dlpHandler.SyncAlerts)
-		syncGroup.POST("/dlp/health", dlpHandler.PostHealth)
-		syncGroup.POST("/devices/removal-verify", dlpHandler.VerifyRemovalCode)
+		syncAdmit.POST("/dlp/alerts/sync", dlpHandler.SyncAlerts)
+		syncAdmit.POST("/dlp/health", dlpHandler.PostHealth)
+		syncAdmit.POST("/devices/removal-verify", dlpHandler.VerifyRemovalCode)
 	}
 
 	// Live stream — client push socket (DeviceAuth). Web watch/employees live under JWTAuth.
@@ -133,6 +187,11 @@ func Setup(
 	// Control / presence WebSocket (DeviceAuth) — keep-alive channel, not frame streaming.
 	if wsHandler != nil {
 		syncGroup.GET("/ws", wsHandler.Connect)
+	}
+
+	// Offline-first screenshots upload (DeviceAuth) — separate RL so bursts do not starve sync.
+	if screenshotHandler != nil {
+		syncGroup.POST("/screenshots/upload", screenshotHandler.Upload, screenshotRL.Middleware(byIP))
 	}
 
 	// ─────────────────────────────
@@ -148,6 +207,26 @@ func Setup(
 	// ─────────────────────────────
 	protected := e.Group("/api/v1")
 	protected.Use(appMiddleware.JWTAuth(authService))
+	// Soft rate-limit admin list/search GETs (100 concurrent admins).
+	adminMW := adminRL.Middleware(byIP)
+	protected.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if c.Request().Method != echo.GET {
+				return next(c)
+			}
+			path := c.Path()
+			if strings.Contains(path, "/employees") ||
+				strings.Contains(path, "/app-sessions") ||
+				strings.Contains(path, "/app-items") ||
+				strings.Contains(path, "/attendance") ||
+				strings.Contains(path, "/dashboard") ||
+				strings.Contains(path, "/live-stream/employees") ||
+				strings.Contains(path, "/screenshots") {
+				return adminMW(next)(c)
+			}
+			return next(c)
+		}
+	})
 
 	// Auth
 	protected.GET("/auth/me", authHandler.Me)
@@ -178,6 +257,18 @@ func Setup(
 	employees.PUT("/:id", employeeHandler.UpdateEmployee)
 	employees.DELETE("/:id", employeeHandler.DeleteEmployee)
 	employees.POST("/:id/generate-secret", employeeHandler.GenerateSecret)
+	if faceHandler != nil {
+		employees.POST("/:id/face-enrollment", faceHandler.CreateEnrollment)
+		employees.POST("/:id/face-enrollment/:jobId/retry", faceHandler.RetryEnrollment)
+		// Static "samples" segment before :jobId so image URLs never bind jobId="samples".
+		employees.GET("/:id/face-enrollment/samples/:sampleId/image", faceHandler.GetEnrollmentSampleImage)
+		employees.GET("/:id/face-enrollment/:jobId", faceHandler.GetEnrollmentJob)
+		employees.GET("/:id/face-profile/samples", faceHandler.ListProfileSamples)
+		employees.GET("/:id/face-profile", faceHandler.GetFaceProfile)
+		employees.DELETE("/:id/face-profile", faceHandler.DeleteFaceProfile)
+		protected.GET("/face-verify/events", faceHandler.ListVerifyEvents)
+		protected.GET("/face-verify/events/:id", faceHandler.GetVerifyEvent)
+	}
 
 	// Device Revocation
 	protected.POST("/devices/:id/revoke", authHandler.RevokeDevice)
@@ -274,6 +365,25 @@ func Setup(
 		protected.POST("/devices/removal-code", dlpHandler.IssueRemovalCode)
 	}
 
+	// 24/7 antivirus guard — fleet engine health (web /antivirus). Detections / tamper
+	// events are DLP alerts (types malware / av_tamper) under /dlp/alerts.
+	if antivirusHandler != nil {
+		protected.GET("/antivirus/status", antivirusHandler.ListStatus)
+		// Admin-side remote fix: queue a scan / remediation, view command history.
+		protected.POST("/antivirus/commands", antivirusHandler.QueueCommand)
+		protected.GET("/antivirus/commands", antivirusHandler.ListCommands)
+	}
+
+	// Hardware & Port Control — inventory (read) + device-control rules (CRUD, auto-publish)
+	if portHandler != nil {
+		protected.GET("/hardware-ports", portHandler.ListPorts)
+		dc := protected.Group("/device-control")
+		dc.GET("/rules", portHandler.ListRules)
+		dc.POST("/rules", portHandler.CreateRule)
+		dc.PATCH("/rules/:id", portHandler.UpdateRule)
+		dc.DELETE("/rules/:id", portHandler.DeleteRule)
+	}
+
 	// RBAC: module catalog + roles with per-submodule permissions
 	protected.GET("/modules", rbacHandler.ListModules)
 
@@ -310,5 +420,10 @@ func Setup(
 		protected.GET("/live-stream/employees", streamHandler.ListEmployees)
 		protected.GET("/live-stream/watch-ticket", streamHandler.IssueWatchTicket)
 		e.GET("/api/v1/live-stream/watch", streamHandler.Watch)
+	}
+
+	if screenshotHandler != nil {
+		protected.GET("/screenshots", screenshotHandler.List)
+		protected.GET("/screenshots/:id/image", screenshotHandler.Image)
 	}
 }

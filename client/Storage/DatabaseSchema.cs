@@ -165,6 +165,31 @@ internal static class DatabaseSchema
         CREATE INDEX IF NOT EXISTS idx_hardware_devices_open
             ON hardware_devices(unplugged_at, bus_path);
 
+        -- ── HARDWARE & PORT CONTROL (2026-11-07) ──────────────────────────────
+        -- Full scanned inventory of every port/interface/device. One row per
+        -- physical slot (instance_id). present=0 marks a device that was seen
+        -- before but is gone now; any value change resets is_synced=0 so the
+        -- server learns it (client owns present/removed).
+        CREATE TABLE IF NOT EXISTS machine_ports (
+            instance_id      TEXT PRIMARY KEY,
+            machine_id       TEXT NOT NULL DEFAULT '',
+            category         INTEGER NOT NULL DEFAULT 1,
+            pnp_class        TEXT NOT NULL DEFAULT '',
+            class_guid       TEXT NOT NULL DEFAULT '',
+            bus_type         TEXT NOT NULL DEFAULT '',
+            friendly_name    TEXT NOT NULL DEFAULT '',
+            manufacturer     TEXT NOT NULL DEFAULT '',
+            present          INTEGER NOT NULL DEFAULT 1,
+            status           TEXT NOT NULL DEFAULT '',
+            blockable        INTEGER NOT NULL DEFAULT 1,
+            is_synced        INTEGER NOT NULL DEFAULT 0,
+            synced_at        TEXT,
+            scanned_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_machine_ports_unsent
+            ON machine_ports(is_synced);
+
         CREATE TABLE IF NOT EXISTS session_events (
             id               TEXT PRIMARY KEY,
             machine_id       TEXT NOT NULL DEFAULT '',
@@ -410,6 +435,52 @@ internal static class DatabaseSchema
 
         CREATE INDEX IF NOT EXISTS idx_location_samples_captured
             ON location_samples(captured_at DESC);
+
+        -- Face verify (Windows --face-verify). Also mirrored in face/biometric.db for the
+        -- subprocess; tables here keep wipe-via-sqlite_master coverage if co-located.
+        CREATE TABLE IF NOT EXISTS local_face_profiles (
+            employee_id         TEXT PRIMARY KEY,
+            profile_id          TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT '',
+            profile_version     INTEGER NOT NULL DEFAULT 0,
+            enrollment_version  INTEGER NOT NULL DEFAULT 0,
+            model_id            TEXT NOT NULL DEFAULT '',
+            model_version       TEXT NOT NULL DEFAULT '',
+            preprocess_version  TEXT NOT NULL DEFAULT 'face-preprocess-v1',
+            embedding_dims      INTEGER NOT NULL DEFAULT 512,
+            embedding_count     INTEGER NOT NULL DEFAULT 0,
+            updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS local_face_templates (
+            id                  TEXT PRIMARY KEY,
+            employee_id         TEXT NOT NULL,
+            profile_id          TEXT NOT NULL,
+            sample_id           TEXT,
+            pose_id             TEXT,
+            model_id            TEXT NOT NULL DEFAULT '',
+            model_version       TEXT NOT NULL DEFAULT '',
+            preprocess_version  TEXT NOT NULL DEFAULT 'face-preprocess-v1',
+            embedding_dims      INTEGER NOT NULL DEFAULT 512,
+            quality_score       REAL,
+            vector_blob         BLOB NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_local_face_templates_employee
+            ON local_face_templates(employee_id);
+
+        CREATE TABLE IF NOT EXISTS local_biometric_sync_state (
+            employee_id         TEXT PRIMARY KEY,
+            last_sync_at        TEXT,
+            last_ack_at         TEXT,
+            last_verify_at      TEXT,
+            last_verify_result  TEXT,
+            profile_version     INTEGER NOT NULL DEFAULT 0,
+            model_version       TEXT NOT NULL DEFAULT '',
+            failure_count       INTEGER NOT NULL DEFAULT 0,
+            updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S.000Z', 'now'))
+        );
     ";
 
     internal const string MigrateSql = @"
@@ -625,6 +696,31 @@ internal static class DatabaseSchema
         VALUES
             ($id, COALESCE((SELECT machine_id FROM machine_identity WHERE id = 1), ''), $device_class, $vendor, $product, $serial, $bus_path, $device_node, $plugged_at)
         ON CONFLICT(bus_path) WHERE unplugged_at IS NULL AND bus_path != '' DO NOTHING
+    ";
+
+    // Upsert one scanned port. is_synced resets to 0 whenever any observable
+    // field changes (present/status/name/etc.) so the change propagates.
+    internal const string UpsertMachinePortSql = @"
+        INSERT INTO machine_ports
+            (instance_id, machine_id, category, pnp_class, class_guid, bus_type,
+             friendly_name, manufacturer, present, status, blockable, is_synced, scanned_at)
+        VALUES
+            ($instance_id, COALESCE((SELECT machine_id FROM machine_identity WHERE id = 1), ''),
+             $category, $pnp_class, $class_guid, $bus_type, $friendly_name, $manufacturer,
+             $present, $status, $blockable, 0,
+             strftime('%Y-%m-%dT%H:%M:%S.000Z','now'))
+        ON CONFLICT(instance_id) DO UPDATE SET
+            category=excluded.category, pnp_class=excluded.pnp_class, class_guid=excluded.class_guid,
+            bus_type=excluded.bus_type, friendly_name=excluded.friendly_name,
+            manufacturer=excluded.manufacturer, status=excluded.status, blockable=excluded.blockable,
+            present=excluded.present,
+            scanned_at=strftime('%Y-%m-%dT%H:%M:%S.000Z','now'),
+            is_synced=CASE WHEN
+                machine_ports.present=excluded.present AND machine_ports.status=excluded.status
+                AND machine_ports.friendly_name=excluded.friendly_name
+                AND machine_ports.category=excluded.category
+                AND machine_ports.blockable=excluded.blockable
+                THEN machine_ports.is_synced ELSE 0 END
     ";
 
     internal const string InsertSessionEventSql = @"

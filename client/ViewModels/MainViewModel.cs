@@ -9,6 +9,7 @@ using client.Core;
 using client.Core.Abstractions;
 using client.Core.Models;
 using client.Services;
+using client.Services.FaceVerify;
 
 namespace client.ViewModels;
 
@@ -417,12 +418,14 @@ public partial class MainViewModel : ViewModelBase
 
             _logCollector.SetEmployeeInfo(info.EmployeeId, info.Name, info.Token ?? string.Empty);
             _logCollector.StartTracking();
+            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info, trigger: "login");
 
-            // Session restored — wake the sync engine NOW so any rows collected since the
-            // last run (device_hardware_info, installed apps/packages, network, storage,
-            // hardware devices, permission status, sessions/items) reach the server
-            // immediately instead of waiting out the idle poll.
-            _syncService.RequestImmediateSync();
+            // Session restored — wake sync after login jitter so reboot storms of 1000
+            // agents do not align on the same second.
+            _ = Task.Run(async () =>
+            {
+                await _syncService.RequestImmediateSyncWithLoginJitterAsync(CancellationToken.None);
+            });
 
             // Reset stale permission statuses so they get freshly re-evaluated
             // (GetNextPermissionStep() no longer reads stored statuses, but this
@@ -903,13 +906,14 @@ public partial class MainViewModel : ViewModelBase
 
             _logCollector.SetEmployeeInfo(emp.EmployeeId, emp.Name, loginResp.Token ?? string.Empty);
             _logCollector.StartTracking();
+            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, employeeInfo, trigger: "login");
 
-            // Login succeeded — fire an IMMEDIATE sync pass so this machine's full picture
-            // (device_hardware_info, employee profile, installed apps/packages, network,
-            // storage_devices, hardware_devices, session_events, permission_status, …) is
-            // on the server right now, not on the next 60s idle tick. The SyncService loop
-            // picks up the signal and drains every unsent table in byte-bounded chunks.
-            _syncService.RequestImmediateSync();
+            // Login succeeded — drain after a random jitter so 1000 agents do not storm
+            // the API in the same second (ALPHA_SYNC_LOGIN_JITTER_SEC).
+            _ = Task.Run(async () =>
+            {
+                await _syncService.RequestImmediateSyncWithLoginJitterAsync(CancellationToken.None);
+            });
 
             // Hardware / network / software were last collected at process start — possibly
             // BEFORE this machine's local wipe — and their in-memory dedup fingerprints
@@ -922,7 +926,7 @@ public partial class MainViewModel : ViewModelBase
             _ = Task.Run(async () =>
             {
                 await _logCollector.RecollectAfterLoginAsync(CancellationToken.None);
-                _syncService.RequestImmediateSync();
+                await _syncService.RequestImmediateSyncWithLoginJitterAsync(CancellationToken.None);
             });
 
             IsLoggedIn = true;

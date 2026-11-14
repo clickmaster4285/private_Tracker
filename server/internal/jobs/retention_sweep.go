@@ -56,6 +56,11 @@ func (w *RetentionWorker) Start(ctx context.Context) {
 	}
 }
 
+// RunOnce performs a single retention pass (used by Asynq workers and tests).
+func (w *RetentionWorker) RunOnce(ctx context.Context) {
+	w.runSweep(ctx)
+}
+
 func (w *RetentionWorker) runSweep(ctx context.Context) {
 	startTime := time.Now()
 	cutoff := time.Now().AddDate(0, 0, -w.retentionDays)

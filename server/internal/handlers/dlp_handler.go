@@ -186,7 +186,7 @@ func (h *DlpHandler) CreateAllowApp(c echo.Context) error {
 	row, err := h.svc.CreateAllowApp(c.Request().Context(), req, h.userID(c))
 	if err != nil {
 		msg := err.Error()
-		if strings.Contains(msg, "needs") || strings.Contains(msg, "cap exceeded") {
+		if isAllowAppClientErr(msg) {
 			return errorResponse(c, http.StatusBadRequest, msg, err)
 		}
 		return errorResponse(c, http.StatusInternalServerError, "Failed to add app", err)
@@ -210,12 +210,21 @@ func (h *DlpHandler) UpdateAllowApp(c echo.Context) error {
 			return errorResponse(c, http.StatusNotFound, "App entry not found", err)
 		}
 		msg := err.Error()
-		if strings.Contains(msg, "needs") {
+		if isAllowAppClientErr(msg) {
 			return errorResponse(c, http.StatusBadRequest, msg, err)
 		}
 		return errorResponse(c, http.StatusInternalServerError, "Failed to update app", err)
 	}
 	return c.JSON(http.StatusOK, row)
+}
+
+func isAllowAppClientErr(msg string) bool {
+	return strings.Contains(msg, "needs") ||
+		strings.Contains(msg, "cap exceeded") ||
+		strings.Contains(msg, "already on the allow list") ||
+		strings.Contains(msg, "catalog application not found") ||
+		strings.Contains(msg, "catalog app has no") ||
+		strings.Contains(msg, "installedApplicationId")
 }
 
 // DeleteAllowApp handles DELETE /api/v1/dlp/lockdown/apps/:id

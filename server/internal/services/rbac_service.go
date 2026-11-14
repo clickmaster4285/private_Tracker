@@ -41,6 +41,8 @@ var rbacCatalog = []moduleSeed{
 		Key: "hr", Name: "HR", SortOrder: 2,
 		Submodules: []submodulesSeed{
 			{Key: "users", Name: "Employees", Route: "/employees"},
+			{Key: "users/face-enrollment", Name: "Face Enrollment", Route: "/employees/face"},
+			{Key: "users/face-verify", Name: "Face Verify", Route: "/face-verify"},
 			{Key: "departments", Name: "Departments", Route: "/departments"},
 			{Key: "roles", Name: "Roles", Route: "/roles"},
 			{Key: "kpis", Name: "KPIs & KRAs", Route: "/kpis"},
@@ -90,6 +92,7 @@ var rbacCatalog = []moduleSeed{
 			{Key: "dlp-rules", Name: "DLP Rules", Route: "/dlp-rules"},
 			{Key: "web-blocker", Name: "Web Blocker", Route: "/web-blocker"},
 			{Key: "shadow-it", Name: "Shadow IT", Route: "/shadow-it"},
+			{Key: "antivirus", Name: "Antivirus", Route: "/antivirus"},
 		},
 	},
 	{

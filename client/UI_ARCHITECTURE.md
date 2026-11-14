@@ -2,7 +2,16 @@
 
 **Scope:** the Avalonia desktop GUI only — design tokens, style classes, the six pages, the router, and the binding patterns that hold them together. For services, collectors, storage and the sync pipeline see [ARCHITECTURE.md](./ARCHITECTURE.md). For the repo-wide file tree see [../FILE_HIERARCHY.md](../FILE_HIERARCHY.md).
 
-*Last audited: 2026-10-30 — MainWindow rail + roaming Tracker control; separate `--tracking-controls` modal agent.*
+*Last audited: 2026-11-10 — `--timedatewarning` sibling Avalonia window (clock/TZ health).*
+
+---
+
+## 0. Sibling UI processes
+
+| Args | Window | Notes |
+|------|--------|-------|
+| `--gui` | `MainWindow` | Full shell; parks collectors (tracker is `--background`) |
+| `--timedatewarning` | `TimeDateWarningWindow` | No DI host; reads `timedatewarning/state.json`; Open Date & Time settings / Dismiss |
 
 ---
 

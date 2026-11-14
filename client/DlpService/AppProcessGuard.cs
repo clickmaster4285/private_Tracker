@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AlphaAITracker.Service;
@@ -12,6 +15,12 @@ internal static class AppProcessGuard
 {
     public sealed record Result(int Examined, int Killed, string Detail);
 
+    private static readonly object MatcherGate = new();
+    private static string _matcherFingerprint = "\0";
+    private static List<PathMatcher> _cachedMatchers = new();
+
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+
     /// <summary>
     /// Kill interactive / user EXEs that are not allowed. Never touches kernel/critical
     /// system process names (even when path is unreadable).
@@ -21,7 +30,7 @@ internal static class AppProcessGuard
         if (!OperatingSystem.IsWindows())
             return new Result(0, 0, "unsupported_os");
 
-        var allow = BuildAllowMatchers(allowApps);
+        var allow = GetAllowMatchers(allowApps);
         var killed = 0;
         var examined = 0;
         var examples = new List<string>();
@@ -38,22 +47,28 @@ internal static class AppProcessGuard
                     if (IsNeverKillName(name))
                         continue;
 
+                    var sessionId = SafeSessionId(proc);
+                    // Session 0 services: only force-check denied interactive names (should be 0).
+                    // Skip the rest — MainModule on services is expensive and usually access-denied.
+                    var interactiveDenied = IsDeniedInteractiveName(name) && sessionId > 0;
+                    if (sessionId == 0 && !interactiveDenied)
+                        continue;
+
                     string? path = null;
                     try
                     {
-                        path = proc.MainModule?.FileName;
+                        path = TryGetProcessImagePath(proc.Id) ?? proc.MainModule?.FileName;
                     }
                     catch
                     {
-                        // Access denied / protected — leave alone.
-                        continue;
+                        if (!interactiveDenied)
+                            continue; // Access denied / protected — leave alone.
                     }
 
-                    if (string.IsNullOrWhiteSpace(path))
-                        continue;
-
                     examined++;
-                    if (IsPathAllowed(path, allow))
+                    if (!string.IsNullOrWhiteSpace(path) && IsPathAllowed(path, allow))
+                        continue;
+                    if (string.IsNullOrWhiteSpace(path) && !interactiveDenied)
                         continue;
 
                     try
@@ -61,7 +76,7 @@ internal static class AppProcessGuard
                         proc.Kill(entireProcessTree: true);
                         killed++;
                         if (examples.Count < 8)
-                            examples.Add($"{name}:{path}");
+                            examples.Add($"{name}:{path ?? "?"}");
                     }
                     catch
                     {
@@ -81,15 +96,44 @@ internal static class AppProcessGuard
         return new Result(examined, killed, detail);
     }
 
+    /// <summary>Stable fingerprint of allow.apps paths used for matcher cache + sweep cadence.</summary>
+    public static string AllowAppsFingerprint(IReadOnlyList<AllowAppEntry> allowApps)
+    {
+        var sb = new StringBuilder();
+        var paths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in allowApps)
+        {
+            if (!string.IsNullOrWhiteSpace(a.Path))
+                paths.Add(a.Path.Trim());
+        }
+        foreach (var p in paths)
+            sb.Append(p).Append('\n');
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        return Convert.ToHexString(SHA256.HashData(bytes));
+    }
+
+    private static List<PathMatcher> GetAllowMatchers(IReadOnlyList<AllowAppEntry> allowApps)
+    {
+        var fp = AllowAppsFingerprint(allowApps);
+        lock (MatcherGate)
+        {
+            if (fp == _matcherFingerprint && _cachedMatchers.Count > 0)
+                return _cachedMatchers;
+            _cachedMatchers = BuildAllowMatchers(allowApps);
+            _matcherFingerprint = fp;
+            return _cachedMatchers;
+        }
+    }
+
     internal static List<PathMatcher> BuildAllowMatchers(IReadOnlyList<AllowAppEntry> allowApps)
     {
         var raw = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in AppAllowEnforcer.BootstrapPaths())
-            raw.Add(ExpandMacros(p));
+            AddExpandedPaths(raw, p);
         foreach (var a in allowApps)
         {
             if (!string.IsNullOrWhiteSpace(a.Path))
-                raw.Add(ExpandMacros(a.Path.Trim()));
+                AddExpandedPaths(raw, a.Path.Trim());
         }
 
         var list = new List<PathMatcher>();
@@ -97,6 +141,53 @@ internal static class AppProcessGuard
             list.Add(PathMatcher.Parse(p));
         return list;
     }
+
+    /// <summary>
+    /// Expand AppLocker-style macros to concrete filesystem paths. AppLocker's
+    /// %PROGRAMFILES% covers both Program Files roots — emit matchers for both so the
+    /// sweeper agrees with AppLocker (Edge typically lives under Program Files (x86)).
+    /// Also expands legacy %PROGRAMFILES(X86)% from older policy XML.
+    /// </summary>
+    private static void AddExpandedPaths(SortedSet<string> raw, string path)
+    {
+        var p = path.Replace('/', '\\').Trim();
+        p = Environment.ExpandEnvironmentVariables(p);
+        var windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+        if (StartsWithMacro(p, "%SYSTEM32%"))
+        {
+            raw.Add(ReplacePrefix(p, "%SYSTEM32%", sys));
+            return;
+        }
+        if (StartsWithMacro(p, "%WINDIR%"))
+        {
+            raw.Add(ReplacePrefix(p, "%WINDIR%", windir));
+            return;
+        }
+        if (StartsWithMacro(p, "%PROGRAMFILES(X86)%"))
+        {
+            raw.Add(ReplacePrefix(p, "%PROGRAMFILES(X86)%", pf86));
+            return;
+        }
+        if (StartsWithMacro(p, "%PROGRAMFILES%"))
+        {
+            var rest = p["%PROGRAMFILES%".Length..];
+            if (!string.IsNullOrEmpty(pf))
+                raw.Add(pf + rest);
+            if (!string.IsNullOrEmpty(pf86) &&
+                !string.Equals(pf, pf86, StringComparison.OrdinalIgnoreCase))
+                raw.Add(pf86 + rest);
+            return;
+        }
+
+        raw.Add(p);
+    }
+
+    private static bool StartsWithMacro(string path, string macro) =>
+        path.StartsWith(macro, StringComparison.OrdinalIgnoreCase);
 
     internal static bool IsPathAllowed(string path, List<PathMatcher> allow)
     {
@@ -110,8 +201,9 @@ internal static class AppProcessGuard
     }
 
     /// <summary>
-    /// Process names we never kill (desktop survival + SCM). Path-based allow still
-    /// gates Calculator / Taskmgr because those names are NOT listed here.
+    /// Process names we never kill (SCM + desktop shell). Settings / PowerShell are NOT
+    /// listed — under lockdown the sweeper kills them unless published on allow.apps
+    /// (interactive shells are force-killed even when path lookup fails).
     /// </summary>
     private static bool IsNeverKillName(string processName)
     {
@@ -125,14 +217,14 @@ internal static class AppProcessGuard
         if (n.Equals("client", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        // Critical OS / shell — must stay up even if MainModule is unreadable.
+        // Critical OS + Explorer shell — must stay up even if MainModule is unreadable.
         string[] forever =
         [
             "System", "Registry", "smss", "csrss", "wininit", "winlogon", "services", "lsass",
             "svchost", "dwm", "fontdrvhost", "conhost", "explorer", "userinit", "LogonUI",
             "sihost", "taskhostw", "RuntimeBroker", "ApplicationFrameHost", "ShellExperienceHost",
             "StartMenuExperienceHost", "SearchHost", "SearchApp", "ShellHost", "TextInputHost",
-            "ctfmon", "dllhost", "backgroundTaskHost", "SystemSettingsBroker", "WidgetService",
+            "ctfmon", "dllhost", "backgroundTaskHost",
             "SecurityHealthService", "MsMpEng", "NisSrv", "SgrmBroker", "Memory Compression",
         ];
         foreach (var f in forever)
@@ -143,19 +235,52 @@ internal static class AppProcessGuard
         return false;
     }
 
-    private static string ExpandMacros(string path)
+    /// <summary>
+    /// Shells / Settings / Control Panel that must not stay open for interactive users
+    /// until published on the server allow list. Explorer is never listed (desktop survival).
+    /// </summary>
+    private static bool IsDeniedInteractiveName(string processName)
     {
-        var p = path.Replace('/', '\\');
-        p = Environment.ExpandEnvironmentVariables(p);
-        var windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
-        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        p = ReplacePrefix(p, "%SYSTEM32%", sys);
-        p = ReplacePrefix(p, "%WINDIR%", windir);
-        p = ReplacePrefix(p, "%PROGRAMFILES%", pf);
-        p = ReplacePrefix(p, "%PROGRAMFILES(X86)%", pf86);
-        return p;
+        string[] denied =
+        [
+            "powershell", "powershell_ise", "pwsh",
+            "SystemSettings", "SystemSettingsAdminFlows", "SystemSettingsBroker",
+            "control", "mmc", "cmd",
+            "WindowsTerminal", "wt",
+            // Windows Security app — the UI toggle for real-time protection / exclusions.
+            "SecHealthUI",
+        ];
+        foreach (var d in denied)
+        {
+            if (processName.Equals(d, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private static int SafeSessionId(Process proc)
+    {
+        try { return proc.SessionId; }
+        catch { return -1; }
+    }
+
+    private static string? TryGetProcessImagePath(int pid)
+    {
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
+        if (handle == IntPtr.Zero)
+            return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            var size = (uint)sb.Capacity;
+            if (!QueryFullProcessImageName(handle, 0, sb, ref size))
+                return null;
+            return sb.ToString(0, (int)size);
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
     }
 
     private static string ReplacePrefix(string path, string macro, string? value)
@@ -165,6 +290,16 @@ internal static class AppProcessGuard
             return value + path[macro.Length..];
         return path;
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint processAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(
+        IntPtr hProcess, uint flags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
 
     internal sealed class PathMatcher
     {

@@ -1,7 +1,466 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-07
+> **Last audited:** 2026-11-14
 > **Changelog:**
+>
+> - 2026-11-14: **Face match threshold 0.8 for first + simple.** Default /
+>   `ALPHA_FACE_MATCH_THRESHOLD` floor lowered from 0.85 → **0.8**; removed first-mode
+>   `+0.05` bump so both soft-lock paths use the same score. Client **VERSION 2.3.8**.
+>   Installer-Parity: re-bake `config.enc` + rebuild Windows installer.
+>
+> - 2026-11-14: **DLP idle cadence for older office PCs (i5 3rd-gen / 8 GB).** Ship defaults
+>   stretched: enforce **60s**, app sweep **120s**, DNS pin **10s**, TCP kill **30s**, port
+>   guard **15s**, delete recheck **600s**. Fast fight paths unchanged (5s / 1.5s / 2s).
+>   Client **VERSION 2.3.7**. Installer-Parity: re-bake `config.enc` + rebuild Windows
+>   installer; restart DLP on the lab PC so `service.env` picks up the new values.
+>
+> - 2026-11-14: **DLP idle CPU optimization (fail-closed).** Enforce tick split from policy
+>   poll (`ALPHA_DLP_ENFORCE_TICK_SEC`). Adaptive AppProcessGuard (5s after kill / idle
+>   sweep) + matcher cache + `QueryFullProcessImageName`; AppLocker Clear short-circuit.
+>   DnsBlockPinWorker: TCP kill on new pins + throttle, adaptive pin interval, DNS-cache
+>   hash skip. Port Apply fingerprint-stable skip + adaptive PortGuard; Delete-block root
+>   fingerprint. Blockers stay default **true**. Client **VERSION 2.3.4** (defaults later
+>   retuned in 2.3.7 for older PCs). Installer-Parity: re-bake `config.enc` + rebuild
+>   Windows installer / restart DLP service so `service.env` picks up the new knobs.
+>
+> - 2026-11-14: **Login reboot delay env + dim-light face verify + soft-lock isolation.**
+>   `ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC` (default **5**, clamp 5–120) replaces hardcoded
+>   20s post-login reboot. Soft-lock: CLAHE + lower det score on dim frames, camera
+>   auto-exposure boost, DirectML ORT (+CPU), extended `FaceVerifyYield` parking, and
+>   `ALPHA_FACE_VERIFY_KILL_APPS` (default true) user-session app sweep (shell/DLP/tracker
+>   never killed). Client **VERSION 2.3.2**. Installer-Parity: re-bake `config.enc` +
+>   rebuild Windows installer; restart DLP service for reboot-delay key.
+>
+> - 2026-11-14: **Auth cookies match `main`.** Removed `COOKIE_SECURE` /
+>   `ConfigureAuthCookies` / `ServerConfig.CookieSecure`. `auth_token` +
+>   `refresh_token` again hardcode `Secure: false` (plain HTTP). Restart API.
+>
+> - 2026-11-14: **Plain HTTP only — TLS/HTTPS removed.** Dropped Echo `StartTLS` /
+>   `TLS_*` env, web `scripts/dev-https.mjs` + mkcert `.env` keys, client
+>   `TlsCertificateTrust` / `ALPHA_TLS_*`, DlpService fleet CA handler, Inno
+>   `InstallOrgTlsCa`, bake of `certs/rootCA.pem`, and `install-org-ca.ps1`.
+>   API / Next / client / face_worker / WS use `http://` / `ws://`. Client
+>   **VERSION 2.3.1**. Restart API + `npm run dev` + face_worker; re-bake
+>   `config.enc` + rebuild Windows installer so fleet points at `http://…`.
+>
+> - 2026-11-14: **Merge face verify (HEAD) + antivirus / file-transfer (sohaib).** Face
+>   stays migrations **068–070**; antivirus/file-transfer renumbered to **071–075** so both
+>   land on one DB. Client **VERSION 2.2.1** (face soft-lock) + sohaib DlpService AV guard
+>   and `file_download`/`file_upload` rules. Restart API for new migrations; rebuild Windows
+>   installer for DLP/AV half if not already on a post-merge build.
+>
+> - 2026-11-14: **Face distance band ~50–70 cm (client + server).** Enrollment and soft-lock
+>   reject faces outside face-height/frame-height fraction
+>   (`FACE_DISTANCE_MIN_FRAC`/`MAX` default 0.25–0.48; client `ALPHA_FACE_DISTANCE_*`).
+>   Reasons `too_far` / `too_close`. Client **VERSION 2.2.1**. Restart `python worker.py`;
+>   rebuild Windows installer for soft-lock UX.
+>
+> - 2026-11-14: **InsightFace buffalo_l + stronger verify.** Replaces YuNet+AdaFace with
+>   SCRFD `det_10g` + `w600k_r50` (`model_id=buffalo-l-w600k-r50`,
+>   `face-preprocess-v2-buffalo-l`) on face_worker and Windows client. ORT uses all
+>   CPU threads (`FACE_WORKER_ORT_THREADS` / `ProcessorCount`); soft-lock process
+>   priority **High**; `FaceVerifyYield` parks collectors/sync/screenshots/live/a11y
+>   while verify runs (DLP stays up). Match floor **strictly ≥ 0.85**. Missing/stale
+>   local templates → tracker force-refresh + `request_embeddings.json` loop.
+>   DeviceAuth packages `buffalo-l-det` / `buffalo-l-rec`. **Breaking:** reprocess all
+>   enrollments (AdaFace vectors incompatible). InsightFace commercial license required
+>   for production. Client **VERSION 2.2.0**. Restart API + `python worker.py`; place
+>   ONNX under `face_worker/models/`; rebuild Windows installer; re-bake `config.enc`.
+>
+> - 2026-11-14: **WinForms face soft-locker (government-critical redesign).** Replaces
+>   Avalonia `--face-verify` with WinForms fullscreen soft-lock branded
+>   `alpha-ai-tracker-face-verification` (instant UI; ONNX/camera on background
+>   threads; Normal priority). Soft-lock ≠ Lock Screen / Secure Desktop /
+>   Credential Provider (CP feasibility in
+>   [`doc/face-verify-locker-architecture.md`](doc/face-verify-locker-architecture.md)).
+>   First-local test is **client-only** (`first_local_test_done` label; never
+>   enqueue/POST). Simple-mode: threshold default **0.85**, 3-frame streak +
+>   motion PAD (`pad_static`), DPAPI template blobs, supervisor relaunch until
+>   success gate. Tracker `FaceWarmupService` syncs models/templates + **simple**
+>   events only. Client **VERSION 2.1.4**. Rebuild Windows installer; re-bake
+>   `config.enc` for threshold.
+>
+> - 2026-11-13: **DLP Rules — File Download / File Upload triggers (server + web + DlpService).**
+>   Browser download/upload blocking lives in **DLP Rules** (not a separate page): new triggers
+>   `file_download` and `file_upload`; an enabled rule with action **Block** or **Alert + Block**,
+>   once published, makes every Windows PC apply it (same model as `usb_storage`). **Server:**
+>   migration **075** widens `dlp_rules_trigger_check`; `allowedTriggers` gains both. No new tables /
+>   routes / RBAC — rules ride the existing bundle `rules[]`. **Web `/dlp-rules`:** trigger options
+>   "File Download (browser)" / "File Upload (browser)" with an inline hint; alert labels
+>   `file_download` / `file_upload` / `file_transfer_tamper`. **DlpService:** new
+>   `FileTransferEnforcer` writes HKLM Chromium policies for Chrome / Edge / Brave / Chromium —
+>   `DownloadRestrictions=3` (no downloads) and `AllowFileSelectionDialogs=0` (file picker never
+>   opens → no uploads) — drift-only every `EnforceWorker` tick (`PolicyBundleParser.BlockingRule`);
+>   `Clear` removes only values holding our exact value. Independent of network lockdown; honours
+>   machine pause and local switch `ALPHA_DLP_FILE_TRANSFER_BLOCK` (default `true`). A rewrite while
+>   the desired state is unchanged = tamper → `file_transfer_tamper` alert (rule id + severity, ≤1 /
+>   10 min). Offline-first comes free: `PolicyStore` already persists rules. Park, pipe teardown,
+>   and tracker `WindowsTeardownCleanup` clear the values; pipe `Health.fileTransferBlock`. Env →
+>   `.env(.example)` → `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` /
+>   `EnvBootstrap`. Honest limits: action **Alert Only** does nothing yet (no download/upload
+>   detection); Firefox / Opera / Tor ignore these policies → allow only Chrome/Edge in
+>   `/allowlists/apps`; drag-and-drop of a file into a page, pasted text and screenshots are not
+>   blocked. Installer-Parity: re-bake `config.enc` + rebuild the Windows installer; restart API
+>   for **075**.
+>
+> - 2026-11-13: **Face verify match parity (LMEDS + pose gate).** Root cause of weak
+>   webcam scores / EMP-10008 stuck on `left`: client `EstimateAffinePartial2D`
+>   used OpenCV default RANSAC while face_worker uses **LMEDS** (~0.68 same-image
+>   cosine). Client align now LMEDS; first-verify auto-skips a non-front pose after
+>   20 fails (audit `skipped_pose`, front still required); worker rejects enroll
+>   poses with cosine-to-front &lt; 0.30 (`pose_too_extreme`) for retake. Heal script
+>   [`server/face_worker/heal_emp_10008_left.py`](server/face_worker/heal_emp_10008_left.py);
+>   parity harness [`parity_check.py`](server/face_worker/parity_check.py) +
+>   `FaceAlignParityTests`. Client **VERSION 2.1.1**. Restart `python worker.py`;
+>   rebuild Windows installer; HR retake EMP-10008 left angles.
+>
+> - 2026-11-13: **Face verify — local images, first strong / restart simple, web module.**
+>   DeviceAuth `GET /face-profiles/me/samples` + image download → LocalAppData
+>   `face/samples/` + `biometric.db`. Modal local-only: first PC verify = multi-pose
+>   wizard; later boot/unlock = simple match. Early launch before `Host.Build`;
+>   `SessionUnlock` relaunch. Events queue → `POST /face-profiles/verify-events/sync`
+>   → migration **070** `face_verify_events`; JWT `/face-verify/events` + web RBAC
+>   `users/face-verify`. Tracker warm-up owns models/embeddings/images. Soft tracking;
+>   hard modal. Client **VERSION 2.0.9**. Restart API; rebuild Windows installer.
+>
+> - 2026-11-13: **Face-verify on every client restart.** `TryLaunchOnSessionStart`
+>   also fires when background LogCollector sees SQLite login while waiting (not only
+>   boot restore / GUI). Prior local verify never suppresses relaunch. Client
+>   **VERSION 2.0.8**. Rebuild Windows installer.
+>
+> - 2026-11-13: **Face-verify FaceDetectorYN + offline-first order.** Client detection
+>   uses OpenCvSharp `FaceDetectorYN` (same as face_worker) — removes brittle ORT
+>   YuNet decode that caused IndexOutOfRange. OpenCvSharp **4.13**. On match:
+>   `MarkVerifyAsync` local first, then best-effort `verify-event`. Client
+>   **VERSION 2.0.7**. Rebuild Windows installer.
+>
+> - 2026-11-13: **Client YuNet input size 640 (ORT InvalidArgument).**
+>   `FaceRecognitionEngine` read fixed ONNX H/W (zoo 2023mar = 640×640) instead of
+>   hardcoded 320. Client **VERSION 2.0.6**. Rebuild Windows installer.
+>
+> - 2026-11-13: **Face models from `face_worker/models` (worker ensure + API packages).**
+>   Worker startup `ensure_models()`: YuNet auto-download if missing; AdaFace from disk or
+>   optional `FACE_ADAFACE_DOWNLOAD_URL`. DeviceAuth
+>   `GET /face-models/packages/yunet` + `adaface-ir50` serve that dir. Windows client
+>   downloads **both** from the API (no GitHub under DLP). Env: `FACE_MODELS_DIR`,
+>   `FACE_YUNET_ONNX`, `FACE_*_DOWNLOAD_URL`. Client **VERSION 2.0.5**. Restart API +
+>   `python worker.py`; Installer-Parity: next Windows build.
+>
+> - 2026-11-13: **Fleet TLS auto-trust via Windows installer (no employee action).**
+>   Bake copies `certs/rootCA.pem` → `publish/windows/tls/`; Inno `InstallOrgTlsCa`
+>   post-install (and silent update) writes `%ProgramData%\AlphaAITracker\tls\rootCA.pem`
+>   + `certutil -addstore Root`. Leave `ALPHA_TLS_CA` unset in bake. Shared
+>   `TlsCertificateTrust` for login/sync/WS/updates/face; lab-only
+>   `ALPHA_TLS_INSECURE`. Repair script:
+>   [`client/publish/install-org-ca.ps1`](client/publish/install-org-ca.ps1). Client
+>   **VERSION 2.0.3**. Docs: [`certs.md`](certs.md) Fleet section. Installer-Parity:
+>   rebuild Windows Setup with `certs/rootCA.pem` present.
+>
+> - 2026-11-12: **Client face verify (Windows subprocess, soft gate).** After login /
+>   session restore, spawn `--face-verify` (mutex, maximized Topmost, no close until
+>   match). Downloads YuNet + AdaFace ONNX to LocalAppData `face/models/`, DeviceAuth
+>   `GET /face-profiles/me/embeddings` → `face/biometric.db`, webcam cosine compare;
+>   failures POST `/face-profiles/verify-event` audit (tracking still starts). Models
+>   land in LocalAppData `face/models/` (YuNet URL + DeviceAuth
+>   `GET /face-models/packages/adaface-ir50` from API `FACE_ADAFACE_ONNX`). Env:
+>   `ALPHA_FACE_VERIFY_ENABLED`, `ALPHA_FACE_MATCH_THRESHOLD`, optional
+>   `ALPHA_FACE_ADAFACE_URL`. Installer-Parity: next Windows build ships OnnxRuntime +
+>   OpenCvSharp natives.
+>
+> - 2026-11-12: **Local HTTPS (mkcert) for API + Next web.** Repo `certs/local.pem` +
+>   `local-key.pem` (+ `rootCA.pem`); `TLS_CERT_FILE` / `TLS_KEY_FILE` / `TLS_CA_FILE` /
+>   `COOKIE_SECURE` in `server/.env` → Echo `StartTLS` + Secure auth cookies; CORS /
+>   `INSTANCE_PUBLIC_URL` / face_worker `ALPHA_SERVER_URL` use `https`/`wss`. Web
+>   `npm run dev` → `scripts/dev-https.mjs` with same certs; `API_PROXY_TARGET` +
+>   `NODE_EXTRA_CA_CERTS`; `NEXT_PUBLIC_WS_URL=wss://…`. One-time: `mkcert -install`
+>   (UAC) so browsers/Node trust the CA. Per-machine steps: [`certs.md`](certs.md)
+>   (Windows + Linux). Restart API + `npm run dev` + face_worker.
+>
+> - 2026-11-12: **Face embeddings persist (AdaFace path + DeviceAuth download).** Go
+>   `POST /internal/face-worker/jobs/:id/embeddings` AES-GCM → `employee_face_embeddings`,
+>   activates profile; DeviceAuth `GET /face-profiles/me/embeddings`. Python worker aligns
+>   YuNet→112 + AdaFace ONNX when `FACE_ADAFACE_ONNX` / `models/adaface_ir50_webface4m.onnx`
+>   present; else still `embeddings_deferred`. Env: `FACE_EMBEDDING_KEY` (else JWT_SECRET).
+>   Restart API + `pip install -r face_worker/requirements.txt` + `python worker.py`. Client
+>   webcam compare engine still next.
+>
+> - 2026-11-12: **face_worker push mode (no 2s poll).** Python HTTP on `FACE_WORKER_LISTEN`
+>   (default `:8010`); Go API `FACE_WORKER_URL` POSTs `/v1/process` after enroll/retry;
+>   worker leases via `POST /internal/face-worker/jobs/:id/lease`. Restart API + `python worker.py`.
+>
+> - 2026-11-12: **Face sample image 500/404 for WA-44/LIN-1.** `ResolveEmployeeID` queried
+>   `employees.id` (uuid) with business codes → Postgres error before `employee_id` fallback;
+>   enroll dialog thumbs broke. Fixed UUID-vs-code branch; sample image uses `ServeContent`.
+>   Restart API.
+>
+> - 2026-11-12: **face_worker YuNet detector (angled poses).** Haar frontal cascade falsely
+>   rejected left/right/up/down enrollments (`no_face`). Switched to OpenCV **YuNet** ONNX
+>   (`server/face_worker`, download-on-first-run under `models/`). Verified on LIN-1 job
+>   samples: all 8 poses → `faces=1`. Restart `python worker.py` to pick up.
+>
+> - 2026-11-12: **face_worker renamed + Python (server-only).** Directory
+>   [`server/face_worker`](server/face_worker) (`worker.py` + OpenCV/requests; auto-loads
+>   `server/.env`). Same `/api/v1/internal/face-worker/*` contract. Not part of the Avalonia
+>   agent. Verified: `python -m py_compile worker.py`; Go API unchanged.
+>
+> - 2026-11-12: **Face enrollment — server face_worker + per-image Verified/Retry UX + gallery.**
+>   Worker under [`server/face_worker`](server/face_worker) (server-side only; not the Avalonia
+>   agent). Per-sample face-check → `validated` / `rejected`; job may finish `succeeded` +
+>   `embeddings_deferred` until AdaFace ONNX is licensed. JWT
+>   `POST …/face-enrollment/:jobId/retry` (replace rejected poses only) +
+>   `GET …/face-profile/samples`. Web enroll dialog shows server thumbnails with live
+>   Checking/Verified/Retry badges and retake-only flow; new `/employees/face` gallery
+>   (RBAC `users/face-enrollment`). Migrations **068**/**069**. Env unchanged
+>   (`FACE_WORKER_API_KEY` required to claim).
+>
+> - 2026-11-12: **Face enrollment Phase 1–3 foundation (server + web + FaceWorker skeleton).**
+>   Plan: [`doc/face-attendance-plan.md`](doc/face-attendance-plan.md) + preprocess pin
+>   [`doc/face-preprocess-v1.md`](doc/face-preprocess-v1.md). Migration **068** face jobs/samples/
+>   profiles/embeddings/audit/model_versions. JWT multipart `POST /employees/:id/face-enrollment`
+>   stores originals under `FACE_MEDIA_DIR` (default `media/faces/`); jobs stay `pending` until
+>   FaceWorker claims via `FACE_WORKER_API_KEY` (`/api/v1/internal/face-worker/*`).
+>   DeviceAuth `GET /face-profiles/me` + `GET /face-models/manifest` (packages gated on license).
+>   Web `/employees` → **Enroll Face…** multi-angle webcam dialog uploads originals only (no
+>   browser embeddings). RBAC submodule `users/face-enrollment`. Attendance punches still out of
+>   scope. Env: `FACE_MEDIA_DIR`, `FACE_MAX_UPLOAD_BYTES`, `FACE_MAX_FILES_PER_JOB`,
+>   `FACE_WORKER_API_KEY`.
+>
+> - 2026-11-11: **24/7 antivirus guard (Windows DlpService + server + web).** Real-time scanning is
+>   Microsoft Defender's on-access engine (every file scanned on open/run/download/copy; malicious →
+>   blocked + quarantined). The tracker now keeps it ON at full strength and reverts tampering.
+>   **DlpService:** new `DefenderGuard` + `AntivirusGuardWorker` (independent of web policy and of
+>   `ALPHA_DLP_ENABLED`; local switch `ALPHA_AV_ENFORCE`, default `true`). Every `ALPHA_AV_GUARD_SEC`
+>   (30 s) it reverts: real-time / behaviour / download / script / archive / removable scanning off,
+>   Block-at-First-Sight off, cloud (MAPS Advanced, CloudBlockLevel High, 50 s timeout), PUA + network
+>   protection off, threat default action Allow/NoAction, per-threat allow overrides, exclusions not in
+>   `ALPHA_AV_ALLOWED_EXCLUSIONS`, and `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` disable /
+>   exclusion GPO values; restarts `WinDefend`. Only drifted settings are written; what Windows refuses
+>   (Tamper Protection) is reported, not looped. Defender Operational 1116/1006 → `malware` alert
+>   (*blocked*), 1118/1119/1008 → *blocked_failed*, 5001/5010/5012 → `av_tamper` critical, 5013 →
+>   `av_tamper`; deterministic alert ids per record + `policy_kv` bookmark (first run baselines to now).
+>   Signatures ≥ 1 day → `Update-MpSignature` (≥ 4 h apart); no quick scan in
+>   `ALPHA_AV_QUICK_SCAN_HOURS` (24) → background `Start-MpScan`. A registered third-party AV that owns
+>   protection is reported, never fought. `AppProcessGuard` also kills the Windows Security app
+>   (`SecHealthUI`) for interactive users under lockdown. Pipe `Health.avEnforce`.
+>   **Server:** migrations **071–074** (`antivirus_status` + advanced + commands + threats) + index on
+>   `dlp_alerts(type, machine_id, occurred_at)`; DeviceAuth `POST /antivirus/status/sync` (admission
+>   group); JWT `GET /antivirus/status?search=&health=&page=&perPage=` with server-projected `isStale`
+>   (30 min) / `threats24h` + health counts. Detections + tamper ride the existing `dlp_alerts` inbox.
+>   RBAC submodule `antivirus` under `security-dlp`. **Web:** `/antivirus` (infinite scroll, URL-synced
+>   `search`/`health`; tiles link to `/dlp-alerts?type=malware|av_tamper`); sidebar
+>   `module:"antivirus"`; alert labels `malware` / `av_tamper`. Env `ALPHA_AV_ENFORCE / GUARD_SEC /
+>   STATUS_SEC / QUICK_SCAN_HOURS / ALLOWED_EXCLUSIONS` → `.env(.example)` → `generate-windows-vars.sh`
+>   → Inno `service.env` + `EnvBootstrap` seeds. Installer-Parity: re-bake `config.enc` + rebuild the
+>   Windows installer; restart API for **071–074**.
+> - 2026-11-11: **Protected-uninstall pipe unlock + AppLocker leftover fix (client + DlpService).**
+>   `ApplyTeardownGate` / `AuthorizeTeardown` no longer gated on `ALPHA_DLP_ENABLED` (was returning
+>   `dlp_disabled` / racing write_timeout while AppLocker stayed Enforce). Pipe teardown timeouts
+>   raised; `AppAllowEnforcer.Clear` deletes `SrpV2` then NotConfigured. Elevated
+>   `WindowsTeardownCleanup` clears AppLocker + browser policies + firewall via **HNetCfg COM**
+>   (netsh often AppLocker-denied); SYSTEM task runs AppLocker clear. UAC elevate also triggers
+>   when AppLocker still Enabled. Client **VERSION 1.4.7**. Lab: [`removeTracker.md`](removeTracker.md).
+>   Verified: `dotnet build` client + DlpService; teardown unit tests. Installer-Parity: next Windows
+>   installer.
+>
+> - 2026-11-11: **Lab playbook [`removeTracker.md`](removeTracker.md).** Windows leftover wipe +
+>   diagnostics after protected uninstall (AppLocker/SRP/WDAC, hosts, `AlphaAI-DLP-*` FW/PIN via
+>   COM, USBSTOR, delete-block ACL). Linked from `README.md` + `TESTING.md` §C. Use when
+>   `pipeUnlock=False` / Error 1260 / apps still blocked after product remove.
+>
+> - 2026-11-11: **Silent apply — AppLocker updates path + pre-stop service (DlpService).** Staged
+>   installer under `%ProgramData%\<APP_MUTEX>\updates\` was default-denied under Exe Enforce
+>   (EXE left on disk). Fix: SYSTEM-only AppLocker allow for that folder; fingerprint `v7`.
+>   Helper pre-stops DLP service before Inno (unlock `Service\*.dll`); after success clears
+>   flags + `relaunch_tracker`, and `sc start` only if not RUNNING (Inno `InstallDlpService`
+>   already restarts the service; watchdog relaunches client — main dual-restart parity).
+>   Client **VERSION 1.4.6**. Verified: `dotnet build` DlpService. Installer-Parity: next
+>   Windows installer.
+>
+> - 2026-11-11: **Post-auto-update restart service + tracker (DlpService).** Silent apply helper
+>   clears `update_in_progress` / priority **before** `sc stop/start` of
+>   `AlphaAITracker.Service` (wait until RUNNING), writes `relaunch_tracker`, and the
+>   watchdog launches `client.exe --background --restart` in the user session. Client
+>   **VERSION 1.4.5**. Verified: `dotnet build` DlpService. Installer-Parity: next Windows
+>   installer.
+>
+> - 2026-11-11: **Allowlists apps — path-only allow (web).** `/allowlists/apps` “Allow
+>   application” no longer requires a catalog pick or Windows Settings: enter a full EXE
+>   path alone and **Allow & publish** enables when a **note** is also filled (note stays
+>   optional for catalog / Settings preset). Posts `POST /dlp/lockdown/apps` with `path` +
+>   `note` (server already supported path-only). Verified: `npx tsc --noEmit` as available.
+>
+> - 2026-11-11: **Update-priority yield (client + DlpService).** When a newer release will
+>   auto/force install, `update_priority` is set and the tracker yields sync / live-stream /
+>   screenshots / collectors / browser a11y so download+Inno run first (auto jitter capped at
+>   120s; server `RELEASE_DOWNLOAD_MAX_CONCURRENT` still admits the fleet). Cleared on apply
+>   success/fail/TTL. Client **VERSION 1.4.2**. Verified: `dotnet build` client + DlpService.
+>   Installer-Parity: next Windows installer.
+>
+> - 2026-11-11: **Silent update stuck flag + fleet download admission (client + server).** Lab dump
+>   showed `update_in_progress` left after a second apply arm (helper never logged) → watchdog
+>   never relaunched and auto-update stayed parked; Edge AppLocker XML stayed on bad
+>   `%PROGRAMFILES% (x86)` until the service process reloads v6. Fix: TTL/orphan clear of
+>   `update_in_progress` (watchdog + SilentUpdateWorker); clear flag if helper `Process.Start`
+>   fails; GUI force bypasses 1h `apply_failed`; post-Inno `sc stop/start` of the DLP service;
+>   `ALPHA_UPDATE_DOWNLOAD_JITTER_SEC` (default 3600) + honor download `Retry-After`; server
+>   `RELEASE_DOWNLOAD_MAX_CONCURRENT` (default 25) + `Retry-After` on `/downloads`. Client
+>   **VERSION 1.3.7**. Verified: `dotnet build`/`dotnet test`, `go build`/`go vet`/`go test`
+>   handlers. Installer-Parity: re-bake `config.enc` + Windows installer; restart API for
+>   download gate env.
+>
+> - 2026-11-11: **AppLocker PF(x86) prefix order (DlpService).** DB policy for Edge was correct
+>   (`…\Program Files (x86)\Microsoft\Edge\Application\*`), but `NormalizeAppLockerPath`
+>   matched `C:\Program Files` first → invalid `%PROGRAMFILES% (x86)\…` (AppLocker looks for a
+>   literal ` (x86)` folder). Fix: directory-boundary prefix + PF(x86) before PF; rewrite
+>   broken `%PROGRAMFILES% (x86)` macros; fingerprint `v6`. Client **VERSION 1.3.6**.
+>   Verified: `dotnet build` DlpService + normalize sanity. Installer-Parity: next Windows
+>   installer; no republish required (path in DB already OK).
+>
+> - 2026-11-11: **AppLocker Edge allow broken under Program Files (x86) (DlpService + server).**
+>   Root cause: `NormalizeAppLockerPath` emitted `%PROGRAMFILES(X86)%`, which AppLocker does
+>   not understand (only `%PROGRAMFILES%`, which covers both PF roots). Task Manager
+>   (`%SYSTEM32%`) unblocked; Edge stayed default-deny. Fix: map both Program Files roots to
+>   `%PROGRAMFILES%`; fingerprint `v5` forces re-apply; rewrite legacy `(X86)` macros;
+>   `AppProcessGuard` expands `%PROGRAMFILES%` to both roots. Server: `WidenBrowserAllowPath`
+>   publishes Edge/Chrome `Application\*` (versioned helpers) + Edge well-known fallback.
+>   Client **VERSION 1.3.4**. Verified: `dotnet build` DlpService; `go build`/`go vet`
+>   repository+services. Installer-Parity: next Windows installer for DlpService half;
+>   restart API for widen-on-publish.
+>
+> - 2026-11-10: **Merge amircode + sohaib (`marged-11-10-2026`).** Keeps screenshots / scale /
+>   timedatewarning / delete-block from amircode and Port Control + same-site API proxy from
+>   sohaib. Port migrations renumbered to **066** / **067** (after screenshots **065**).
+>   Client **VERSION 1.0.16**.
+>
+> - 2026-11-10: **Clock/timezone warning subprocess (client).** `TimeDateWarningWorker` checks on
+>   tracker start then every hour: skew vs `GET /api/v1/server-time` + OS TZ vs IP IANA timezone
+>   (`LocationProbe` `timezone` field; shift schedule fallback). Unhealthy → writes
+>   `timedatewarning/state.json` and spawns `client --timedatewarning` (sibling mutex, Avalonia
+>   window: Open Date & Time settings / Dismiss with cooldown). Never auto-sets the OS clock.
+>   Env: `ALPHA_TA_TIMEDATE_*`. Client **VERSION 1.0.13**. Verified: `dotnet build` client.
+>   Installer-Parity: re-bake `config.enc` + Windows installer.
+>
+> - 2026-11-10: **Screenshot duplicate-upload flood (client).** Root cause: SyncWorker deleted
+>   pending while `File.OpenRead` still held the Windows lock → webp orphaned without JSON;
+>   `GuessMetaFromName` folded screenshotId into `machineId` and `ListPending` minted a new
+>   Guid each poll → ~90 byte-identical server rows per real capture. Fix: read bytes then
+>   close before delete; parse trailing UUID from basename; never mint ids on list. Media path
+>   kept `media/screenshots/{emp}/{yyyy}/{MM}/{dd}/`. Client **VERSION 1.0.12**. Verified:
+>   `dotnet build` client. Installer-Parity: next Windows installer.
+>
+> - 2026-11-10: **Screenshot upload idempotency.** Client mints `screenshotId` UUID at capture
+>   (sidecar + form field); server uses it as `screenshots.id` PK. Replay of a lost-200 returns
+>   `{accepted:true, idempotentReplay:true}` without a second file. Fast-path GetByID before
+>   reading the multipart body. Verified: `go build`/`go vet`, `dotnet build`.
+>
+> - 2026-11-10: **Offline-first screenshots (client + server + web).** Two hosted workers:
+>   `ScreenshotCaptureWorker` (30s still → WebP → LocalAppData `screenshots/pending/`, no
+>   network) and `ScreenshotSyncWorker` (DeviceAuth multipart upload; delete local only on
+>   2xx `accepted`; Retry-After on 429/503). Server migration **065** indexes rows; files at
+>   `SCREENSHOTS_DIR` default `media/screenshots/{emp}/{yyyy}/{MM}/{dd}/` (**no retention
+>   purge** this ship); `POST /screenshots/upload` + JWT `GET /screenshots` + `/image`
+>   (`ServeContent`). Web `/screenshots` + journey screenshots: infinite lazy grid. Client
+>   **VERSION 1.0.10** + `ALPHA_SCREENSHOT_*`. Verified: `dotnet build`, `go build`/`go vet`,
+>   `npx tsc --noEmit`. Installer-Parity: re-bake `config.enc` + Windows installer.
+>
+> - 2026-11-10: **Live theater false LIVE on offline tiles (web).** SFU `ontrack` stuck
+>   `status=live` (black + `— FPS`) while sidebar correctly said Offline; status ticks kept
+>   LIVE when `clientConnected=false`. Fix: watch socket clears to `offline` + drops the
+>   MediaStream when the publisher is gone; tile Offline overlay/badge; LIVE only when
+>   decoded FPS exists. Verified: `npx tsc --noEmit`.
+>
+> - 2026-11-10: **Live-stream VP8 — ship VCRUNTIME140 with Windows client (vpxmd load).** Root cause
+>   of `LIVE` + SFU `withTrack=false` / `stream_encode_error` `DllNotFoundException: Unable to load
+>   DLL 'vpxmd'` on machines without VC++ 2015-2022 x64: `vpxmd.dll` was already in the install dir
+>   but LoadLibrary failed on missing `VCRUNTIME140.dll`. Fix: `publish/ensure-vpx-native.ps1` (+
+>   `.sh` / MSBuild AfterBuild+Publish) copies app-local `vcruntime140.dll` (+ `_1`) into build/
+>   publish output; Inno installs it via `windows\*`; optional `ALPHA_BUNDLE_VC_REDIST=1` downloads
+>   `vc_redist.x64.exe` for quiet system install. Runtime: `VpxNativeBootstrap` preloads CRT +
+>   resolves `vpxmd` from `AppContext.BaseDirectory`; probe clears/writes `stream_encode_error`
+>   before encode. Client **VERSION 1.0.8**. Verified: `dotnet build` client. Installer-Parity:
+>   rebuild Windows installer / drop into `server/setup/`. Lab: `TESTING.md` live-stream VP8 note.
+>
+> - 2026-11-10: **Scale foundation for ~1000 agents / 100 live watches / 100 admins (one Postgres).**
+>   Server: rate limits on login + DeviceAuth sync + admin list GETs (`Retry-After`); sync
+>   concurrency gate (`SYNC_MAX_CONCURRENT`, 503 when full); Redis dashboard summary cache +
+>   singleflight; Asynq embedded worker/scheduler for session/retention/staleness (or
+>   `cmd/worker` when `ASYNQ_EMBED=false`); `LIVE_STREAM_MAX_STREAMS` default **100**. Client:
+>   `ALPHA_SYNC_LOGIN_JITTER_SEC` (default 120) + honor `Retry-After` on 429/503 (never mark
+>   synced). Web live-stream polls `onlineOnly` + `limit=200`. Rules: *Single-Postgres* +
+>   *Scale/Admission* in §6 + `prompt.md`. Plan: `newplan.md`. Verified: `go build`/`go vet`/
+>   admit+cache tests; `dotnet build` client; `npx tsc --noEmit` as available.
+>
+> - 2026-11-10: **Delete-block ACL + stricter AppLocker bootstrap + Windows Settings allow path
+>   (client / server / web).** DlpService: new `DeleteBlockAclEnforcer` — under published
+>   `lockdown: true` (same pause/park/teardown clear as network/apps), Deny Delete +
+>   DeleteSubdirectoriesAndFiles for Authenticated Users on every Fixed/Removable volume root
+>   (create/edit stay allowed; SYSTEM/Administrators not denied). Local switch
+>   `ALPHA_DLP_DELETE_BLOCK` (default `true`; `false` → `disabled_local` clear); marker
+>   `%ProgramData%\<APP_MUTEX>\dlp\delete_block_roots.json`; pipe `Health.deleteBlock`; audits
+>   `delete_block_apply` / `delete_block_clear`. AppLocker: PowerShell is **SYSTEM-only**
+>   (S-1-5-18) so `Set-AppLockerPolicy` still works; interactive users stay default-deny until
+>   `/allowlists/apps`; Settings / ImmersiveControlPanel / broad WindowsApps wildcards removed
+>   from bootstrap A; fingerprint `v3`. `AppProcessGuard` force-kills interactive
+>   PowerShell/Settings/cmd/terminal (session > 0) even when path lookup fails. Server: catalog
+>   allow create accepts optional path override + well-known Windows Settings EXE/Appx product;
+>   rejects bare Linux shell tokens (`cinnamon-settings` / …); inactive inventory paths used as
+>   fallback; duplicate catalog allow is idempotent (return existing + auto-publish). Web
+>   `/allowlists/apps`: **Windows Settings (Win10/11)** preset + install-path override + Linux
+>   catalog warning. Client **VERSION 1.0.6**. Lab: `TESTING.md` §H steps 15–17. Installer-Parity:
+>   re-bake + rebuild Windows installer so `service.env` carries `ALPHA_DLP_DELETE_BLOCK`.
+> - 2026-11-10: **Auth 401 on `/auth/refresh` fixed — same-site API proxy restored.** `web/.env` pointed
+>   `NEXT_PUBLIC_API_URL` at `http://192.168.88.44:8000/api/v1`, so a page on `localhost:3000` called the
+>   API cross-site; the server's `SameSite=Lax` httpOnly cookies were never sent (no `Cookie` header) and
+>   `/auth/check` / `/auth/refresh` always failed → bounce to `/login`. `next.config.ts` had no rewrites
+>   despite the docs. Added `rewrites()` `/api/v1/:path*` → `NEXT_PUBLIC_API_URL` (server-side env, default
+>   `http://localhost:8080`); `.env` now leaves `NEXT_PUBLIC_API_URL` unset (client uses relative
+>   `/api/v1`). `<body suppressHydrationWarning>` for extension-injected attributes (ColorZilla).
+>   WebSockets still use `NEXT_PUBLIC_WS_URL` (ticket auth, not cookies). Verified via `localhost:3000`:
+>   login 200 → check authenticated → refresh 200 → logout 200; `npx tsc --noEmit`.
+>
+> - 2026-11-10: **Port blocking reliability + instant policy delivery (DlpService + server + tracker).**
+>   Root causes from testingpc (EMP-10003): (1) disabled devices were never recognised as
+>   disabled — `Get-PnpDevice` reports them as `Status=Error`, not `Disabled`, so every block
+>   was "Failed", retried forever and never recorded for Unblock; (2) a re-enabled Ethernet
+>   adapter stayed online until the next slow pass (11 rules × up to 3 PowerShell spawns);
+>   (3) rules looked "restart-only" because the policy pull interval was read once at service
+>   start and nothing woke the PC on publish. **Fix:** new `CfgMgrDevices` (native cfgmgr32:
+>   locate/status/disable-persist/enable/list-by-class/class-guid; disabled = problem code 22;
+>   veto → `Vetoed`/pending, PowerShell only as fallback in the full pass); new
+>   `PortGuardWorker` re-disables any re-enabled blocked device every 2 s (native only, 60 s
+>   back-off on veto) and raises a `device_control` / `reblocked` alert (10 min per-device
+>   rate limit). Policy delivery: server `ws.Hub.SubscribePolicy/BroadcastPolicyChanged`,
+>   presence socket writes `{"type":"policy_changed"}` after every `DlpService.Publish`;
+>   tracker `WsClient` forwards it as pipe op `RequestPolicyPull`; `DlpSignals` wakes
+>   `PolicyPullWorker` (interval now re-read each pass) and then `EnforceWorker`. Verified:
+>   `dotnet build` client + DlpService 0/0, `dotnet test` 37/37, `go build`/`go vet`,
+>   `go test ./internal/ws`; native wrapper read-only against live devices (enumeration,
+>   class GUID, problem codes match `Get-PnpDevice`). Disable/enable path needs an elevated
+>   installed-service lab run. Installer-Parity: rebuild the Windows installer; restart API.
+>
+> - 2026-11-07: **Hardware & Port Control (scan + block, server + client + DlpService + web).** New
+>   feature: scan every physical port / interface / device on each Windows PC and block/allow/alert it
+>   per employee, per machine, or fleet-wide. **Server:** migration **066** (`machine_ports` inventory,
+>   `device_control_rules` with `scope`/`scope_value`, `dlp_policy_device_control` snapshot) + **067**
+>   (idempotent re-create — renumbered after screenshots **065**). DeviceAuth
+>   `POST /hardware-ports/sync`; JWT `GET /hardware-ports`, `/device-control/rules` CRUD (auto-publish).
+>   `Publish` folds **global** rules into the bundle (`SnapshotDeviceControl`); employee/machine/
+>   department rules resolve per-device at pull (`ResolveScopedDeviceControl` → `mergeDeviceControl`).
+>   **Client tracker:** `PortDeviceCollector` (Get-PnpDevice → `machine_ports` SQLite → sync),
+>   `ALPHA_PORT_SCAN_ENABLED` (default true). **DlpService:** `PortDeviceEnforcer` (instance →
+>   `Disable-PnpDevice`; class → Device Installation Restrictions retroactive; `Clear` re-enables),
+>   wired into `EnforceWorker` + park-clear, local switch `ALPHA_DLP_PORT_BLOCK` (`DlpConfig` +
+>   `EnvBootstrap`). **Offline-first fix (root cause of "blocking never applied"):** `PolicyStore`
+>   round-trips the applied bundle through `dlp.db` relational tables and rebuilds it, but previously
+>   **dropped `deviceControl`**, so `EnforceWorker` always saw an empty block set. New
+>   `policy_device_control` table + persist on apply + emit on rebuild — port rules now survive offline
+>   and actually enforce. **Web:** `/device-specs/ports` (Device Specs → Ports Control) — inventory by
+>   category with per-device descriptions, Block/Alert/Unblock, scope selector; `portControlApi`.
+>   Video outputs + internal system disks are detect/alert-only (never hard-disabled). Verified:
+>   `go build`/`go vet`; `npx tsc --noEmit`; `dotnet build` client + DlpService (0/0); live scan on a
+>   Windows PC (52 devices classified); SQLite upsert/`is_synced` round-trip. Installer-Parity: rebuild
+>   client installer + re-bake `config.enc` so `ALPHA_PORT_SCAN_ENABLED` / `ALPHA_DLP_PORT_BLOCK`
+>   reach installed PCs; restart API for 066/067.
 >
 > - 2026-11-07: **Local blocker switches in client `.env` (DlpService).** Four `true|false` keys decide
 >   whether this PC applies each blocker at all: `ALPHA_DLP_USB_BLOCK` (USB storage),
@@ -1839,6 +2298,8 @@ flowchart LR
 | **Device lifecycle** | `employee_machines` is the canonical one-row-per-machine registry (`status` `active|old`, `first_track_at`, `last_track_at`, `wipe_requested_at`); `employee_devices` stays the rotating auth-token registry. Removal is a handshake: persist first, then instruct the client to wipe (see *Device Lifecycle Rule* below) |
 | **DLP policy versions** | Clients enforce only **published** immutable bundles (`dlp_policy_versions`); editing `dlp_rules` alone never changes the fleet until Publish (see *DLP Policy Version Rule* below) |
 | **Protected removal** | Windows stop/uninstall of the agent requires a server-issued one-time removal code (hash at rest); standard users cannot stop the SYSTEM service (see *Protected Removal Rule* below) |
+| **Single PostgreSQL** | Exactly one Postgres server for the product; all Go processes share it; never add a second DB / shard / per-service database (see *Single-Postgres Rule* below) |
+| **Scale admission** | Login/sync storms return `429`/`503` + `Retry-After`; clients keep `is_synced=0` and honor Retry-After + login jitter; Asynq workers are concurrency-capped (see *Scale/Admission Rule* below) |
 
 ### Web Infinite-Scroll Rule (mandatory)
 
@@ -1895,6 +2356,33 @@ server in the same query that returns the row — never built client-side from a
 - The hooks never touch `localStorage` / `sessionStorage`. They are URL-only.
 
 **Reference implementations:** `web/src/app/(app)/employees/page.tsx` (search + department), `web/src/app/(app)/shifts/page.tsx` (search), `web/src/app/(app)/timesheets/page.tsx` (employee + from + to), `web/src/app/(app)/attendance/page.tsx` (date + status), the three `employee-journey/*` pages (search + date preset), `web/src/components/configuration/ClassifiedItemsTable.tsx` (search + type + category + status — used by both `configuration/apps` and `configuration/websites`), `web/src/app/(app)/device-specs/software/page.tsx` (tab + per-tab search), `web/src/app/(app)/logs/comprehensive/page.tsx` (employee + search + page), `web/src/app/(app)/settings/user-management/page.tsx` (search + the existing `?create=1&edit=1` deep-link).
+
+### Single-Postgres Rule (mandatory since 2026-11-10)
+
+**The product uses exactly one PostgreSQL server.** Tracking ingest, journey reads, attendance,
+auth, DLP, Asynq workers, and streaming metadata all connect to that database.
+
+- Do **not** introduce a second Postgres, read-replica-as-SoR, per-service databases, or table sharding.
+- Every process’s `DB_MAX_OPEN_CONNS` must be budgeted so **Σ pools + reserve ≤ `max_connections`**.
+- Scale by admission control, Redis cache/queue/presence, bounded workers, and optional extra **Go**
+  processes — not by adding database servers.
+- Plan of record: [`newplan.md`](./newplan.md).
+
+### Scale / Admission Rule (mandatory since 2026-11-10)
+
+**Overload must be explicit; telemetry must not silently skip.**
+
+- DeviceAuth sync POSTs are rate-limited and concurrency-gated. When saturated the API returns
+  **`503`/`429` with `Retry-After`**. The client leaves rows `is_synced=0` and retries (never treat
+  queue-accept alone as success for mark-synced).
+- Login storms use **`ALPHA_SYNC_LOGIN_JITTER_SEC`** (default 120) so agents do not align.
+- Background sweeps (session lifecycle, retention, staleness) run via **Asynq** with a fixed
+  `ASYNQ_CONCURRENCY` — never unbounded goroutines per job.
+- Live publishers are capped by `LIVE_STREAM_MAX_STREAMS` (product target **100** watched at once).
+- Installer downloads: global **`RELEASE_DOWNLOAD_MAX_CONCURRENT`** + `Retry-After`; clients use
+  **`ALPHA_UPDATE_DOWNLOAD_JITTER_SEC`** and resume Range — per-IP download limits alone are not
+  enough for a same-minute fleet stampede.
+- Redis may cache/queue/rate-limit; Postgres remains the telemetry system of record.
 
 ### Installer-Parity Rule (mandatory)
 

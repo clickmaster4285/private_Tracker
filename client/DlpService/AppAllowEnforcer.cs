@@ -11,7 +11,9 @@ namespace AlphaAITracker.Service;
 /// When lockdown is ON:
 /// - <b>Exe</b> collection Enforce = default-deny Win32 (Calculator Win32, Taskmgr, Chrome, …)
 /// - <b>Appx</b> collection Enforce = default-deny Store/UWP (modern Calculator, Photos, …)
-/// - Allow only bootstrap A (Explorer / Start / shell / this product) + published allow.apps
+/// - Allow only bootstrap A (minimal Start/shell / this product) + published allow.apps
+/// - PowerShell is <b>SYSTEM-only</b> (S-1-5-18) so this service can still Set-AppLockerPolicy;
+///   interactive users cannot launch powershell / ISE / pwsh until published on allow.apps
 ///
 /// Launch is blocked by the OS (Windows blocked-by-organization dialog). Process kill is a
 /// separate sweeper for anything already running.
@@ -23,7 +25,15 @@ internal static class AppAllowEnforcer
     private static string _lastFingerprint = "";
     private static bool _policyMaybePresent = true;
 
-    /// <summary>Microsoft Store / Appx package family names required for desktop survival.</summary>
+    /// <summary>LOCAL SYSTEM — service Set-AppLockerPolicy / AppID helpers.</summary>
+    private const string LocalSystemSid = "S-1-5-18";
+    private const string EveryoneSid = "S-1-1-0";
+
+    /// <summary>
+    /// Microsoft Store / Appx package family names required for lock screen / Start chrome.
+    /// Intentionally omits Settings / ImmersiveControlPanel — those stay default-deny until
+    /// published on allow.apps.
+    /// </summary>
     private static readonly string[] BootstrapAppxProducts =
     [
         "Microsoft.Windows.StartMenuExperienceHost",
@@ -38,7 +48,6 @@ internal static class AppAllowEnforcer
         "Microsoft.Windows.CallingShellApp",
         "Microsoft.Win32WebViewHost",
         "Microsoft.UI.Xaml.CBS",
-        "MicrosoftWindows.Client.WebExperience",
     ];
 
     public sealed record Result(bool Changed, bool Applied, string Detail);
@@ -79,7 +88,11 @@ internal static class AppAllowEnforcer
                 appxProducts.Add(a.Product.Trim());
         }
 
-        var fp = Fingerprint(paths, publishers, appxProducts);
+        var systemOnly = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in SystemOnlyBootstrapPaths())
+            systemOnly.Add(NormalizeAppLockerPath(p));
+
+        var fp = Fingerprint(paths, publishers, appxProducts, systemOnly);
         lock (Gate)
         {
             if (gen != Interlocked.Read(ref _generation))
@@ -90,7 +103,7 @@ internal static class AppAllowEnforcer
 
             EnsureAppIdService(restart: false);
 
-            var xml = BuildPolicyXml(paths, publishers, appxProducts);
+            var xml = BuildPolicyXml(paths, publishers, appxProducts, systemOnly);
             var apply = SetAppLockerPolicy(xml);
             if (!apply.Ok)
                 return new Result(false, false, apply.Detail);
@@ -115,11 +128,17 @@ internal static class AppAllowEnforcer
         if (!OperatingSystem.IsWindows())
             return new Result(false, false, "unsupported_os");
 
-        Interlocked.Increment(ref _generation);
         lock (Gate)
         {
+            // Already cleared in this process — skip PowerShell / AppID restart.
             if (!_policyMaybePresent && _lastFingerprint == "")
                 return new Result(false, true, "already_clear");
+
+            Interlocked.Increment(ref _generation);
+
+            // Wipe the local AppLocker store — fingerprint short-circuit left Exe
+            // Enforce in AppID memory after protected-uninstall when pipe unlock raced.
+            TryDeleteLocalAppLockerStore();
 
             var xml = BuildEmptyPolicyXml();
             var apply = SetAppLockerPolicy(xml);
@@ -135,8 +154,27 @@ internal static class AppAllowEnforcer
     }
 
     /// <summary>
-    /// Bootstrap A — product + Explorer / Start / minimal shell. Omits Taskmgr, calc,
-    /// notepad, Settings, browsers, Office.
+    /// Delete <c>HKLM\SOFTWARE\Policies\Microsoft\Windows\SrpV2</c> so NotConfigured
+    /// is not layered on top of a leftover Enforce tree.
+    /// </summary>
+    private static void TryDeleteLocalAppLockerStore()
+    {
+        try
+        {
+            Microsoft.Win32.Registry.LocalMachine.DeleteSubKeyTree(
+                @"SOFTWARE\Policies\Microsoft\Windows\SrpV2",
+                throwOnMissingSubKey: false);
+        }
+        catch
+        {
+            // Best-effort — Set-AppLockerPolicy still runs.
+        }
+    }
+
+    /// <summary>
+    /// Bootstrap A (Everyone) — product + Explorer / Start / minimal shell.
+    /// Omits Settings, Control Panel, PowerShell/pwsh/ISE, Taskmgr, browsers, Office.
+    /// Publish paths on /allowlists/apps to reopen anything else.
     /// </summary>
     internal static IEnumerable<string> BootstrapPaths()
     {
@@ -166,27 +204,18 @@ internal static class AppAllowEnforcer
             @"%SYSTEM32%\SearchHost.exe",
             @"%SYSTEM32%\ShellHost.exe",
             @"%SYSTEM32%\TextInputHost.exe",
-            @"%SYSTEM32%\WidgetService.exe",
-            @"%SYSTEM32%\SystemSettingsBroker.exe",
             @"%SYSTEM32%\consent.exe",
             @"%SYSTEM32%\smartscreen.exe",
             @"%SYSTEM32%\SecurityHealthService.exe",
             @"%SYSTEM32%\SecurityHealthSystray.exe",
-            // Service must keep applying policy under Everyone SID rules.
-            @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell.exe",
-            @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell_ise.exe",
-            @"%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe",
             @"%SYSTEM32%\wbem\WmiPrvSE.exe",
             @"%SYSTEM32%\msiexec.exe",
         ];
         foreach (var p in shell)
             yield return p;
 
-        // Packaged shell hosts (Exe path fallback; Appx rules are primary for Store packages).
-        yield return @"%PROGRAMFILES%\WindowsApps\Microsoft.Windows.StartMenuExperienceHost*\*";
-        yield return @"%PROGRAMFILES%\WindowsApps\Microsoft.Windows.ShellExperienceHost*\*";
-        yield return @"%PROGRAMFILES%\WindowsApps\Microsoft.Windows.Search*\*";
-        yield return @"%PROGRAMFILES%\WindowsApps\MicrosoftWindows.Client.CBS*\*";
+        // Appx product rules are primary for Start/Search; avoid broad WindowsApps\* path
+        // wildcards (they can re-allow Settings binaries under Client.CBS).
 
         var serviceDir = AppContext.BaseDirectory.TrimEnd(
             Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -206,6 +235,33 @@ internal static class AppAllowEnforcer
             yield return Path.Combine(root, folder, "*");
             yield return Path.Combine(root, ServiceIdentity.AppMutex, "*");
         }
+    }
+
+    /// <summary>
+    /// LOCAL SYSTEM only — PowerShell (Set-AppLockerPolicy) plus the System32
+    /// maintenance tools teardown / silent-update helpers need. Interactive users
+    /// stay default-deny until allow.apps publishes a path (AppLocker self-lockout
+    /// for user-spawned sc/taskkill is intentional; SYSTEM helpers must still run).
+    /// </summary>
+    internal static IEnumerable<string> SystemOnlyBootstrapPaths()
+    {
+        yield return @"%SYSTEM32%\WindowsPowerShell\v1.0\powershell.exe";
+        yield return @"%WINDIR%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe";
+        yield return @"%SYSTEM32%\cmd.exe";
+        yield return @"%SYSTEM32%\sc.exe";
+        yield return @"%SYSTEM32%\reg.exe";
+        yield return @"%SYSTEM32%\taskkill.exe";
+        yield return @"%SYSTEM32%\schtasks.exe";
+        yield return @"%SYSTEM32%\ipconfig.exe";
+        yield return @"%SYSTEM32%\netsh.exe";
+        // Silent updater stages Inno under ProgramData\<mutex>\updates\; without this
+        // allow, Exe Enforce default-deny blocks Start-Process of the downloaded EXE.
+        // SYSTEM-only so interactive users cannot run arbitrary EXEs from that folder.
+        yield return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            ServiceIdentity.DataFolderName,
+            "updates",
+            "*");
     }
 
     private static bool IsBroadMicrosoftPublisher(string publisher)
@@ -236,9 +292,23 @@ internal static class AppAllowEnforcer
             appxProducts.Add(family);
     }
 
-    private static string NormalizeAppLockerPath(string path)
+    /// <summary>
+    /// Map filesystem paths to AppLocker path variables. AppLocker only understands
+    /// %WINDIR%/%SYSTEM32%/%OSDRIVE%/%PROGRAMFILES% (not %PROGRAMFILES(X86)%).
+    /// Per MS docs, %PROGRAMFILES% covers both Program Files and Program Files (x86).
+    /// Matching must use a directory boundary and check PF(x86) before PF — otherwise
+    /// <c>C:\Program Files (x86)\…</c> becomes the invalid
+    /// <c>%PROGRAMFILES% (x86)\…</c> (StartsWith "Program Files" eats the x86 root).
+    /// </summary>
+    internal static string NormalizeAppLockerPath(string path)
     {
         var p = path.Trim().Replace('/', '\\');
+        // Legacy invalid macros from older builds — rewrite so Apply re-emits valid XML.
+        if (p.StartsWith("%PROGRAMFILES(X86)%", StringComparison.OrdinalIgnoreCase))
+            p = "%PROGRAMFILES%" + p["%PROGRAMFILES(X86)%".Length..];
+        // Broken form produced when PF matched before PF(x86): "%PROGRAMFILES% (x86)\…"
+        if (p.StartsWith("%PROGRAMFILES% (x86)", StringComparison.OrdinalIgnoreCase))
+            p = "%PROGRAMFILES%" + p["%PROGRAMFILES% (x86)".Length..];
         if (p.StartsWith("%", StringComparison.Ordinal))
             return p;
 
@@ -246,25 +316,41 @@ internal static class AppAllowEnforcer
         var sys = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
         var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrEmpty(sys) && p.StartsWith(sys, StringComparison.OrdinalIgnoreCase))
+        if (StartsWithDir(p, sys))
             return "%SYSTEM32%" + p[sys.Length..];
-        if (!string.IsNullOrEmpty(windir) && p.StartsWith(windir, StringComparison.OrdinalIgnoreCase))
+        if (StartsWithDir(p, windir))
             return "%WINDIR%" + p[windir.Length..];
-        if (!string.IsNullOrEmpty(pf) && p.StartsWith(pf, StringComparison.OrdinalIgnoreCase))
+        // PF(x86) before PF — "C:\Program Files" is a prefix of "C:\Program Files (x86)".
+        if (StartsWithDir(p, pf86))
+            return "%PROGRAMFILES%" + p[pf86.Length..];
+        if (StartsWithDir(p, pf))
             return "%PROGRAMFILES%" + p[pf.Length..];
-        if (!string.IsNullOrEmpty(pf86) && p.StartsWith(pf86, StringComparison.OrdinalIgnoreCase))
-            return "%PROGRAMFILES(X86)%" + p[pf86.Length..];
         return p;
+    }
+
+    /// <summary>
+    /// True when <paramref name="path"/> is <paramref name="dir"/> or <paramref name="dir"/> + '\'.
+    /// Prevents <c>C:\Program Files</c> from matching <c>C:\Program Files (x86)\…</c>.
+    /// </summary>
+    private static bool StartsWithDir(string path, string? dir)
+    {
+        if (string.IsNullOrEmpty(dir))
+            return false;
+        if (!path.StartsWith(dir, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return path.Length == dir.Length || path[dir.Length] == '\\';
     }
 
     private static string Fingerprint(
         SortedSet<string> paths,
         List<(string Publisher, string Product)> publishers,
-        SortedSet<string> appxProducts)
+        SortedSet<string> appxProducts,
+        SortedSet<string> systemOnlyPaths)
     {
         var sb = new StringBuilder();
-        sb.Append("v2;");
+        sb.Append("v7;");
         foreach (var p in paths) sb.Append("P:").Append(p).Append(';');
+        foreach (var p in systemOnlyPaths) sb.Append("S:").Append(p).Append(';');
         foreach (var (pub, prod) in publishers.OrderBy(x => x.Publisher + "|" + x.Product, StringComparer.OrdinalIgnoreCase))
             sb.Append("U:").Append(pub).Append('|').Append(prod).Append(';');
         foreach (var a in appxProducts) sb.Append("X:").Append(a).Append(';');
@@ -275,11 +361,14 @@ internal static class AppAllowEnforcer
     private static string BuildPolicyXml(
         SortedSet<string> paths,
         List<(string Publisher, string Product)> publishers,
-        SortedSet<string> appxProducts)
+        SortedSet<string> appxProducts,
+        SortedSet<string> systemOnlyPaths)
     {
         var exeRules = new List<XElement>();
         foreach (var path in paths)
-            exeRules.Add(PathRule(path));
+            exeRules.Add(PathRule(path, EveryoneSid));
+        foreach (var path in systemOnlyPaths)
+            exeRules.Add(PathRule(path, LocalSystemSid));
         foreach (var (pub, prod) in publishers)
             exeRules.Add(PublisherRule(pub, prod));
 
@@ -335,14 +424,15 @@ internal static class AppAllowEnforcer
         return doc.ToString(SaveOptions.DisableFormatting);
     }
 
-    private static XElement PathRule(string path)
+    private static XElement PathRule(string path, string userOrGroupSid)
     {
         var id = Guid.NewGuid().ToString();
+        var sidTag = userOrGroupSid == LocalSystemSid ? "sys " : "";
         return new XElement("FilePathRule",
             new XAttribute("Id", id),
-            new XAttribute("Name", "AlphaAI path " + Truncate(path, 80)),
+            new XAttribute("Name", "AlphaAI " + sidTag + "path " + Truncate(path, 80)),
             new XAttribute("Description", "AlphaAI-DLP-APP"),
-            new XAttribute("UserOrGroupSid", "S-1-1-0"),
+            new XAttribute("UserOrGroupSid", userOrGroupSid),
             new XAttribute("Action", "Allow"),
             new XElement("Conditions",
                 new XElement("FilePathCondition",

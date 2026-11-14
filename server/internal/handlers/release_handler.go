@@ -22,10 +22,27 @@ type ReleaseHandler struct {
 
 	// Per-IP soft rate limit for downloads (abuse prevention; no login required).
 	limiters sync.Map // string → *rate.Limiter
+
+	// Global concurrent body downloads (fleet stampede admission).
+	downloadSlots chan struct{}
+	retryAfterSec int
 }
 
-func NewReleaseHandler(svc *services.LocalReleaseService) *ReleaseHandler {
-	return &ReleaseHandler{svc: svc}
+// NewReleaseHandler builds the handler. maxConcurrent caps simultaneous GET body
+// streams (HEAD is free). Values ≤0 default to 25. retryAfterSec is returned on 429
+// when the gate is full (default 60).
+func NewReleaseHandler(svc *services.LocalReleaseService, maxConcurrent, retryAfterSec int) *ReleaseHandler {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 25
+	}
+	if retryAfterSec <= 0 {
+		retryAfterSec = 60
+	}
+	return &ReleaseHandler{
+		svc:           svc,
+		downloadSlots: make(chan struct{}, maxConcurrent),
+		retryAfterSec: retryAfterSec,
+	}
 }
 
 func (h *ReleaseHandler) limiterFor(ip string) *rate.Limiter {
@@ -74,10 +91,25 @@ func (h *ReleaseHandler) DownloadAsset(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid asset id"})
 	}
 
-	if c.Request().Method != http.MethodHead && !h.limiterFor(c.RealIP()).Allow() {
+	isHead := c.Request().Method == http.MethodHead
+	if !isHead && !h.limiterFor(c.RealIP()).Allow() {
+		c.Response().Header().Set("Retry-After", strconv.Itoa(h.retryAfterSec))
 		return c.JSON(http.StatusTooManyRequests, map[string]string{
 			"error": "Too many download requests; try again shortly",
 		})
+	}
+
+	// Global fleet admission — only body GETs hold a slot for the full ServeContent.
+	if !isHead {
+		select {
+		case h.downloadSlots <- struct{}{}:
+			defer func() { <-h.downloadSlots }()
+		default:
+			c.Response().Header().Set("Retry-After", strconv.Itoa(h.retryAfterSec))
+			return c.JSON(http.StatusTooManyRequests, map[string]string{
+				"error": "Installer download capacity full; retry after Retry-After seconds",
+			})
+		}
 	}
 
 	asset, err := h.svc.LookupAsset(assetID)
@@ -104,7 +136,7 @@ func (h *ReleaseHandler) DownloadAsset(c echo.Context) error {
 
 	start := time.Now()
 	http.ServeContent(c.Response(), c.Request(), asset.Name, asset.ModTime, f)
-	if c.Request().Method != http.MethodHead {
+	if !isHead {
 		log.Printf("[releases] download asset=%d file=%s version=%s status=%d bytes=%d dur=%s",
 			assetID, asset.Name, asset.Version, c.Response().Status, c.Response().Size,
 			time.Since(start).Round(time.Millisecond))

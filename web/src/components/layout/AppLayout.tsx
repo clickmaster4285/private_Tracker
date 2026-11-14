@@ -47,6 +47,7 @@ const pageTitles: Record<string, string> = {
   "/allowlists/web": "Web Allow Lists",
   "/allowlists/apps": "App Allow List",
   "/shadow-it": "Shadow IT",
+  "/antivirus": "Antivirus",
   "/settings/billing": "Billing & Subscription",
   "/settings/compliance": "GDPR & Compliance",
   "/settings/security": "Security Settings",

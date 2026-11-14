@@ -29,6 +29,13 @@ export function LiveStreamWatchTile({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const socket = useLiveStreamSocket(employeeId, videoRef);
   const fps = useVideoFps(videoRef, socket.status === 'live');
+  // ontrack alone is not enough (SFU empty track → black + — FPS). LIVE only
+  // when decoded FPS is measured.
+  const isReallyLive =
+    socket.status === 'live' && socket.clientConnected && fps != null;
+  const isOffline =
+    socket.status === 'offline' ||
+    (!!emp && !emp.online && !socket.clientConnected);
 
   useEffect(() => {
     const onFs = () => {
@@ -68,7 +75,7 @@ export function LiveStreamWatchTile({
           <p className="text-[10px] text-white/70 truncate">{employeeId}</p>
         </div>
         <div className="flex items-center gap-1 pointer-events-auto">
-          {socket.status === 'live' && (
+          {isReallyLive && (
             <>
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/90 text-white text-[10px] font-medium">
                 <Circle className="w-1.5 h-1.5 fill-current" />
@@ -81,6 +88,12 @@ export function LiveStreamWatchTile({
                 {fps != null ? `${fps} FPS` : '— FPS'}
               </span>
             </>
+          )}
+          {isOffline && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-zinc-600/90 text-white text-[10px] font-medium">
+              <WifiOff className="w-3 h-3" />
+              Offline
+            </span>
           )}
           <div
             className={`flex items-center gap-1 transition-opacity ${
@@ -141,10 +154,10 @@ export function LiveStreamWatchTile({
           playsInline
           muted
           className={`absolute inset-0 h-full w-full object-contain ${
-            socket.status === 'live' ? 'block' : 'hidden'
+            socket.status === 'live' && socket.clientConnected ? 'block' : 'hidden'
           }`}
         />
-        <WatchOverlay emp={emp} socket={socket} />
+        <WatchOverlay emp={emp} socket={socket} hasFrames={fps != null} />
       </div>
     </div>
   );
@@ -153,9 +166,11 @@ export function LiveStreamWatchTile({
 function WatchOverlay({
   emp,
   socket,
+  hasFrames,
 }: {
   emp: LiveStreamEmployee | null;
   socket: ReturnType<typeof useLiveStreamSocket>;
+  hasFrames: boolean;
 }) {
   if (!emp) {
     return (
@@ -163,6 +178,19 @@ function WatchOverlay({
         icon={Monitor}
         title="Unknown employee"
         body="This employee is no longer in the list."
+      />
+    );
+  }
+  // Presence / publisher gone beats a sticky SFU ontrack (was showing LIVE on black tiles).
+  if (
+    socket.status === 'offline' ||
+    (!emp.online && !socket.clientConnected)
+  ) {
+    return (
+      <EmptyPane
+        icon={WifiOff}
+        title="Employee offline"
+        body="WS connection is down. Preview starts automatically when the desktop client reconnects."
       />
     );
   }
@@ -187,14 +215,13 @@ function WatchOverlay({
       />
     );
   }
-  if (socket.status === 'live') return null;
-  if (!emp.online && !socket.clientConnected) {
+  if (socket.status === 'live' && hasFrames) return null;
+  if (socket.status === 'live' && !hasFrames) {
     return (
-      <EmptyPane
-        icon={WifiOff}
-        title="Employee offline"
-        body="WS connection is down. Preview starts automatically when the desktop client reconnects."
-      />
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground px-4 text-center">
+        <Loader2 className="w-5 h-5 animate-spin" />
+        <p className="text-xs font-medium text-foreground">Waiting for video frames…</p>
+      </div>
     );
   }
   return (

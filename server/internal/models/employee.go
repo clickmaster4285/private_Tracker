@@ -28,7 +28,9 @@ type Employee struct {
 	// HasUserLogin is true when a row in the `users` table exists for this
 	// employee's employee_id. Projected via EXISTS(…) so it costs one indexed
 	// probe per page row and scales to any number of employees.
-	HasUserLogin   bool      `json:"hasUserLogin" db:"has_user_login"`
+	HasUserLogin bool `json:"hasUserLogin" db:"has_user_login"`
+	// FaceEnrolled is true when an active employee_face_profiles row exists.
+	FaceEnrolled bool `json:"faceEnrolled" db:"face_enrolled"`
 }
 
 // EmployeePublic is the public-facing employee info.

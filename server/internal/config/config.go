@@ -42,11 +42,82 @@ type Config struct {
 
 	// Releases configures the local installer folder behind /releases + /downloads.
 	Releases ReleasesConfig
+
+	// Screenshots configures offline-first WebP storage (no retention purge yet).
+	Screenshots ScreenshotsConfig
+
+	// Face configures biometric enrollment media + FaceWorker shared secret.
+	Face FaceConfig
+
+	// Scale holds admission-control / Asynq / cache knobs for ~1000-agent fleets.
+	// All Go processes still share ONE PostgreSQL — pools must fit max_connections.
+	Scale ScaleConfig
+}
+
+// FaceConfig points at media/faces/{employeeId}/{jobId}/….
+type FaceConfig struct {
+	Dir            string
+	MaxUploadBytes int64
+	MaxFilesPerJob int
+	// WorkerAPIKey authenticates POST /internal/face-worker/* (empty = worker endpoints disabled).
+	WorkerAPIKey string
+	// WorkerURL is the face_worker HTTP base (e.g. http://127.0.0.1:8010). API pushes jobs here.
+	WorkerURL string
+	// EmbeddingKeySecret seals embedding_ciphertext (AES-GCM). Prefer FACE_EMBEDDING_KEY;
+	// falls back to JWT_SECRET when empty so lab boots without a second secret.
+	EmbeddingKeySecret string
+	// ModelsDir is face_worker/models — shared buffalo_l ONNX for worker + DeviceAuth download.
+	ModelsDir string
+	// BuffaloDetPackagePath is SCRFD det_10g for GET /face-models/packages/buffalo-l-det.
+	BuffaloDetPackagePath string
+	// BuffaloRecPackagePath is w600k_r50 for GET /face-models/packages/buffalo-l-rec.
+	BuffaloRecPackagePath string
+}
+
+// ScreenshotsConfig points at media/screenshots/{emp}/{yyyy}/{MM}/{dd}/….
+type ScreenshotsConfig struct {
+	Dir              string
+	MaxUploadBytes   int64
+	UploadRPS        float64
+	UploadBurst      int
+}
+
+// ScaleConfig controls rate limits, sync admission, Asynq workers, and Redis cache TTLs.
+type ScaleConfig struct {
+	// AsynqEnabled runs background sweeps via Asynq instead of in-process tickers.
+	// Requires Redis. When true, prefer `go run ./cmd/worker` (or embed with AsynqEmbed).
+	AsynqEnabled bool
+	// AsynqEmbed starts Asynq scheduler+worker inside the API process (single-VPS default).
+	AsynqEmbed bool
+	// AsynqConcurrency is the hard cap on job handler goroutines.
+	AsynqConcurrency int
+	// SyncMaxConcurrent bounds in-flight DeviceAuth sync handlers (503 when full).
+	SyncMaxConcurrent int
+	// LoginRPS / LoginBurst rate-limit POST /auth/login and /auth/employee-login per IP.
+	LoginRPS   float64
+	LoginBurst int
+	// SyncRPS / SyncBurst rate-limit DeviceAuth sync POSTs per IP (coarse).
+	SyncRPS   float64
+	SyncBurst int
+	// ScreenshotUploadRPS / Burst rate-limit DeviceAuth screenshot uploads per IP.
+	ScreenshotUploadRPS   float64
+	ScreenshotUploadBurst int
+	// AdminSearchRPS rate-limits JWT list/search-ish GETs per IP.
+	AdminSearchRPS   float64
+	AdminSearchBurst int
+	// DashboardCacheTTLSec caches GET /dashboard/summary in Redis (0 = off).
+	DashboardCacheTTLSec int
+	// SessionSweepSec is the Asynq period for session lifecycle (default 60).
+	SessionSweepSec int
 }
 
 // ReleasesConfig points at the folder holding client installers (e.g. setup/v1.0.0.exe).
 type ReleasesConfig struct {
 	Dir string
+	// MaxConcurrentDownloads caps simultaneous GET /downloads body streams (fleet admission).
+	MaxConcurrentDownloads int
+	// DownloadRetryAfterSec is returned with 429 when the download gate is full.
+	DownloadRetryAfterSec int
 }
 
 // LiveStreamConfig holds caps for the in-memory WebRTC SFU (no DB persistence).
@@ -186,7 +257,7 @@ func Load() (*Config, error) {
 
 		LiveStream: LiveStreamConfig{
 			Enabled:                getEnvBool("LIVE_STREAM_ENABLED", true),
-			MaxStreams:             getEnvInt("LIVE_STREAM_MAX_STREAMS", 25),
+			MaxStreams:             getEnvInt("LIVE_STREAM_MAX_STREAMS", 100),
 			MaxWatchersPerEmployee: getEnvInt("LIVE_STREAM_MAX_WATCHERS_PER_EMPLOYEE", 10),
 			IdleSec:                getEnvInt("LIVE_STREAM_IDLE_SEC", 90),
 			MaxBitrateKbps:         getEnvInt("WEBRTC_MAX_BITRATE_KBPS", 8000),
@@ -201,8 +272,54 @@ func Load() (*Config, error) {
 		},
 
 		Releases: ReleasesConfig{
-			Dir: strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
+			Dir:                    strings.TrimSpace(getEnv("RELEASES_DIR", "setup")),
+			MaxConcurrentDownloads: getEnvInt("RELEASE_DOWNLOAD_MAX_CONCURRENT", 25),
+			DownloadRetryAfterSec:  getEnvInt("RELEASE_DOWNLOAD_RETRY_AFTER_SEC", 60),
 		},
+
+		Screenshots: ScreenshotsConfig{
+			Dir:            strings.TrimSpace(getEnv("SCREENSHOTS_DIR", "media/screenshots")),
+			MaxUploadBytes: getEnvInt64("SCREENSHOTS_MAX_UPLOAD_BYTES", 2<<20),
+		},
+
+		Face: FaceConfig{
+			Dir:                strings.TrimSpace(getEnv("FACE_MEDIA_DIR", "media/faces")),
+			MaxUploadBytes:     getEnvInt64("FACE_MAX_UPLOAD_BYTES", 3<<20),
+			MaxFilesPerJob:     getEnvInt("FACE_MAX_FILES_PER_JOB", 16),
+			WorkerAPIKey:       strings.TrimSpace(getEnv("FACE_WORKER_API_KEY", "")),
+			WorkerURL:          strings.TrimRight(strings.TrimSpace(getEnv("FACE_WORKER_URL", "http://127.0.0.1:8010")), "/"),
+			EmbeddingKeySecret: strings.TrimSpace(getEnv("FACE_EMBEDDING_KEY", "")),
+			ModelsDir:             strings.TrimSpace(getEnv("FACE_MODELS_DIR", "face_worker/models")),
+			BuffaloDetPackagePath: strings.TrimSpace(getEnv("FACE_BUFFALO_DET_ONNX", "face_worker/models/det_10g.onnx")),
+			BuffaloRecPackagePath: strings.TrimSpace(getEnv("FACE_BUFFALO_REC_ONNX", "face_worker/models/w600k_r50.onnx")),
+		},
+
+		Scale: ScaleConfig{
+			AsynqEnabled:          getEnvBool("ASYNQ_ENABLED", true),
+			AsynqEmbed:            getEnvBool("ASYNQ_EMBED", true),
+			AsynqConcurrency:      getEnvInt("ASYNQ_CONCURRENCY", 8),
+			SyncMaxConcurrent:     getEnvInt("SYNC_MAX_CONCURRENT", 0), // 0 → derive from DB pool
+			LoginRPS:              getEnvFloat("RATE_LIMIT_LOGIN_RPS", 2),
+			LoginBurst:            getEnvInt("RATE_LIMIT_LOGIN_BURST", 5),
+			SyncRPS:               getEnvFloat("RATE_LIMIT_SYNC_RPS", 30),
+			SyncBurst:             getEnvInt("RATE_LIMIT_SYNC_BURST", 60),
+			ScreenshotUploadRPS:   getEnvFloat("RATE_LIMIT_SCREENSHOT_RPS", 40),
+			ScreenshotUploadBurst: getEnvInt("RATE_LIMIT_SCREENSHOT_BURST", 80),
+			AdminSearchRPS:        getEnvFloat("RATE_LIMIT_ADMIN_RPS", 20),
+			AdminSearchBurst:      getEnvInt("RATE_LIMIT_ADMIN_BURST", 40),
+			DashboardCacheTTLSec:  getEnvInt("DASHBOARD_CACHE_TTL_SEC", 20),
+			SessionSweepSec:       getEnvInt("SESSION_SWEEP_INTERVAL_SECONDS", 60),
+		},
+	}
+
+	if cfg.Scale.SyncMaxConcurrent <= 0 {
+		cfg.Scale.SyncMaxConcurrent = int(syncMaxFromPool(cfg.Database.MaxOpenConns))
+	}
+	if cfg.Scale.AsynqConcurrency < 1 {
+		cfg.Scale.AsynqConcurrency = 4
+	}
+	if cfg.LiveStream.MaxStreams < 1 {
+		cfg.LiveStream.MaxStreams = 100
 	}
 
 	if cfg.Database.Password == "" {
@@ -211,8 +328,31 @@ func Load() (*Config, error) {
 	if cfg.JWT.Secret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
 	}
+	if cfg.Face.EmbeddingKeySecret == "" {
+		cfg.Face.EmbeddingKeySecret = cfg.JWT.Secret
+	}
 
 	return cfg, nil
+}
+
+func syncMaxFromPool(maxOpenConns int) int64 {
+	if maxOpenConns < 4 {
+		return 2
+	}
+	n := int64(maxOpenConns) * 3 / 5
+	if n < 2 {
+		return 2
+	}
+	return n
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
 }
 
 func getEnv(key, fallback string) string {
@@ -225,6 +365,15 @@ func getEnv(key, fallback string) string {
 func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvInt64(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return i
 		}
 	}

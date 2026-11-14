@@ -81,6 +81,7 @@ public sealed class SilentUpdateState
                 lastErrorAt = LastErrorAt?.ToString("o"),
                 consecutiveFailures = ConsecutiveFailures,
                 updateInProgress = UpdatePaths.IsUpdateInProgress(),
+                updatePriority = UpdatePaths.IsUpdatePriorityActive(),
             };
         }
     }

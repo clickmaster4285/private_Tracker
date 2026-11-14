@@ -58,6 +58,12 @@ public sealed class LocationSamplerService : BackgroundService
         {
             try
             {
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    continue;
+                }
+
                 var fix = await LocationProbe.TryGetFixAsync(
                     _http, stoppingToken, _config.LocationIpFallback);
                 if (fix.HasValue)

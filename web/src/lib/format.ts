@@ -23,6 +23,18 @@ export function formatDateTime(iso?: string | null): string {
   });
 }
 
+/** Same as formatDateTime but includes seconds (screenshot capture times). */
+export function formatDateTimeSeconds(iso?: string | null): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
 /** Format an instant in the shift IANA timezone (matches server late/present math). */
 export function formatDateTimeInZone(iso?: string | null, timeZone?: string | null): string {
   if (!iso) return '—';

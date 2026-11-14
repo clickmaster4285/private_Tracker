@@ -100,7 +100,10 @@ func (r *EmployeeRepo) List(ctx context.Context, params EmployeeListParams) (*Em
 		                 ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		       EXISTS(SELECT 1 FROM users u
 		              WHERE u.employee_id = e.employee_id
-		                AND u.deleted_at IS NULL) AS has_user_login
+		                AND u.deleted_at IS NULL) AS has_user_login,
+		       EXISTS(SELECT 1 FROM employee_face_profiles p
+		              WHERE p.employee_id = e.employee_id
+		                AND p.status = 'active') AS face_enrolled
 		FROM employees e
 		LEFT JOIN departments d ON e.department_id = d.id
 		LEFT JOIN shifts s ON s.id = e.shift_id AND s.deleted_at IS NULL
@@ -127,6 +130,7 @@ func (r *EmployeeRepo) List(ctx context.Context, params EmployeeListParams) (*Em
 			&e.CreatedAt, &e.UpdatedAt, &e.DeletedAt,
 			&e.ClientVersion,
 			&e.HasUserLogin,
+			&e.FaceEnrolled,
 		); err != nil {
 			return nil, fmt.Errorf("scan employee row: %w", err)
 		}
@@ -164,7 +168,10 @@ func (r *EmployeeRepo) GetByID(ctx context.Context, id string) (*models.Employee
 		                 ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		       EXISTS(SELECT 1 FROM users u
 		              WHERE u.employee_id = e.employee_id
-		                AND u.deleted_at IS NULL) AS has_user_login
+		                AND u.deleted_at IS NULL) AS has_user_login,
+		       EXISTS(SELECT 1 FROM employee_face_profiles p
+		              WHERE p.employee_id = e.employee_id
+		                AND p.status = 'active') AS face_enrolled
 		FROM employees e
 		LEFT JOIN departments d ON e.department_id = d.id
 		LEFT JOIN shifts s ON s.id = e.shift_id AND s.deleted_at IS NULL
@@ -186,7 +193,10 @@ func (r *EmployeeRepo) GetByEmployeeID(ctx context.Context, employeeID string) (
 		                 ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		       EXISTS(SELECT 1 FROM users u
 		              WHERE u.employee_id = e.employee_id
-		                AND u.deleted_at IS NULL) AS has_user_login
+		                AND u.deleted_at IS NULL) AS has_user_login,
+		       EXISTS(SELECT 1 FROM employee_face_profiles p
+		              WHERE p.employee_id = e.employee_id
+		                AND p.status = 'active') AS face_enrolled
 		FROM employees e
 		LEFT JOIN departments d ON e.department_id = d.id
 		LEFT JOIN shifts s ON s.id = e.shift_id AND s.deleted_at IS NULL
@@ -208,7 +218,10 @@ func (r *EmployeeRepo) GetByEmail(ctx context.Context, email string) (*models.Em
 		                 ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		       EXISTS(SELECT 1 FROM users u
 		              WHERE u.employee_id = e.employee_id
-		                AND u.deleted_at IS NULL) AS has_user_login
+		                AND u.deleted_at IS NULL) AS has_user_login,
+		       EXISTS(SELECT 1 FROM employee_face_profiles p
+		              WHERE p.employee_id = e.employee_id
+		                AND p.status = 'active') AS face_enrolled
 		FROM employees e
 		LEFT JOIN departments d ON e.department_id = d.id
 		LEFT JOIN shifts s ON s.id = e.shift_id AND s.deleted_at IS NULL
@@ -240,7 +253,10 @@ func (r *EmployeeRepo) Create(ctx context.Context, e *models.Employee) (*models.
 		                    ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		          EXISTS(SELECT 1 FROM users u
 		                 WHERE u.employee_id = employees.employee_id
-		                   AND u.deleted_at IS NULL) AS has_user_login
+		                   AND u.deleted_at IS NULL) AS has_user_login,
+		          EXISTS(SELECT 1 FROM employee_face_profiles p
+		                 WHERE p.employee_id = employees.employee_id
+		                   AND p.status = 'active') AS face_enrolled
 	`
 	emp, err := execGetByID(ctx, tx, query,
 		e.EmployeeID, e.Name, e.Email, e.DepartmentID, e.ShiftID,
@@ -274,7 +290,10 @@ func (r *EmployeeRepo) ListAll(ctx context.Context) ([]models.Employee, error) {
 		                 ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		       EXISTS(SELECT 1 FROM users u
 		              WHERE u.employee_id = e.employee_id
-		                AND u.deleted_at IS NULL) AS has_user_login
+		                AND u.deleted_at IS NULL) AS has_user_login,
+		       EXISTS(SELECT 1 FROM employee_face_profiles p
+		              WHERE p.employee_id = e.employee_id
+		                AND p.status = 'active') AS face_enrolled
 		FROM employees e
 		LEFT JOIN departments d ON e.department_id = d.id
 		LEFT JOIN shifts s ON s.id = e.shift_id AND s.deleted_at IS NULL
@@ -298,6 +317,7 @@ func (r *EmployeeRepo) ListAll(ctx context.Context) ([]models.Employee, error) {
 			&e.CreatedAt, &e.UpdatedAt, &e.DeletedAt,
 			&e.ClientVersion,
 			&e.HasUserLogin,
+			&e.FaceEnrolled,
 		); err != nil {
 			return nil, fmt.Errorf("scan employee row: %w", err)
 		}
@@ -543,7 +563,10 @@ func (r *EmployeeRepo) Update(ctx context.Context, id string, updates map[string
 		                    ORDER BY ed.last_seen_at DESC LIMIT 1), '') AS client_version,
 		          EXISTS(SELECT 1 FROM users u
 		                 WHERE u.employee_id = employees.employee_id
-		                   AND u.deleted_at IS NULL) AS has_user_login
+		                   AND u.deleted_at IS NULL) AS has_user_login,
+		          EXISTS(SELECT 1 FROM employee_face_profiles p
+		                 WHERE p.employee_id = employees.employee_id
+		                   AND p.status = 'active') AS face_enrolled
 	`, strings.Join(setClauses, ", "))
 
 	emp, err := execGetByID(ctx, tx, query, args...)
@@ -626,6 +649,7 @@ func scanEmployeeRow(rows pgx.Rows) (*models.Employee, error) {
 			&e.CreatedAt, &e.UpdatedAt, &e.DeletedAt,
 			&e.ClientVersion,
 			&e.HasUserLogin,
+			&e.FaceEnrolled,
 		)
 		return e, err
 	})

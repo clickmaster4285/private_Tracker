@@ -50,10 +50,13 @@ builder.Services.AddSingleton<SilentUpdateWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SilentUpdateWorker>());
 
 builder.Services.AddHostedService<ServiceAclWorker>();
+builder.Services.AddSingleton<EnforceWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<EnforceWorker>());
 builder.Services.AddHostedService<PolicyPullWorker>();
 builder.Services.AddHostedService<AlertSyncWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<RemovableDriveMonitor>());
-builder.Services.AddHostedService<EnforceWorker>();
+builder.Services.AddHostedService<PortGuardWorker>();
+builder.Services.AddHostedService<AntivirusGuardWorker>();
 builder.Services.AddHostedService<DnsBlockPinWorker>();
 builder.Services.AddHostedService<NamedPipeHost>();
 builder.Services.AddHostedService<TrackerWatchdogWorker>();

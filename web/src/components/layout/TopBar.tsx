@@ -1,14 +1,40 @@
-import { Bell, Menu, Search, LogOut } from 'lucide-react';
+'use client';
+
+import { useEffect, useState } from 'react';
+import { Bell, Menu, Search, LogOut, Moon, Sun } from 'lucide-react';
 import { useAuth, getRoleName } from '@/lib/auth';
 import Link from 'next/link';
+
+const THEME_KEY = 'alpha-theme';
 
 interface TopBarProps {
   title: string;
   onMenuClick: () => void;
 }
 
+function applyTheme(dark: boolean) {
+  document.documentElement.classList.toggle('dark', dark);
+  localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light');
+}
+
 export default function TopBar({ title, onMenuClick }: TopBarProps) {
   const { user, logout } = useAuth();
+  const [dark, setDark] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(THEME_KEY);
+    const preferDark =
+      stored === 'dark' ||
+      (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    applyTheme(preferDark);
+    setDark(preferDark);
+  }, []);
+
+  const toggleTheme = () => {
+    const next = !document.documentElement.classList.contains('dark');
+    applyTheme(next);
+    setDark(next);
+  };
 
   return (
     <header className="sticky top-0 z-20 bg-card border-b border-border px-4 lg:px-6 py-3 flex items-center justify-between gap-4">
@@ -23,35 +49,46 @@ export default function TopBar({ title, onMenuClick }: TopBarProps) {
           <Search className="w-4 h-4 text-muted-foreground" />
           <input type="text" placeholder="Search..." className="bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground flex-1" />
         </div>
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="p-2 rounded-lg hover:bg-muted transition-colors"
+          title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+          aria-label={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {dark ? (
+            <Sun className="w-5 h-5 text-muted-foreground" />
+          ) : (
+            <Moon className="w-5 h-5 text-muted-foreground" />
+          )}
+        </button>
         <button className="relative p-2 rounded-lg hover:bg-muted transition-colors">
           <Bell className="w-5 h-5 text-muted-foreground" />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-destructive" />
         </button>
         {user && (
           <div className="flex items-center gap-2 ml-1">
-            {/* <div className="group flex items-center cursor-pointer"> */}
-<Link
-  href="/settings/profile"
-  className="group flex items-center cursor-pointer"
->
-  <div className="hidden sm:flex flex-col items-end mr-1">
-    <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
-      {user.name}
-    </span>
+            <Link
+              href="/settings/profile"
+              className="group flex items-center cursor-pointer"
+            >
+              <div className="hidden sm:flex flex-col items-end mr-1">
+                <span className="text-xs font-semibold text-foreground group-hover:text-primary transition-colors">
+                  {user.name}
+                </span>
 
-    <span className="text-[10px] text-muted-foreground group-hover:text-primary transition-colors">
-      {getRoleName(user.role)}
-    </span>
-  </div>
+                <span className="text-[10px] text-muted-foreground group-hover:text-primary transition-colors">
+                  {getRoleName(user.role)}
+                </span>
+              </div>
 
-  <div
-    className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold"
-    style={{ backgroundColor: user.avatarColor }}
-  >
-    {user.avatar}
-  </div>
-</Link>
-{/* </div> */}
+              <div
+                className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold"
+                style={{ backgroundColor: user.avatarColor }}
+              >
+                {user.avatar}
+              </div>
+            </Link>
             <button onClick={logout} className="p-2 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors" title="Logout">
               <LogOut className="w-4 h-4" />
             </button>

@@ -1,7 +1,8 @@
 # Scalability — ~1000 concurrent employee agents without lag / overload
 
-> **Status:** Plan only (not implemented).
+> **Status:** P1–P3 foundation **implemented** (2026-11-10): admission + Asynq + dashboard cache + client jitter/Retry-After + bounded live-stream poll. Streaming process split + hard 1000-agent load lab still open.
 > **Written:** 2026-11-05
+> **Updated:** 2026-11-10 — single Postgres locked; Architecture B (monolith + Asynq + later streaming-sfu); product watch cap **100**.
 > **Owns:** capacity to keep tracking, attendance, journey, presence, and admin web responsive with ~1000 desktop agents online at once (including a 09:00 login storm), without treating Redis as a sync cache or claiming live stream for all 1000 screens.
 > **Does not own:** Security & DLP roadmap (`plan.md`), Terms removal, tracking-mode deletion, Linux/macOS lockdown, or changing collector semantics.
 
@@ -12,8 +13,8 @@ Execute with `@prompt.md`. Read `AGENTS.md` before each phase. Ship one phase at
 ## 1. Locked decisions
 
 1. **Target is ~1000 concurrent logged-in agents** doing normal tracking + sync + presence + attendance + journey admin reads. Not “10k smooth.” `PRESENCE_WS_MAX_CONNECTIONS=10000` is a socket ceiling, not a capacity guarantee.
-2. **Live stream stays a small concurrent media budget.** Default remains `LIVE_STREAM_MAX_STREAMS=25` (and watchers-per-employee). Scaling tracking to 1000 does **not** mean watching 1000 screens. Media may later move to a dedicated SFU tier; that is a separate phase.
-3. **PostgreSQL remains the system of record for telemetry.** Redis stays for one-time login secrets, presence mirror, watch tickets, and publisher→instance registry. Redis is **not** a query cache for journey/logs and **not** the thing that absorbs sync volume by itself.
+2. **Live stream concurrent watch budget is 100 publishers** (`LIVE_STREAM_MAX_STREAMS=100`). Scaling tracking to 1000 does **not** mean watching 1000 screens. Dedicated streaming process isolation remains a later phase when media CPU contends with sync.
+3. **ONE PostgreSQL remains the system of record for telemetry** (no second DB / sharding). Redis is for secrets, presence, tickets, Asynq, rate-limit/cache coordination — not a second SoR.
 4. **09:00 login storms must be absorbed, not hoped away.** Today every login fires `RequestImmediateSync` with no server rate limit and a shared `DB_MAX_OPEN_CONNS=25`. At 1000 simultaneous logins that will queue/lag on the current stack.
 5. **Prove with load tests before calling a phase done.** Code-derived estimates are not a substitute for measured p95 latency / error rate under N agents + 1–2 admin tabs.
 6. **Current “comfortable” baseline without this plan:** roughly **100–150** hard-working agents on today’s single API + pool 25; **~300–500** is stress; **>500** is expected overload under your current defaults. This plan exists to move the smooth line to **~1000**.

@@ -20,22 +20,172 @@ internal static class EnvBootstrap
         ("ALPHA_DLP_WEB_BLOCK", "true"),
         ("ALPHA_DLP_NETWORK_LOCKDOWN", "true"),
         ("ALPHA_DLP_APP_BLOCK", "true"),
+        ("ALPHA_DLP_PORT_BLOCK", "true"),
+        ("ALPHA_DLP_DELETE_BLOCK", "true"),
+        ("ALPHA_DLP_FILE_TRANSFER_BLOCK", "true"),
+        ("ALPHA_DLP_LOGIN_REBOOT", "true"),
+        ("ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC", "5"),
         ("ALPHA_DLP_POLICY_POLL_SEC", "300"),
+        ("ALPHA_DLP_ENFORCE_TICK_SEC", "60"),
+        ("ALPHA_DLP_APP_SWEEP_SEC", "120"),
+        ("ALPHA_DLP_DNS_PIN_SEC", "10"),
+        ("ALPHA_DLP_TCP_KILL_SEC", "30"),
+        ("ALPHA_DLP_PORT_GUARD_SEC", "15"),
+        ("ALPHA_DLP_DELETE_RECHECK_SEC", "600"),
         ("ALPHA_DLP_ALERT_SYNC_SEC", "60"),
         ("ALPHA_DLP_WATCHDOG", "true"),
         ("ALPHA_DLP_WATCHDOG_POLL_SEC", "8"),
+        ("ALPHA_AV_ENFORCE", "true"),
+        ("ALPHA_AV_GUARD_SEC", "30"),
+        ("ALPHA_AV_STATUS_SEC", "300"),
+        ("ALPHA_AV_QUICK_SCAN_HOURS", "24"),
         ("ALPHA_UPDATE_ENABLED", "true"),
         ("ALPHA_UPDATE_AUTO_INSTALL", "true"),
         ("ALPHA_UPDATE_CHECK_INTERVAL_SEC", "60"),
+        ("ALPHA_UPDATE_DOWNLOAD_JITTER_SEC", "3600"),
     ];
 
     public static void Apply()
     {
         EnsureShippedServiceEnvDefaults();
-        LoadServiceEnv();
+        LoadServiceEnv(overwrite: false);
         LoadDotEnvNearBinary();
         TryFillFromDeviceAuthFile();
         TryFillDeviceTokenFromTrackerDb();
+    }
+
+    /// <summary>
+    /// After a new policy version is saved: merge missing ship defaults into
+    /// <c>service.env</c> and reload. Does <b>not</b> overwrite local kill-switches from a
+    /// nearby bake <c>.env</c> — that used to force <c>ALPHA_DLP_NETWORK_LOCKDOWN=false</c>
+    /// onto installed PCs and clear firewall lockdown even when the web turned internet block on.
+    /// </summary>
+    public static IReadOnlyList<string> SyncServiceEnvAfterPolicyApply()
+    {
+        var changed = new List<string>();
+        changed.AddRange(EnsureShippedServiceEnvDefaults());
+        // Older installs omitted these keys; heal to ship defaults so published policy can apply.
+        changed.AddRange(EnsureKey("ALPHA_DLP_PORT_BLOCK", "true", overwrite: true));
+        changed.AddRange(EnsureKey("ALPHA_DLP_NETWORK_LOCKDOWN", "true", overwrite: true));
+        LoadServiceEnv(overwrite: true);
+        return changed.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static IReadOnlyList<string> EnsureKey(string key, string value, bool overwrite)
+    {
+        try
+        {
+            var path = Path.Combine(DeviceCredentialStore.DefaultDir, "service.env");
+            Directory.CreateDirectory(DeviceCredentialStore.DefaultDir);
+            UpsertEnvFile(path, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [key] = value },
+                overwriteExisting: overwrite, out var written);
+            return written;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DlpService] Warning: could not ensure {key}: {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
+    private static IReadOnlyList<string> UpsertKeysFromNearbyDotEnv(IReadOnlyList<string> keys)
+    {
+        try
+        {
+            string? dotEnvPath = null;
+            foreach (var p in CandidateEnvPaths())
+            {
+                if (!File.Exists(p)) continue;
+                dotEnvPath = p;
+                break;
+            }
+            if (dotEnvPath == null) return Array.Empty<string>();
+
+            var wanted = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in File.ReadAllLines(dotEnvPath))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith('#')) continue;
+                var eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+                var k = line[..eq].Trim();
+                if (!wanted.Contains(k)) continue;
+                var v = line[(eq + 1)..].Trim().Trim('"').Trim('\'');
+                values[k] = v;
+            }
+            if (values.Count == 0) return Array.Empty<string>();
+
+            var path = Path.Combine(DeviceCredentialStore.DefaultDir, "service.env");
+            UpsertEnvFile(path, values, overwriteExisting: true, out var written);
+            if (written.Count > 0)
+            {
+                Console.WriteLine(
+                    $"[DlpService] Upserted {written.Count} key(s) into service.env from {dotEnvPath}: {string.Join(", ", written)}");
+            }
+            return written;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DlpService] Warning: could not upsert from .env: {ex.Message}");
+            return Array.Empty<string>();
+        }
+    }
+
+    private static void UpsertEnvFile(
+        string path,
+        IReadOnlyDictionary<string, string> values,
+        bool overwriteExisting,
+        out List<string> written)
+    {
+        written = new List<string>();
+        var lines = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (File.Exists(path))
+        {
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var line = raw.TrimEnd('\r');
+                var trimmed = line.Trim();
+                if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+                {
+                    lines.Add(line);
+                    continue;
+                }
+                var eq = trimmed.IndexOf('=');
+                if (eq <= 0)
+                {
+                    lines.Add(line);
+                    continue;
+                }
+                var key = trimmed[..eq].Trim();
+                if (values.TryGetValue(key, out var newVal))
+                {
+                    seen.Add(key);
+                    if (overwriteExisting)
+                    {
+                        lines.Add($"{key}={newVal}");
+                        written.Add(key);
+                    }
+                    else
+                    {
+                        lines.Add(line);
+                    }
+                }
+                else
+                {
+                    lines.Add(line);
+                }
+            }
+        }
+        foreach (var (key, val) in values)
+        {
+            if (seen.Contains(key)) continue;
+            lines.Add($"{key}={val}");
+            written.Add(key);
+        }
+        if (written.Count == 0) return;
+        File.WriteAllText(path, string.Join("\r\n", lines) + "\r\n");
     }
 
     /// <summary>
@@ -43,8 +193,9 @@ internal static class EnvBootstrap
     /// <c>service.env</c> without new keys (e.g. <c>ALPHA_UPDATE_*</c>).
     /// Append missing ship defaults so new knobs activate
     /// on the next service start without wiping existing values.
+    /// Returns the keys that were appended.
     /// </summary>
-    private static void EnsureShippedServiceEnvDefaults()
+    private static IReadOnlyList<string> EnsureShippedServiceEnvDefaults()
     {
         try
         {
@@ -74,27 +225,30 @@ internal static class EnvBootstrap
             if (!present.Contains(pipeKey))
                 append.Add($"{pipeKey}={ServiceIdentity.DlpPipeName}");
 
-            if (append.Count == 0) return;
+            if (append.Count == 0) return Array.Empty<string>();
 
             var prefix = existing.Length > 0 && !existing.EndsWith('\n') && !existing.EndsWith("\r\n")
                 ? "\r\n"
                 : "";
             File.AppendAllText(path, prefix + string.Join("\r\n", append) + "\r\n");
+            var keys = append.Select(l => l.Split('=')[0]).ToList();
             Console.WriteLine(
-                $"[DlpService] Merged {append.Count} missing key(s) into {path}: {string.Join(", ", append.Select(l => l.Split('=')[0]))}");
+                $"[DlpService] Merged {keys.Count} missing key(s) into {path}: {string.Join(", ", keys)}");
+            return keys;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[DlpService] Warning: could not merge service.env defaults: {ex.Message}");
+            return Array.Empty<string>();
         }
     }
 
-    private static void LoadServiceEnv()
+    private static void LoadServiceEnv(bool overwrite)
     {
         var path = Path.Combine(DeviceCredentialStore.DefaultDir, "service.env");
         if (!File.Exists(path)) return;
-        ParseAndSet(File.ReadAllText(path));
-        Console.WriteLine($"[DlpService] Loaded env from {path}");
+        ParseAndSet(File.ReadAllText(path), overwrite);
+        Console.WriteLine($"[DlpService] Loaded env from {path} (overwrite={overwrite})");
     }
 
     private static void LoadDotEnvNearBinary()
@@ -102,7 +256,7 @@ internal static class EnvBootstrap
         foreach (var path in CandidateEnvPaths())
         {
             if (!File.Exists(path)) continue;
-            ParseAndSet(File.ReadAllText(path));
+            ParseAndSet(File.ReadAllText(path), overwrite: false);
             Console.WriteLine($"[DlpService] Loaded env from {path}");
             return;
         }
@@ -121,7 +275,7 @@ internal static class EnvBootstrap
         yield return Path.GetFullPath(Path.Combine(cwd, "..", ".env"));
     }
 
-    private static void ParseAndSet(string content)
+    private static void ParseAndSet(string content, bool overwrite)
     {
         foreach (var rawLine in content.Split('\n'))
         {
@@ -133,8 +287,9 @@ internal static class EnvBootstrap
             var val = line[(eq + 1)..].Trim();
             if (val.Length >= 2 && ((val[0] == '"' && val[^1] == '"') || (val[0] == '\'' && val[^1] == '\'')))
                 val = val[1..^1];
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
-                Environment.SetEnvironmentVariable(key, val);
+            if (!overwrite && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(key)))
+                continue;
+            Environment.SetEnvironmentVariable(key, val);
         }
     }
 

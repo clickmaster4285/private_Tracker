@@ -76,4 +76,17 @@ public class UpdateInstallDecisionTests
     {
         Assert.Equal(ok, UpdateInstallDecision.PublishedSizeMatches(published, file));
     }
+
+    [Theory]
+    [InlineData(UpdateInstallRoute.ServiceUnanswered, "write_timeout", "write timed out")]
+    [InlineData(UpdateInstallRoute.ServiceUnanswered, "connect_timeout", "connect timed out")]
+    [InlineData(UpdateInstallRoute.ServiceUnanswered, "response_timeout", "response timed out")]
+    [InlineData(UpdateInstallRoute.GuiFallback, "unknown_op", "too old")]
+    [InlineData(UpdateInstallRoute.UpdatesDisabled, "update_disabled", "turned off")]
+    public void RefuseMessage_surfaces_pipe_errors(
+        UpdateInstallRoute route, string error, string expectedFragment)
+    {
+        var msg = UpdateInstallDecision.RefuseMessage(route, error);
+        Assert.Contains(expectedFragment, msg, StringComparison.OrdinalIgnoreCase);
+    }
 }

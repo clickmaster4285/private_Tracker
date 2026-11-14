@@ -25,7 +25,20 @@ fi
 
 echo "[encrypt-config] Encrypting $(basename "$INPUT") → $(basename "$OUTPUT") (AES-256-GCM)..."
 
+# Multi-TFM project: pin framework so `dotnet run` never prompts interactively.
+# Windows (incl. Git Bash / MSYS) → net10.0-windows; Linux/macOS → net10.0.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT) TFM="net10.0-windows" ;;
+  *)
+    if [ "${OS:-}" = "Windows_NT" ] || command -v cmd.exe >/dev/null 2>&1; then
+      TFM="net10.0-windows"
+    else
+      TFM="net10.0"
+    fi
+    ;;
+esac
+
 cd "$CLIENT_DIR"
-dotnet run --project "$CLIENT_DIR" -- --encrypt-config "$INPUT" "$OUTPUT"
+dotnet run --project "$CLIENT_DIR" -f "$TFM" -- --encrypt-config "$INPUT" "$OUTPUT"
 
 echo "[encrypt-config] Done: $OUTPUT ($(stat -c%s "$OUTPUT" 2>/dev/null || stat -f%z "$OUTPUT" 2>/dev/null || echo "?") bytes)"

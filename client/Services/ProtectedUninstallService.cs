@@ -330,23 +330,27 @@ public sealed class ProtectedUninstallService
             steps.AddRange(cleanup.Steps);
             steps.Add($"cleanup summary={cleanup.Summary} {cleanupSw.ElapsedMilliseconds}ms");
 
-            // Unelevated CLI cannot edit hosts / sc stop LocalSystem service — prompt UAC.
-            if ((!cleanup.ServiceGone || !cleanup.UsbRestored || !cleanup.HostsCleared) &&
+            // Unelevated CLI cannot edit hosts / AppLocker / sc stop LocalSystem — prompt UAC.
+            var appLockerStillOn = WindowsTeardownCleanup.LooksLikeAppLockerExeEnforced();
+            if ((!cleanup.ServiceGone || !cleanup.UsbRestored || !cleanup.HostsCleared ||
+                 appLockerStillOn) &&
                 !cleanup.IsProcessElevated)
             {
                 Log("Cleanup incomplete without admin — requesting UAC elevation");
-                Set(progress, "teardown", "Administrator approval required for hosts/DLP cleanup");
+                Set(progress, "teardown", "Administrator approval required for hosts/DLP/AppLocker cleanup");
                 var elevated = WindowsTeardownCleanup.TryElevateCleanupViaUac(steps);
                 cleanup = elevated;
                 steps.Add($"elevate summary={elevated.Summary}");
+                appLockerStillOn = WindowsTeardownCleanup.LooksLikeAppLockerExeEnforced();
             }
 
             Log(
                 $"USB restored={cleanup.UsbRestored}; hostsCleared={cleanup.HostsCleared}; " +
-                $"DLP gone={cleanup.ServiceGone}");
+                $"DLP gone={cleanup.ServiceGone}; appLockerCleared={!appLockerStillOn}");
 
             var pendingElevation =
-                (!cleanup.ServiceGone || !cleanup.HostsCleared) && !WindowsTeardownCleanup.IsElevated();
+                (!cleanup.ServiceGone || !cleanup.HostsCleared || appLockerStillOn) &&
+                !WindowsTeardownCleanup.IsElevated();
             string? failedOp = null;
             string? detail = null;
             if (!cleanup.ServiceGone)
@@ -366,11 +370,17 @@ public sealed class ProtectedUninstallService
                 failedOp = "clear_web_block";
                 detail = "AlphaAI-DLP hosts/firewall entries still present";
             }
+            else if (appLockerStillOn)
+            {
+                failedOp = "clear_applocker";
+                detail =
+                    "AppLocker Exe still Enabled — reboot may be required; see removeTracker.md";
+            }
 
             Set(progress, "teardown", "Verifying remaining services");
             Log($"Verifying: service={WindowsTeardownCleanup.QueryServiceState(AppInfo.WindowsServiceName)} " +
                 $"usbstor={WindowsTeardownCleanup.ReadUsbStorStart()?.ToString() ?? "?"} " +
-                $"hostsCleared={cleanup.HostsCleared}");
+                $"hostsCleared={cleanup.HostsCleared} appLockerCleared={!appLockerStillOn}");
 
             return new TeardownSlice
             {
@@ -826,7 +836,10 @@ public sealed class ProtectedUninstallService
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(HttpVerifyTimeoutSec) };
+            using var http = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(HttpVerifyTimeoutSec),
+            };
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
             linked.CancelAfter(TimeSpan.FromSeconds(HttpVerifyTimeoutSec));
 

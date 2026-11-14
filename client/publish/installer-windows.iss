@@ -46,12 +46,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: checkedonce
 
 [Files]
-Source: "windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "Platform\Linux\*;Service\*"
+Source: "windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "Platform\Linux\*;Service\*;redist\*"
 ; restartreplace: if a handle still holds Service\*.dll after stop attempts, schedule
 ; replace on reboot instead of failing the whole upgrade with DeleteFile code 5.
 Source: "windows\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace; Check: DirExists(ExpandConstant('{src}\windows\Service'))
 Source: "windows\config.enc"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist; Check: FileExists(ExpandConstant('{src}\windows\config.enc'))
 Source: "..\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion
+; Optional full VC++ redist (ALPHA_BUNDLE_VC_REDIST=1). Check: is install-time only —
+; missing Source still fails compile, so gate with ISPP FileExists.
+#if FileExists(AddBackslash(SourcePath) + "windows\redist\vc_redist.x64.exe")
+Source: "windows\redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+#endif
 
 [Registry]
 Root: HKA; Subkey: "Software\Classes\{#MyAppAssocExt}\OpenWithProgids"; ValueType: string; ValueName: "{#MyAppAssocKey}"; ValueData: ""; Flags: uninsdeletevalue
@@ -64,6 +69,8 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Install VC++ CRT system-wide when the optional redistributable was bundled.
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated; Check: FileExists(ExpandConstant('{tmp}\vc_redist.x64.exe'))
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -300,14 +307,31 @@ begin
   SetEnvKey(EnvPath, 'ALPHA_DLP_WEB_BLOCK', '{#ALPHA_DLP_WEB_BLOCK}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_NETWORK_LOCKDOWN', '{#ALPHA_DLP_NETWORK_LOCKDOWN}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_APP_BLOCK', '{#ALPHA_DLP_APP_BLOCK}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_PORT_BLOCK', '{#ALPHA_DLP_PORT_BLOCK}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_DELETE_BLOCK', '{#ALPHA_DLP_DELETE_BLOCK}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_FILE_TRANSFER_BLOCK', '{#ALPHA_DLP_FILE_TRANSFER_BLOCK}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_LOGIN_REBOOT', '{#ALPHA_DLP_LOGIN_REBOOT}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC', '{#ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_POLICY_POLL_SEC', '{#ALPHA_DLP_POLICY_POLL_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_ENFORCE_TICK_SEC', '{#ALPHA_DLP_ENFORCE_TICK_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_APP_SWEEP_SEC', '{#ALPHA_DLP_APP_SWEEP_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_DNS_PIN_SEC', '{#ALPHA_DLP_DNS_PIN_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_TCP_KILL_SEC', '{#ALPHA_DLP_TCP_KILL_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_PORT_GUARD_SEC', '{#ALPHA_DLP_PORT_GUARD_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_DELETE_RECHECK_SEC', '{#ALPHA_DLP_DELETE_RECHECK_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_ALERT_SYNC_SEC', '{#ALPHA_DLP_ALERT_SYNC_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_PIPE_NAME', '{#WINDOWS_DLP_PIPE_NAME}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_WATCHDOG', '{#ALPHA_DLP_WATCHDOG}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_WATCHDOG_POLL_SEC', '{#ALPHA_DLP_WATCHDOG_POLL_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_AV_ENFORCE', '{#ALPHA_AV_ENFORCE}');
+  SetEnvKey(EnvPath, 'ALPHA_AV_GUARD_SEC', '{#ALPHA_AV_GUARD_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_AV_STATUS_SEC', '{#ALPHA_AV_STATUS_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_AV_QUICK_SCAN_HOURS', '{#ALPHA_AV_QUICK_SCAN_HOURS}');
+  SetEnvKey(EnvPath, 'ALPHA_AV_ALLOWED_EXCLUSIONS', '{#ALPHA_AV_ALLOWED_EXCLUSIONS}');
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_ENABLED', '{#ALPHA_UPDATE_ENABLED}');
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_AUTO_INSTALL', '{#ALPHA_UPDATE_AUTO_INSTALL}');
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_CHECK_INTERVAL_SEC', '{#ALPHA_UPDATE_CHECK_INTERVAL_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_UPDATE_DOWNLOAD_JITTER_SEC', '{#ALPHA_UPDATE_DOWNLOAD_JITTER_SEC}');
 end;
 
 procedure InstallDlpService;
