@@ -43,6 +43,8 @@ const triggerLabels: Record<string, string> = {
   cloud_sync_folder: 'Cloud Sync Folder',
   file_transfer: 'File Transfer',
   email: 'Email',
+  file_download: 'File Download',
+  file_upload: 'File Upload',
 };
 
 const actionLabels: Record<string, string> = {
@@ -59,7 +61,17 @@ const TRIGGER_OPTIONS: { value: DlpTrigger; label: string }[] = [
   { value: 'cloud_sync_folder', label: 'Cloud Sync Folder' },
   { value: 'file_transfer', label: 'File Transfer' },
   { value: 'email', label: 'Email' },
+  { value: 'file_download', label: 'File Download (browser)' },
+  { value: 'file_upload', label: 'File Upload (browser)' },
 ];
+
+/** Triggers the Windows service enforces directly from a Block / Alert + Block rule. */
+const TRIGGER_HINTS: Partial<Record<DlpTrigger, string>> = {
+  file_download:
+    'Block / Alert + Block stops every download in Chrome, Edge and Brave on all Windows PCs. Allow only those browsers in App Allow List so others cannot bypass it.',
+  file_upload:
+    'Block / Alert + Block disables the "Choose file" box in Chrome, Edge and Brave, so files cannot be attached to any website. Dragging a file into a page is not blocked.',
+};
 
 type FormState = {
   name: string;
@@ -430,6 +442,9 @@ export default function DLPRulesPage() {
                 ))}
               </SelectContent>
             </Select>
+            {TRIGGER_HINTS[form.trigger] && (
+              <p className="text-xs text-muted-foreground -mt-1">{TRIGGER_HINTS[form.trigger]}</p>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Select
                 value={form.action}

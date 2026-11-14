@@ -40,6 +40,7 @@ func Setup(
 	releaseHandler *handlers.ReleaseHandler,
 	screenshotHandler *handlers.ScreenshotHandler,
 	faceHandler *handlers.FaceHandler,
+	antivirusHandler *handlers.AntivirusHandler,
 ) {
 	// ─────────────────────────────
 	// Global Middleware
@@ -142,6 +143,13 @@ func Setup(
 	syncAdmit.POST("/location-samples/sync", newSchemaHandler.SyncLocationSamples)
 	if portHandler != nil {
 		syncAdmit.POST("/hardware-ports/sync", portHandler.SyncPorts)
+	}
+	// 24/7 antivirus guard — Windows DlpService engine-health report (DeviceAuth).
+	if antivirusHandler != nil {
+		syncAdmit.POST("/antivirus/status/sync", antivirusHandler.SyncStatus)
+		// Remote-fix command channel: device claims pending commands and reports results.
+		syncAdmit.GET("/antivirus/commands/pending", antivirusHandler.PullCommands)
+		syncAdmit.POST("/antivirus/commands/result", antivirusHandler.ReportResult)
 	}
 	// "Remove the account" signal (R4/R5): called by the client AFTER it has drained its
 	// unsynced rows. Marks the CALLING machine 'old' and the employee untracked; the client
@@ -355,6 +363,15 @@ func Setup(
 		protected.GET("/shadow-it/apps", dlpHandler.ListShadowIt)
 		protected.PATCH("/shadow-it/apps/:id", dlpHandler.UpdateShadowIt)
 		protected.POST("/devices/removal-code", dlpHandler.IssueRemovalCode)
+	}
+
+	// 24/7 antivirus guard — fleet engine health (web /antivirus). Detections / tamper
+	// events are DLP alerts (types malware / av_tamper) under /dlp/alerts.
+	if antivirusHandler != nil {
+		protected.GET("/antivirus/status", antivirusHandler.ListStatus)
+		// Admin-side remote fix: queue a scan / remediation, view command history.
+		protected.POST("/antivirus/commands", antivirusHandler.QueueCommand)
+		protected.GET("/antivirus/commands", antivirusHandler.ListCommands)
 	}
 
 	// Hardware & Port Control — inventory (read) + device-control rules (CRUD, auto-publish)

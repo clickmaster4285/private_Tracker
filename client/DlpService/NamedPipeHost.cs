@@ -352,7 +352,9 @@ public sealed class NamedPipeHost : BackgroundService
             networkLockdown = _cfg.NetworkLockdown,
             appBlock = _cfg.AppBlock,
             deleteBlock = _cfg.DeleteBlock,
+            fileTransferBlock = _cfg.FileTransferBlock,
             loginReboot = _cfg.LoginReboot,
+            avEnforce = _cfg.AvEnforce,
             update = _updateState.Snapshot(),
         });
     }
@@ -496,6 +498,10 @@ public sealed class NamedPipeHost : BackgroundService
                     _logger.LogWarning(
                         "Teardown cleared delete-block ACLs (changed={Changed}, detail={Detail})",
                         del.Changed, del.Detail);
+                    var ft = FileTransferEnforcer.Clear();
+                    _logger.LogWarning(
+                        "Teardown cleared file-transfer browser policies (changed={Changed}, detail={Detail})",
+                        ft.Changed, ft.Detail);
                     ServiceAclHardener.TryApplyOpen(_logger);
                 }
 

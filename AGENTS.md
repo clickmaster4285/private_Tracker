@@ -3,6 +3,12 @@
 > **Last audited:** 2026-11-14
 > **Changelog:**
 >
+> - 2026-11-14: **Merge face verify (HEAD) + antivirus / file-transfer (sohaib).** Face
+>   stays migrations **068–070**; antivirus/file-transfer renumbered to **071–075** so both
+>   land on one DB. Client **VERSION 2.2.1** (face soft-lock) + sohaib DlpService AV guard
+>   and `file_download`/`file_upload` rules. Restart API for new migrations; rebuild Windows
+>   installer for DLP/AV half if not already on a post-merge build.
+>
 > - 2026-11-14: **Face distance band ~50–70 cm (client + server).** Enrollment and soft-lock
 >   reject faces outside face-height/frame-height fraction
 >   (`FACE_DISTANCE_MIN_FRAC`/`MAX` default 0.25–0.48; client `ALPHA_FACE_DISTANCE_*`).
@@ -33,6 +39,29 @@
 >   success gate. Tracker `FaceWarmupService` syncs models/templates + **simple**
 >   events only. Client **VERSION 2.1.4**. Rebuild Windows installer; re-bake
 >   `config.enc` for threshold.
+>
+> - 2026-11-13: **DLP Rules — File Download / File Upload triggers (server + web + DlpService).**
+>   Browser download/upload blocking lives in **DLP Rules** (not a separate page): new triggers
+>   `file_download` and `file_upload`; an enabled rule with action **Block** or **Alert + Block**,
+>   once published, makes every Windows PC apply it (same model as `usb_storage`). **Server:**
+>   migration **075** widens `dlp_rules_trigger_check`; `allowedTriggers` gains both. No new tables /
+>   routes / RBAC — rules ride the existing bundle `rules[]`. **Web `/dlp-rules`:** trigger options
+>   "File Download (browser)" / "File Upload (browser)" with an inline hint; alert labels
+>   `file_download` / `file_upload` / `file_transfer_tamper`. **DlpService:** new
+>   `FileTransferEnforcer` writes HKLM Chromium policies for Chrome / Edge / Brave / Chromium —
+>   `DownloadRestrictions=3` (no downloads) and `AllowFileSelectionDialogs=0` (file picker never
+>   opens → no uploads) — drift-only every `EnforceWorker` tick (`PolicyBundleParser.BlockingRule`);
+>   `Clear` removes only values holding our exact value. Independent of network lockdown; honours
+>   machine pause and local switch `ALPHA_DLP_FILE_TRANSFER_BLOCK` (default `true`). A rewrite while
+>   the desired state is unchanged = tamper → `file_transfer_tamper` alert (rule id + severity, ≤1 /
+>   10 min). Offline-first comes free: `PolicyStore` already persists rules. Park, pipe teardown,
+>   and tracker `WindowsTeardownCleanup` clear the values; pipe `Health.fileTransferBlock`. Env →
+>   `.env(.example)` → `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` /
+>   `EnvBootstrap`. Honest limits: action **Alert Only** does nothing yet (no download/upload
+>   detection); Firefox / Opera / Tor ignore these policies → allow only Chrome/Edge in
+>   `/allowlists/apps`; drag-and-drop of a file into a page, pasted text and screenshots are not
+>   blocked. Installer-Parity: re-bake `config.enc` + rebuild the Windows installer; restart API
+>   for **075**.
 >
 > - 2026-11-13: **Face verify match parity (LMEDS + pose gate).** Root cause of weak
 >   webcam scores / EMP-10008 stuck on `left`: client `EstimateAffinePartial2D`
@@ -156,6 +185,33 @@
 >   scope. Env: `FACE_MEDIA_DIR`, `FACE_MAX_UPLOAD_BYTES`, `FACE_MAX_FILES_PER_JOB`,
 >   `FACE_WORKER_API_KEY`.
 >
+> - 2026-11-11: **24/7 antivirus guard (Windows DlpService + server + web).** Real-time scanning is
+>   Microsoft Defender's on-access engine (every file scanned on open/run/download/copy; malicious →
+>   blocked + quarantined). The tracker now keeps it ON at full strength and reverts tampering.
+>   **DlpService:** new `DefenderGuard` + `AntivirusGuardWorker` (independent of web policy and of
+>   `ALPHA_DLP_ENABLED`; local switch `ALPHA_AV_ENFORCE`, default `true`). Every `ALPHA_AV_GUARD_SEC`
+>   (30 s) it reverts: real-time / behaviour / download / script / archive / removable scanning off,
+>   Block-at-First-Sight off, cloud (MAPS Advanced, CloudBlockLevel High, 50 s timeout), PUA + network
+>   protection off, threat default action Allow/NoAction, per-threat allow overrides, exclusions not in
+>   `ALPHA_AV_ALLOWED_EXCLUSIONS`, and `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` disable /
+>   exclusion GPO values; restarts `WinDefend`. Only drifted settings are written; what Windows refuses
+>   (Tamper Protection) is reported, not looped. Defender Operational 1116/1006 → `malware` alert
+>   (*blocked*), 1118/1119/1008 → *blocked_failed*, 5001/5010/5012 → `av_tamper` critical, 5013 →
+>   `av_tamper`; deterministic alert ids per record + `policy_kv` bookmark (first run baselines to now).
+>   Signatures ≥ 1 day → `Update-MpSignature` (≥ 4 h apart); no quick scan in
+>   `ALPHA_AV_QUICK_SCAN_HOURS` (24) → background `Start-MpScan`. A registered third-party AV that owns
+>   protection is reported, never fought. `AppProcessGuard` also kills the Windows Security app
+>   (`SecHealthUI`) for interactive users under lockdown. Pipe `Health.avEnforce`.
+>   **Server:** migrations **071–074** (`antivirus_status` + advanced + commands + threats) + index on
+>   `dlp_alerts(type, machine_id, occurred_at)`; DeviceAuth `POST /antivirus/status/sync` (admission
+>   group); JWT `GET /antivirus/status?search=&health=&page=&perPage=` with server-projected `isStale`
+>   (30 min) / `threats24h` + health counts. Detections + tamper ride the existing `dlp_alerts` inbox.
+>   RBAC submodule `antivirus` under `security-dlp`. **Web:** `/antivirus` (infinite scroll, URL-synced
+>   `search`/`health`; tiles link to `/dlp-alerts?type=malware|av_tamper`); sidebar
+>   `module:"antivirus"`; alert labels `malware` / `av_tamper`. Env `ALPHA_AV_ENFORCE / GUARD_SEC /
+>   STATUS_SEC / QUICK_SCAN_HOURS / ALLOWED_EXCLUSIONS` → `.env(.example)` → `generate-windows-vars.sh`
+>   → Inno `service.env` + `EnvBootstrap` seeds. Installer-Parity: re-bake `config.enc` + rebuild the
+>   Windows installer; restart API for **071–074**.
 > - 2026-11-11: **Protected-uninstall pipe unlock + AppLocker leftover fix (client + DlpService).**
 >   `ApplyTeardownGate` / `AuthorizeTeardown` no longer gated on `ALPHA_DLP_ENABLED` (was returning
 >   `dlp_disabled` / racing write_timeout while AppLocker stayed Enforce). Pipe teardown timeouts

@@ -4,7 +4,56 @@ Procedures that need a running server (and for DLP, an installed Windows agent).
 
 Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./newplan.md) (1000-agent scale), [doc/plan.md](./doc/plan.md) (releases bridge), [WORKFLOW.md](./WORKFLOW.md), [client/build.md](./client/build.md). Historical Fixed/Roaming notes remain in [newplan.md](./newplan.md) only as archive.
 
-*Last audited: 2026-11-10*
+*Last audited: 2026-11-11*
+
+---
+
+## File Transfer — DLP rules File Download / File Upload (Windows DlpService)
+
+Prereq: API restarted (migration **075**), Windows PC on client **2.2.1+** (or any build with FileTransferEnforcer), logged in, not paused.
+
+1. Web `/dlp-rules` → **Create Rule** → trigger **File Download (browser)**, action **Block**, Active
+   → Save, then **Publish** → toast shows `policy vN`.
+2. On the PC (within seconds): `reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v DownloadRestrictions`
+   → `0x3` (same under `Microsoft\Edge`). `chrome://policy` lists it.
+3. Download any file in Chrome / Edge → "Blocked by your organization".
+4. Add a **File Upload (browser)** rule with action Block → Publish → Gmail / Drive "Attach" /
+   "Choose file" opens nothing (`AllowFileSelectionDialogs = 0x0`).
+5. Tamper: as Administrator `reg delete "HKLM\SOFTWARE\Policies\Google\Chrome" /v DownloadRestrictions /f`
+   → value back within one Enforce tick (≤15 s) and a `/dlp-alerts?type=file_transfer_tamper` alert.
+6. Set the rules Inactive (or action Alert Only) → Publish → values removed (an org's own different
+   value stays).
+7. Pause lockdown for the machine → values removed until the pause ends.
+8. Protected uninstall → no `DownloadRestrictions` / `AllowFileSelectionDialogs` left.
+9. Bypass check: with `/allowlists/apps` allowing only Chrome/Edge, Firefox must not start.
+   Known gap: dragging a file from Explorer into a page still uploads.
+
+---
+
+## 24/7 antivirus guard (Windows DlpService)
+
+Needs: installed Windows build with `ALPHA_AV_ENFORCE=true` (default), tracker logged in, API with
+migrations **071–074**. Use a **lab VM** — the guard removes Defender exclusions it was not told about.
+
+1. **Status:** within ~5 min the PC appears on web **Security & DLP → Antivirus** (`/antivirus`) as
+   *Protected* with signature version / last quick scan. API: `GET /api/v1/antivirus/status`.
+2. **Detection (safe):** save the standard **EICAR test file** (eicar.org) to the Desktop. Defender
+   blocks + quarantines it; within ~1 min a `malware` alert (*Malware blocked*, action *Blocked*,
+   evidence threat name/path) shows in `/dlp-alerts?type=malware` and *Threats blocked · 24h* rises.
+3. **Tamper revert:** as admin, `Set-MpPreference -DisableRealtimeMonitoring $true` (only works with
+   Tamper Protection OFF). Within ~30 s real-time is ON again (`Get-MpComputerStatus`), an `av_tamper`
+   alert (*Antivirus tampering*, action *Blocked*) appears and the row shows a *Tampering* time.
+4. **Exclusion bypass:** `Add-MpPreference -ExclusionPath C:\evil` → removed within ~30 s
+   (`(Get-MpPreference).ExclusionPath`); the `av_tamper` alert lists `exclusion_path:C:\evil`.
+   Paths listed in `ALPHA_AV_ALLOWED_EXCLUSIONS` stay.
+5. **GPO bypass:** create `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` DWORD
+   `DisableAntiSpyware=1` → value deleted on the next pass.
+6. **Windows refused:** with Tamper Protection ON and real-time turned off in the Windows Security UI,
+   the guard cannot force it back → `av_tamper` *critical* / *Block failed* alert (≤ 1 per 30 min).
+7. **Third-party AV:** with another AV registered (Defender passive) the row shows *Third-party AV*;
+   the guard does not touch Defender.
+8. **Service logs:** `AntivirusGuardWorker running …`, `Antivirus guard reverted …`;
+   `%ProgramData%\<APP_MUTEX>\dlp\service.env` carries `ALPHA_AV_*`.
 
 ---
 

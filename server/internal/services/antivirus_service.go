@@ -1,0 +1,178 @@
+package services
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"strings"
+
+	"github.com/alpha-ai-tracker/server/internal/dto"
+	"github.com/alpha-ai-tracker/server/internal/repository"
+)
+
+// ErrInvalidCommand is returned for an unknown command type or a missing/invalid arg.
+var ErrInvalidCommand = errors.New("invalid antivirus command")
+
+// ErrUnknownMachine — the target machine has never reported antivirus status, so the
+// command would never be pulled.
+var ErrUnknownMachine = errors.New("machine has not reported antivirus status")
+
+var antivirusCommandTypes = map[string]bool{
+	"scan_quick": true, "scan_full": true, "scan_custom": true, "scan_offline": true,
+	"update_signatures": true, "remove_threats": true, "remove_threat": true, "restore_threat": true,
+}
+
+// threatIDCommands take a numeric Defender ThreatID as arg.
+var threatIDCommands = map[string]bool{"remove_threat": true, "restore_threat": true}
+
+var (
+	threatIDRe = regexp.MustCompile(`^[0-9]{1,20}$`)
+	// Absolute Windows path: drive (C:\...) or UNC (\server\share...). No control chars.
+	scanPathRe = regexp.MustCompile(`^(?:[A-Za-z]:\\|\\\\[^\\/:*?"<>|]+\\[^\\/:*?"<>|]+)[^\x00-\x1f"<>|*?]*$`)
+)
+
+// ValidateCommand checks type + arg; exported for tests.
+func ValidateCommand(cmdType, arg string) error {
+	if !antivirusCommandTypes[cmdType] {
+		return ErrInvalidCommand
+	}
+	switch {
+	case threatIDCommands[cmdType]:
+		if !threatIDRe.MatchString(arg) {
+			return ErrInvalidCommand
+		}
+	case cmdType == "scan_custom":
+		if len(arg) < 3 || len(arg) > 1000 || !scanPathRe.MatchString(arg) {
+			return ErrInvalidCommand
+		}
+	default:
+		if arg != "" {
+			return ErrInvalidCommand
+		}
+	}
+	return nil
+}
+
+// AntivirusService owns the 24/7 antivirus guard fleet view. Detections and tamper
+// events are DLP alerts (types "malware" / "av_tamper") and live in DlpService.
+type AntivirusService struct {
+	repo *repository.AntivirusRepo
+}
+
+func NewAntivirusService(repo *repository.AntivirusRepo) *AntivirusService {
+	return &AntivirusService{repo: repo}
+}
+
+func (s *AntivirusService) SyncStatus(ctx context.Context, req *dto.SyncAntivirusStatusRequest) error {
+	return s.repo.UpsertStatus(ctx, req)
+}
+
+func (s *AntivirusService) ListStatus(ctx context.Context, f repository.AntivirusListFilter) (*dto.AntivirusStatusListResponse, error) {
+	rows, total, counts, err := s.repo.ListStatus(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	page, perPage := f.Page, f.PerPage
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 30
+	}
+	totalPages := (total + perPage - 1) / perPage
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	return &dto.AntivirusStatusListResponse{
+		Data: rows, Total: total, Page: page, PerPage: perPage, TotalPages: totalPages, Counts: counts,
+	}, nil
+}
+
+// ── Remote commands (admin-side fix) ────────────────────────────────────────
+
+// QueueCommand validates and enqueues a remote action for one machine. Returns the command
+// id and whether an identical pending command was reused.
+func (s *AntivirusService) QueueCommand(ctx context.Context, req *dto.CreateAntivirusCommandRequest, requestedBy string) (int64, bool, error) {
+	t := strings.TrimSpace(req.Type)
+	arg := strings.TrimSpace(req.Arg)
+	if err := ValidateCommand(t, arg); err != nil {
+		return 0, false, err
+	}
+	emp := strings.TrimSpace(req.EmployeeID)
+	machine := strings.TrimSpace(req.MachineID)
+	if emp == "" {
+		return 0, false, ErrInvalidCommand
+	}
+	ok, err := s.repo.MachineReports(ctx, emp, machine)
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		return 0, false, ErrUnknownMachine
+	}
+	return s.repo.CreateCommand(ctx, emp, machine, t, arg, requestedBy)
+}
+
+func (s *AntivirusService) ListCommands(ctx context.Context, f repository.AntivirusCommandFilter) (*dto.AntivirusCommandListResponse, error) {
+	rows, total, err := s.repo.ListCommands(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	page, perPage := normPage(f.Page, f.PerPage)
+	return &dto.AntivirusCommandListResponse{
+		Data: rows, Total: total, Page: page, PerPage: perPage, TotalPages: avTotalPages(total, perPage),
+	}, nil
+}
+
+// ── Per-threat inventory ────────────────────────────────────────────────────
+
+func (s *AntivirusService) SyncThreats(ctx context.Context, req *dto.SyncAntivirusThreatsRequest) (int, error) {
+	return s.repo.ReplaceThreats(ctx, req)
+}
+
+func (s *AntivirusService) ListThreats(ctx context.Context, f repository.AntivirusThreatFilter) (*dto.AntivirusThreatListResponse, error) {
+	rows, total, counts, err := s.repo.ListThreats(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	page, perPage := normPage(f.Page, f.PerPage)
+	return &dto.AntivirusThreatListResponse{
+		Data: rows, Total: total, Page: page, PerPage: perPage, TotalPages: avTotalPages(total, perPage), Counts: counts,
+	}, nil
+}
+
+// UserHasPermission — server-side RBAC check for the antivirus admin surface.
+func (s *AntivirusService) UserHasPermission(ctx context.Context, userID, key string) (bool, error) {
+	return s.repo.UserHasPermission(ctx, userID, key)
+}
+
+func normPage(page, perPage int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 30
+	}
+	return page, perPage
+}
+
+func avTotalPages(total, perPage int) int {
+	tp := (total + perPage - 1) / perPage
+	if tp < 1 {
+		tp = 1
+	}
+	return tp
+}
+
+func (s *AntivirusService) PullCommands(ctx context.Context, employeeID, machineID string) ([]dto.AntivirusCommandDevice, error) {
+	s.repo.ExpireStaleCommands(ctx, employeeID, machineID)
+	return s.repo.PullPending(ctx, employeeID, machineID, 10)
+}
+
+func (s *AntivirusService) ReportResult(ctx context.Context, employeeID, machineID string, req *dto.AntivirusCommandResultRequest) error {
+	st := strings.TrimSpace(req.Status)
+	if st != "running" && st != "done" && st != "failed" {
+		return ErrInvalidCommand
+	}
+	return s.repo.SetResult(ctx, employeeID, machineID, req.ID, st, req.Result)
+}

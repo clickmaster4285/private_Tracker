@@ -1,7 +1,17 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-13 (face verify events + DeviceAuth sample package)
+> **Last audited:** 2026-11-14 (face verify + antivirus / file-transfer merge)
 > **Changelog:**
+> - 2026-11-13: **DLP rule triggers `file_download` / `file_upload`.** Migration **075** widens
+>   `dlp_rules_trigger_check`; `allowedTriggers` accepts both. Enforced on Windows by DlpService when an
+>   enabled rule with action block / alert_block is published (rides the existing bundle `rules[]`; no
+>   new tables or routes). New alert type `file_transfer_tamper` rides `/dlp/alerts/sync`.
+> - 2026-11-11: **Antivirus fleet status.** Migrations **071–074** (`antivirus_status` + advanced +
+>   commands + threats) + `idx_dlp_alerts_type_machine_occurred`. DeviceAuth
+>   `POST /antivirus/status/sync` (syncAdmit) → upsert; JWT `GET /antivirus/status` (search / health /
+>   `stale`, paginated, health counts, projected `isStale` + `threats24h`). Detections/tamper are DLP
+>   alerts (`malware`, `av_tamper`). RBAC `security-dlp/antivirus` seeded. Files:
+>   `antivirus_{dto,repo,service,handler}.go`.
 > - 2026-11-13: **Face verify activity.** Migration **070** `face_verify_events`; DeviceAuth
 >   `GET /face-profiles/me/samples` + image; `POST /face-profiles/verify-events/sync`;
 >   JWT `GET /face-verify/events`; RBAC `users/face-verify`.

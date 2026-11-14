@@ -24,6 +24,8 @@ var allowedTriggers = map[string]bool{
 	"usb_storage": true, "usb_file": true,
 	"software_install": true, "software_uninstall": true, "cloud_sync_folder": true,
 	"file_transfer": true, "email": true,
+	// Enforced by the Windows DlpService (FileTransferEnforcer) when action blocks.
+	"file_download": true, "file_upload": true,
 }
 var allowedActions = map[string]bool{"alert": true, "block": true, "alert_block": true}
 var allowedSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true}

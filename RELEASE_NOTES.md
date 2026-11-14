@@ -1203,7 +1203,7 @@ Branch: `feature/live_stream`. Client version bump: **1.1.6 → 1.2.0**.
 
 1. **Server first** — applies migrations **040–041**; enables live-stream hub env as needed.
 2. **Web** — deploy with `NEXT_PUBLIC_WS_URL` pointing at the Go host (e.g.
-   `ws://192.168.88.35:8080`); ensure that origin is in `CORS_ALLOWED_ORIGINS`.
+   `ws://192.168.88.44:8080`); ensure that origin is in `CORS_ALLOWED_ORIGINS`.
 3. **Client** — installer **1.2.0** with `ALPHA_STREAM_ENABLED=true` baked only for fleets that
    should offer preview (default in `.env.example` remains `false`).
 

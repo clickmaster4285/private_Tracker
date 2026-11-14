@@ -142,6 +142,7 @@ internal static class PolicyBundleParser
         };
     }
 
+
     private static IReadOnlyList<DeviceControlEntry> ReadDeviceControl(JsonElement root)
     {
         if (!root.TryGetProperty("deviceControl", out var dc) || dc.ValueKind != JsonValueKind.Array)
@@ -247,6 +248,16 @@ internal static class PolicyBundleParser
     }
 
     /// <summary>True when any enabled USB trigger asks for block / alert_block.</summary>
+    /// <summary>
+    /// First enabled DLP rule with this trigger whose action blocks (DLP Rules →
+    /// File Download / File Upload). Null when none — the browser policy is cleared.
+    /// </summary>
+    public static PolicyRule? BlockingRule(PolicyBundle bundle, string trigger) =>
+        bundle.Rules.FirstOrDefault(r =>
+            r.Enabled
+            && r.Trigger == trigger
+            && (r.Action is "block" or "alert_block"));
+
     public static bool WantsUsbStorageBlock(PolicyBundle bundle) =>
         bundle.Rules.Any(r =>
             r.Enabled

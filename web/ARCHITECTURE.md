@@ -1,22 +1,23 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-12 (face enrollment gallery + retry UX)
+> **Last audited:** 2026-11-14 (face enrollment + antivirus / file-transfer merge)
 > **Changelog:**
->
+> - 2026-11-13: **`/dlp-rules` File Download / File Upload triggers.** `DlpTrigger` gains
+>   `file_download` / `file_upload`; form shows an inline hint for them (Block / Alert + Block blocks
+>   Chrome/Edge/Brave downloads or the file picker on every Windows PC). Alert labels
+>   `file_download` / `file_upload` / `file_transfer_tamper`. No new route or sidebar entry.
+> - 2026-11-11: **`/antivirus` page.** `antivirusApi.listStatus` + types; infinite scroll;
+>   URL-synced `search`/`health` chips (`useUrlQueryState`); tiles link to
+>   `/dlp-alerts?type=malware|av_tamper`. Sidebar Security & DLP → Antivirus (`module:"antivirus"`,
+>   catalog parity), page title in `AppLayout`; `ALERT_TYPE_LABELS` gains `malware` / `av_tamper`.
 > - 2026-11-12: **Face gallery + per-image Verified/Retry.** `/employees/face` (RBAC
 >   `users/face-enrollment`) lists enrollment thumbs with status chips; Enroll dialog polls
 >   job samples live (Checking / Verified / Retry) and `retryFaceEnrollment` replaces rejected
 >   poses only. Sidebar entry under HR. Plan: `doc/face-attendance-plan.md`.
->
 > - 2026-11-12: **Employees face enrollment dialog.** `/employees` ⋮ → **Enroll Face…** opens
 >   `EnrollFaceDialog` (multi-angle webcam, quality heuristics, multipart original-image upload via
 >   `employeesApi.createFaceEnrollment`). No client-side authoritative embeddings. Helpers in
 >   `lib/face-enrollment.ts`. Plan: `doc/face-attendance-plan.md`.
->
-> - Prior: 2026-11-10 (screenshots lazy grid)
->
-> **Last audited (prior):** 2026-11-10 (screenshots lazy grid)
-> **Changelog (continued):**
 > - 2026-11-10: **`/screenshots` live grid.** `screenshotsApi` + `ScreenshotGrid` infinite scroll
 >   with per-card IntersectionObserver lazy `<img>` (never bulk-loads blobs). URL filters via
 >   `useUrlActivityFilter` + employee picker. Journey `/employee-journey/screenshots` reuses the

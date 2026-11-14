@@ -207,6 +207,8 @@ internal static class AppProcessGuard
             "SystemSettings", "SystemSettingsAdminFlows", "SystemSettingsBroker",
             "control", "mmc", "cmd",
             "WindowsTerminal", "wt",
+            // Windows Security app — the UI toggle for real-time protection / exclusions.
+            "SecHealthUI",
         ];
         foreach (var d in denied)
         {

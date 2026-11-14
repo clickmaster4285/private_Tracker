@@ -3,6 +3,32 @@
 # Usage: bash publish/build-installer.sh [-b win|linux|mac|all]
 set -euo pipefail
 
+# ─── Windows: make sure we run under a bash that can see dotnet ──────────────
+# From cmd / VS Code, a plain `bash` may resolve to WSL (C:\Windows\System32\bash.exe),
+# which has no dotnet. Re-run this script under Git Bash in that case, and add the
+# standard Windows dotnet folder to PATH when it is missing.
+if ! command -v dotnet &>/dev/null; then
+  for d in "/c/Program Files/dotnet" "/mnt/c/Program Files/dotnet"; do
+    if [ -x "$d/dotnet.exe" ] || [ -x "$d/dotnet" ]; then
+      if grep -qi microsoft /proc/version 2>/dev/null \
+         && [ -x "/mnt/c/Program Files/Git/bin/bash.exe" ]; then
+        echo "[env] WSL bash has no dotnet — re-running under Git Bash..."
+        WIN_SCRIPT="$(wslpath -w "$(realpath "$0")")"
+        WIN_CWD="$(wslpath -w "$(pwd)")"
+        exec "/mnt/c/Program Files/Git/bin/bash.exe" -lc \
+          'export PATH="/c/Program Files/dotnet:$PATH"; cd "$(cygpath -u "$1")" && shift && exec bash "$(cygpath -u "$0")" "$@"' \
+          "$WIN_SCRIPT" "$WIN_CWD" "$@"
+      fi
+      export PATH="$d:$PATH"
+      break
+    fi
+  done
+  if ! command -v dotnet &>/dev/null; then
+    echo "ERROR: dotnet not found. Install the .NET 10 SDK, or run this script from Git Bash."
+    exit 1
+  fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INSTALLER_DIR="$PROJECT_DIR/installers"

@@ -1,7 +1,23 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-13 (face verify local images + first/simple modes)
+> **Last audited:** 2026-11-14 (face verify + antivirus / file-transfer merge)
 > **Changelog:**
+> - 2026-11-13: **File Download / File Upload DLP rules (DlpService).** `FileTransferEnforcer`
+>   (HKLM `SOFTWARE\Policies\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave, Chromium}`:
+>   `DownloadRestrictions=3`, `AllowFileSelectionDialogs=0`; drift-only; Clear removes only our exact
+>   values). `EnforceWorker.ApplyFileTransferAsync` every tick from published rules with trigger
+>   `file_download` / `file_upload` and action block / alert_block (`PolicyBundleParser.BlockingRule`);
+>   gated by creds + machine pause + `ALPHA_DLP_FILE_TRANSFER_BLOCK` (not by lockdown). Rewrite with
+>   unchanged desired state → `file_transfer_tamper` alert (≤1/10 min). Park / pipe teardown /
+>   `WindowsTeardownCleanup` clear it; `Health.fileTransferBlock`.
+> - 2026-11-11: **24/7 antivirus guard (DlpService).** `DefenderGuard` (status via
+>   `Get-MpComputerStatus`/`Get-MpPreference`/SecurityCenter2; one-process drift-only enforce script;
+>   GPO disable/exclusion registry cleanup; Defender Operational `EventLogReader`) +
+>   `AntivirusGuardWorker` (30 s guard; events → `malware`/`av_tamper` DLP alerts with deterministic
+>   ids + `policy_kv` bookmark; signature update / periodic quick scan; `POST /antivirus/status/sync`).
+>   Runs when `ALPHA_AV_ENFORCE=true` (default) regardless of `ALPHA_DLP_ENABLED`; third-party AV is
+>   reported, not fought. `PolicyStore.GetKvAsync/SetKvAsync`; `AppProcessGuard` denies `SecHealthUI`.
+>   Env `ALPHA_AV_*` baked via `generate-windows-vars.sh` → `service.env`.
 > - 2026-11-13: **Local face package + first/simple verify.** Cache enrollment JPEGs
 >   under `face/samples/`; first verify multi-pose wizard; simple on boot/unlock;
 >   early `TryLaunchEarly` before Host.Build; warm-up + event drain in tracker.
