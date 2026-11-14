@@ -8,6 +8,28 @@ Companion: [plan.md](./plan.md) (always-on + Windows lockdown), [newplan.md](./n
 
 ---
 
+## File Transfer — DLP rules File Download / File Upload (Windows DlpService)
+
+Prereq: API restarted (migration **072**), Windows PC on client **1.4.8+**, logged in, not paused.
+
+1. Web `/dlp-rules` → **Create Rule** → trigger **File Download (browser)**, action **Block**, Active
+   → Save, then **Publish** → toast shows `policy vN`.
+2. On the PC (within seconds): `reg query "HKLM\SOFTWARE\Policies\Google\Chrome" /v DownloadRestrictions`
+   → `0x3` (same under `Microsoft\Edge`). `chrome://policy` lists it.
+3. Download any file in Chrome / Edge → "Blocked by your organization".
+4. Add a **File Upload (browser)** rule with action Block → Publish → Gmail / Drive "Attach" /
+   "Choose file" opens nothing (`AllowFileSelectionDialogs = 0x0`).
+5. Tamper: as Administrator `reg delete "HKLM\SOFTWARE\Policies\Google\Chrome" /v DownloadRestrictions /f`
+   → value back within one Enforce tick (≤15 s) and a `/dlp-alerts?type=file_transfer_tamper` alert.
+6. Set the rules Inactive (or action Alert Only) → Publish → values removed (an org's own different
+   value stays).
+7. Pause lockdown for the machine → values removed until the pause ends.
+8. Protected uninstall → no `DownloadRestrictions` / `AllowFileSelectionDialogs` left.
+9. Bypass check: with `/allowlists/apps` allowing only Chrome/Edge, Firefox must not start.
+   Known gap: dragging a file from Explorer into a page still uploads.
+
+---
+
 ## 24/7 antivirus guard (Windows DlpService)
 
 Needs: installed Windows build with `ALPHA_AV_ENFORCE=true` (default), tracker logged in, API with

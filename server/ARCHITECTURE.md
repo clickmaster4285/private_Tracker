@@ -1,7 +1,11 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-11 (24/7 antivirus guard)
+> **Last audited:** 2026-11-13 (File Download / File Upload DLP rules)
 > **Changelog:**
+> - 2026-11-13: **DLP rule triggers `file_download` / `file_upload`.** Migration **072** widens
+>   `dlp_rules_trigger_check`; `allowedTriggers` accepts both. Enforced on Windows by DlpService when an
+>   enabled rule with action block / alert_block is published (rides the existing bundle `rules[]`; no
+>   new tables or routes). New alert type `file_transfer_tamper` rides `/dlp/alerts/sync`.
 > - 2026-11-11: **Antivirus fleet status.** Migration **068** `antivirus_status` (UNIQUE
 >   employee+machine) + `idx_dlp_alerts_type_machine_occurred`. DeviceAuth
 >   `POST /antivirus/status/sync` (syncAdmit) → upsert; JWT `GET /antivirus/status` (search / health /

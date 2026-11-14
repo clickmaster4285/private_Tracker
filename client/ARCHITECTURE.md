@@ -1,7 +1,15 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-11 (24/7 antivirus guard)
+> **Last audited:** 2026-11-13 (File Download / File Upload DLP rules)
 > **Changelog:**
+> - 2026-11-13: **File Download / File Upload DLP rules (DlpService).** `FileTransferEnforcer`
+>   (HKLM `SOFTWARE\Policies\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave, Chromium}`:
+>   `DownloadRestrictions=3`, `AllowFileSelectionDialogs=0`; drift-only; Clear removes only our exact
+>   values). `EnforceWorker.ApplyFileTransferAsync` every tick from published rules with trigger
+>   `file_download` / `file_upload` and action block / alert_block (`PolicyBundleParser.BlockingRule`);
+>   gated by creds + machine pause + `ALPHA_DLP_FILE_TRANSFER_BLOCK` (not by lockdown). Rewrite with
+>   unchanged desired state → `file_transfer_tamper` alert (≤1/10 min). Park / pipe teardown /
+>   `WindowsTeardownCleanup` clear it; `Health.fileTransferBlock`. VERSION 1.4.8.
 > - 2026-11-11: **24/7 antivirus guard (DlpService).** `DefenderGuard` (status via
 >   `Get-MpComputerStatus`/`Get-MpPreference`/SecurityCenter2; one-process drift-only enforce script;
 >   GPO disable/exclusion registry cleanup; Defender Operational `EventLogReader`) +

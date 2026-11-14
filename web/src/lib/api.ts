@@ -1666,7 +1666,9 @@ export type DlpTrigger =
   | 'software_uninstall'
   | 'cloud_sync_folder'
   | 'file_transfer'
-  | 'email';
+  | 'email'
+  | 'file_download'
+  | 'file_upload';
 
 export type DlpAction = 'alert' | 'block' | 'alert_block';
 export type DlpSeverity = 'critical' | 'high' | 'medium' | 'low';

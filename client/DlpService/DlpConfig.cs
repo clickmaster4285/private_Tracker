@@ -33,6 +33,11 @@ public sealed class DlpConfig
     /// </summary>
     public bool DeleteBlock { get; init; } = true;
     /// <summary>
+    /// DLP Rules <c>file_download</c> / <c>file_upload</c>: Chromium HKLM download/upload policies.
+    /// false = never applied on this PC; leftovers we wrote are cleared.
+    /// </summary>
+    public bool FileTransferBlock { get; init; } = true;
+    /// <summary>
     /// After tracker login (credentials appear mid-run): pre-kill non-allowlisted apps,
     /// force-apply blockers, then reboot once. Off = no reboot (still polls policy).
     /// </summary>
@@ -116,6 +121,7 @@ public sealed class DlpConfig
             AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true),
             PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true),
             DeleteBlock = GetBool("ALPHA_DLP_DELETE_BLOCK", true),
+            FileTransferBlock = GetBool("ALPHA_DLP_FILE_TRANSFER_BLOCK", true),
             LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
             DedupSec = GetInt("ALPHA_DLP_DEDUP_SEC", 300),

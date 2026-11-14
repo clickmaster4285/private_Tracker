@@ -421,6 +421,42 @@ internal static class WindowsTeardownCleanup
             }
             catch { /* ignore */ }
         }
+
+        TryClearFileTransferPoliciesDirect(steps);
+    }
+
+    /// <summary>
+    /// File Transfer leftovers written by DlpService <c>FileTransferEnforcer</c>. Removes a
+    /// value only when it holds the exact value we write (an org's own policy is kept).
+    /// </summary>
+    private static void TryClearFileTransferPoliciesDirect(List<string> steps)
+    {
+        foreach (var root in new[]
+                 {
+                     @"SOFTWARE\Policies\Google\Chrome",
+                     @"SOFTWARE\Policies\Microsoft\Edge",
+                     @"SOFTWARE\Policies\BraveSoftware\Brave",
+                     @"SOFTWARE\Policies\Chromium",
+                 })
+        {
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(root, writable: true);
+                if (key is null) continue;
+                foreach (var (name, ours) in new[] { ("DownloadRestrictions", 3), ("AllowFileSelectionDialogs", 0) })
+                {
+                    if (key.GetValue(name) is int v && v == ours)
+                    {
+                        key.DeleteValue(name, throwOnMissingValue: false);
+                        steps.Add($"file-transfer policy removed {root}\\{name}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                steps.Add($"file-transfer policy {root} error=" + ex.Message);
+            }
+        }
     }
 
     private static string ClearHostsFile()

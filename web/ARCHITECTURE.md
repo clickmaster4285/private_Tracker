@@ -1,7 +1,11 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-11 (24/7 antivirus guard)
+> **Last audited:** 2026-11-13 (DLP rule file triggers)
 > **Changelog:**
+> - 2026-11-13: **`/dlp-rules` File Download / File Upload triggers.** `DlpTrigger` gains
+>   `file_download` / `file_upload`; form shows an inline hint for them (Block / Alert + Block blocks
+>   Chrome/Edge/Brave downloads or the file picker on every Windows PC). Alert labels
+>   `file_download` / `file_upload` / `file_transfer_tamper`. No new route or sidebar entry.
 > - 2026-11-11: **`/antivirus` page.** `antivirusApi.listStatus` + types; infinite scroll;
 >   URL-synced `search`/`health` chips (`useUrlQueryState`); tiles link to
 >   `/dlp-alerts?type=malware|av_tamper`. Sidebar Security & DLP → Antivirus (`module:"antivirus"`,

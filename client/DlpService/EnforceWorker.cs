@@ -26,6 +26,9 @@ public sealed class EnforceWorker : BackgroundService
     private string? _lastAppLockdownState;
     private DateTimeOffset _lastAppLockdownWarn = DateTimeOffset.MinValue;
     private string? _lastDeleteBlockState;
+    private string? _lastFileTransferState;
+    private DateTimeOffset _lastFileTransferTamperAlert = DateTimeOffset.MinValue;
+    private static readonly TimeSpan FileTransferTamperAlertEvery = TimeSpan.FromMinutes(10);
     private string _lastPortFingerprint = "\0";
 
     public EnforceWorker(
@@ -80,6 +83,16 @@ public sealed class EnforceWorker : BackgroundService
             }
             try
             {
+                var ftClear = await Task.Run(FileTransferEnforcer.Clear, stoppingToken);
+                if (ftClear.Changed)
+                    _logger.LogWarning("Parked: cleared file-transfer browser policies ({Detail})", ftClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "File-transfer clear on park failed");
+            }
+            try
+            {
                 var portClear = await Task.Run(PortDeviceEnforcer.Clear, stoppingToken);
                 if (portClear.Changed)
                     _logger.LogWarning("Parked: cleared port control ({Detail})", portClear.Detail);
@@ -93,8 +106,9 @@ public sealed class EnforceWorker : BackgroundService
 
         await _store.InitializeAsync(stoppingToken);
         _logger.LogInformation(
-            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App}, deleteBlock={Del}, portBlock={Port})",
-            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock, _cfg.DeleteBlock, _cfg.PortBlock);
+            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App}, deleteBlock={Del}, portBlock={Port}, fileTransferBlock={Ft})",
+            _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock, _cfg.DeleteBlock, _cfg.PortBlock,
+            _cfg.FileTransferBlock);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -170,6 +184,7 @@ public sealed class EnforceWorker : BackgroundService
         await ApplyLockdownAsync(bundle, ct);
         await ApplyAppLockdownAsync(bundle, ct);
         await ApplyDeleteBlockAsync(bundle, ct);
+        await ApplyFileTransferAsync(bundle, version, ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
         await ApplyPortControlAsync(bundle, version, ct);
     }
@@ -261,6 +276,72 @@ public sealed class EnforceWorker : BackgroundService
         }
 
         _lastPortFingerprint = fp;
+    }
+
+    /// <summary>
+    /// File Transfer: Chromium HKLM DownloadRestrictions / AllowFileSelectionDialogs from
+    /// published DLP rules (triggers <c>file_download</c> / <c>file_upload</c>, action block /
+    /// alert_block). Independent of network lockdown; honours the
+    /// machine pause and the local ALPHA_DLP_FILE_TRANSFER_BLOCK switch. Runs every tick:
+    /// a write while the desired state is unchanged means the policy was removed/changed
+    /// on the PC → restored + rate-limited <c>file_transfer_tamper</c> alert.
+    /// </summary>
+    private async Task ApplyFileTransferAsync(PolicyBundle bundle, long version, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        _cfg.RefreshCredentials();
+        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var active = _cfg.FileTransferBlock && hasCreds && !paused;
+        var downloadRule = PolicyBundleParser.BlockingRule(bundle, "file_download");
+        var uploadRule = PolicyBundleParser.BlockingRule(bundle, "file_upload");
+        var wantDownload = active && downloadRule is not null;
+        var wantUpload = active && uploadRule is not null;
+        var state = !_cfg.FileTransferBlock ? "disabled_local"
+            : paused ? "paused"
+            : !hasCreds ? "no_device"
+            : $"dl={(wantDownload ? 1 : 0)},ul={(wantUpload ? 1 : 0)}";
+
+        var result = await Task.Run(() => FileTransferEnforcer.Apply(wantDownload, wantUpload), ct);
+        if (!result.Applied)
+        {
+            await _store.AuditAsync("file_transfer_apply_failed", result.Detail, ct);
+            _logger.LogWarning("File-transfer policy apply failed: {Detail}", result.Detail);
+            return;
+        }
+
+        var sameAsLast = _lastFileTransferState == state;
+        if (result.Changed)
+        {
+            var written = string.Join(", ", result.Written.Take(20));
+            await _store.AuditAsync(
+                (wantDownload || wantUpload) ? "file_transfer_apply" : "file_transfer_clear",
+                $"state={state} {result.Detail} values=[{written}]", ct);
+            _logger.LogInformation(
+                "File-transfer browser policies {Action} (state={State}, {Detail})",
+                (wantDownload || wantUpload) ? "ENFORCED" : "CLEARED", state, result.Detail);
+
+            // Desired state unchanged but we had to write = someone removed/changed the policy.
+            var now = DateTimeOffset.UtcNow;
+            if (sameAsLast && (wantDownload || wantUpload) &&
+                now - _lastFileTransferTamperAlert >= FileTransferTamperAlertEvery)
+            {
+                _lastFileTransferTamperAlert = now;
+                var evidence = JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["detail"] = "Browser download/upload block was removed or changed on this PC and restored automatically",
+                    ["changes"] = written,
+                });
+                var rule = downloadRule ?? uploadRule;
+                await _store.EnqueueAlertAsync(Guid.NewGuid().ToString(), rule?.Id, version,
+                    "file_transfer_tamper", rule?.Severity ?? "high", "blocked", now, evidence, ct);
+            }
+        }
+        _lastFileTransferState = state;
     }
 
     /// <summary>

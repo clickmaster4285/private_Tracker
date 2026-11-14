@@ -1,8 +1,34 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-11
+> **Last audited:** 2026-11-13
 > **Changelog:**
 >
+> - 2026-11-13: **DLP Rules — File Download / File Upload triggers (server + web + DlpService).**
+>   Browser download/upload blocking lives in **DLP Rules** (not a separate page): new triggers
+>   `file_download` and `file_upload`; an enabled rule with action **Block** or **Alert + Block**,
+>   once published, makes every Windows PC apply it (same model as `usb_storage`). **Server:**
+>   migration **072** widens `dlp_rules_trigger_check`; `allowedTriggers` gains both. No new tables /
+>   routes / RBAC — rules ride the existing bundle `rules[]`. **Web `/dlp-rules`:** trigger options
+>   "File Download (browser)" / "File Upload (browser)" with an inline hint; alert labels
+>   `file_download` / `file_upload` / `file_transfer_tamper`. **DlpService:** new
+>   `FileTransferEnforcer` writes HKLM Chromium policies for Chrome / Edge / Brave / Chromium —
+>   `DownloadRestrictions=3` (no downloads) and `AllowFileSelectionDialogs=0` (file picker never
+>   opens → no uploads) — drift-only every `EnforceWorker` tick (`PolicyBundleParser.BlockingRule`);
+>   `Clear` removes only values holding our exact value. Independent of network lockdown; honours
+>   machine pause and local switch `ALPHA_DLP_FILE_TRANSFER_BLOCK` (default `true`). A rewrite while
+>   the desired state is unchanged = tamper → `file_transfer_tamper` alert (rule id + severity, ≤1 /
+>   10 min). Offline-first comes free: `PolicyStore` already persists rules. Park, pipe teardown,
+>   and tracker `WindowsTeardownCleanup` clear the values; pipe `Health.fileTransferBlock`. Env →
+>   `.env(.example)` → `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` /
+>   `EnvBootstrap`. Client **VERSION 1.4.8**. Honest limits: action **Alert Only** does nothing yet
+>   (no download/upload detection); Firefox / Opera / Tor ignore these policies → allow only
+>   Chrome/Edge in `/allowlists/apps`; drag-and-drop of a file into a page, pasted text and
+>   screenshots are not blocked. Verified: `go build ./...` + `go vet`; `dotnet build` DlpService
+>   0/0 + client 0/0 (scratch output — bin locked by a running `client.exe`); `npx tsc --noEmit`
+>   (only the pre-existing stale `.next/types` port-control error). NOT verified: migration 072 on a
+>   live DB, `dotnet test` (bin locked), installer build/install, browser lab (`TESTING.md` § File
+>   Transfer). Installer-Parity: re-bake `config.enc` + rebuild the Windows installer; restart API
+>   for **072**.
 > - 2026-11-11: **24/7 antivirus guard (Windows DlpService + server + web).** Real-time scanning is
 >   Microsoft Defender's on-access engine (every file scanned on open/run/download/copy; malicious →
 >   blocked + quarantined). The tracker now keeps it ON at full strength and reverts tampering.
