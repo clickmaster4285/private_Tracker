@@ -3,6 +3,8 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -646,7 +649,7 @@ func (s *FaceService) SubmitJobEmbeddings(ctx context.Context, jobID string, req
 	req.ModelVersion = strings.TrimSpace(req.ModelVersion)
 	req.PreprocessVersion = strings.TrimSpace(req.PreprocessVersion)
 	if req.ModelID == "" {
-		req.ModelID = "adaface-ir50"
+		req.ModelID = "buffalo-l-w600k-r50"
 	}
 	if req.ModelVersion == "" {
 		return fmt.Errorf("modelVersion required")
@@ -809,4 +812,151 @@ func normalizeContentType(ct string) string {
 		return "image/jpeg"
 	}
 	return ct
+}
+
+// ListMySamplePackage returns validated/embedded enrollment images for DeviceAuth cache.
+func (s *FaceService) ListMySamplePackage(ctx context.Context, deviceEmployeeID string) ([]models.FaceSamplePackageItem, error) {
+	deviceEmployeeID = strings.TrimSpace(deviceEmployeeID)
+	if deviceEmployeeID == "" {
+		return nil, fmt.Errorf("missing employee")
+	}
+	job, err := s.repo.GetLatestJob(ctx, deviceEmployeeID)
+	if err != nil {
+		return nil, err
+	}
+	var samples []models.FaceEnrollmentSample
+	if job != nil {
+		samples, err = s.repo.ListSamplesByJob(ctx, job.ID)
+	} else {
+		samples, err = s.repo.ListSamplesByEmployee(ctx, deviceEmployeeID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.FaceSamplePackageItem, 0, len(samples))
+	for _, sample := range samples {
+		st := strings.ToLower(strings.TrimSpace(sample.ProcessStatus))
+		if st == "rejected" {
+			continue
+		}
+		if st != "" && st != "validated" && st != "embedded" && st != "uploaded" && st != "processing" {
+			continue
+		}
+		h := sha256.Sum256([]byte(sample.ID + ":" + strconv.FormatInt(sample.ByteSize, 10) + ":" + sample.RelPath))
+		out = append(out, models.FaceSamplePackageItem{
+			SampleID:    sample.ID,
+			PoseID:      sample.PoseID,
+			ContentType: sample.ContentType,
+			ByteSize:    sample.ByteSize,
+			ContentHash: hex.EncodeToString(h[:]),
+			Width:       sample.Width,
+			Height:      sample.Height,
+		})
+	}
+	return out, nil
+}
+
+// GetMySampleFile returns a sample file only when it belongs to the DeviceAuth employee.
+func (s *FaceService) GetMySampleFile(ctx context.Context, deviceEmployeeID, sampleID string) (*models.FaceEnrollmentSample, string, error) {
+	sample, abs, err := s.GetSampleFile(ctx, sampleID)
+	if err != nil || sample == nil {
+		return sample, abs, err
+	}
+	if sample.EmployeeID != strings.TrimSpace(deviceEmployeeID) {
+		return nil, "", fmt.Errorf("forbidden")
+	}
+	return sample, abs, nil
+}
+
+type FaceVerifySyncItem struct {
+	ClientEventID string   `json:"clientEventId"`
+	MachineID     string   `json:"machineId"`
+	Mode          string   `json:"mode"`
+	Trigger       string   `json:"trigger"`
+	PoseID        string   `json:"poseId"`
+	Result        string   `json:"result"`
+	Score         *float64 `json:"score"`
+	Threshold     *float64 `json:"threshold"`
+	Detail        string   `json:"detail"`
+	CreatedAt     string   `json:"createdAt"`
+}
+
+type FaceVerifySyncResult struct {
+	AcceptedIds []string `json:"acceptedIds"`
+}
+
+func (s *FaceService) SyncVerifyEvents(ctx context.Context, employeeID string, items []FaceVerifySyncItem) (*FaceVerifySyncResult, error) {
+	employeeID = strings.TrimSpace(employeeID)
+	if employeeID == "" {
+		return nil, fmt.Errorf("missing employee")
+	}
+	accepted := make([]string, 0, len(items))
+	for _, it := range items {
+		cid := strings.TrimSpace(it.ClientEventID)
+		if cid == "" {
+			continue
+		}
+		if _, err := uuid.Parse(cid); err != nil {
+			continue
+		}
+		result := strings.ToLower(strings.TrimSpace(it.Result))
+		if result == "" {
+			continue
+		}
+		switch result {
+		case "verified", "ok", "success":
+			result = "verified"
+		case "failed", "mismatch", "not_verified":
+			result = "failed"
+		case "no_face", "align_failed", "no_profile", "model_error", "camera_error", "skipped_pose":
+			// keep
+		default:
+			if len(result) > 64 {
+				result = result[:64]
+			}
+		}
+		mode := strings.ToLower(strings.TrimSpace(it.Mode))
+		if mode != "first" {
+			mode = "simple"
+		}
+		createdAt := time.Now().UTC()
+		if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(it.CreatedAt)); err == nil {
+			createdAt = t.UTC()
+		} else if t, err := time.Parse(time.RFC3339, strings.TrimSpace(it.CreatedAt)); err == nil {
+			createdAt = t.UTC()
+		}
+		ev := &models.FaceVerifyEvent{
+			ClientEventID:   cid,
+			EmployeeID:      employeeID,
+			MachineID:       strings.TrimSpace(it.MachineID),
+			Mode:            mode,
+			Trigger:         strings.TrimSpace(it.Trigger),
+			PoseID:          strings.TrimSpace(it.PoseID),
+			Result:          result,
+			Score:           it.Score,
+			Threshold:       it.Threshold,
+			Detail:          strings.TrimSpace(it.Detail),
+			ClientCreatedAt: createdAt,
+		}
+		if _, err := s.repo.InsertVerifyEventIdempotent(ctx, ev); err != nil {
+			return nil, err
+		}
+		accepted = append(accepted, cid)
+		_ = s.repo.InsertAudit(ctx, employeeID, it.MachineID, "face_verify_"+result, map[string]any{
+			"clientEventId": cid,
+			"mode":          mode,
+			"trigger":       it.Trigger,
+			"poseId":        it.PoseID,
+			"score":         it.Score,
+		})
+	}
+	return &FaceVerifySyncResult{AcceptedIds: accepted}, nil
+}
+
+func (s *FaceService) ListVerifyEvents(ctx context.Context, f repository.FaceVerifyListFilter) ([]models.FaceVerifyEvent, int, error) {
+	return s.repo.ListVerifyEvents(ctx, f)
+}
+
+func (s *FaceService) GetVerifyEvent(ctx context.Context, id string) (*models.FaceVerifyEvent, error) {
+	return s.repo.GetVerifyEvent(ctx, id)
 }

@@ -18,6 +18,15 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
     private bool _allowClose;
     private bool _pipelineRunning;
     private int _failReports;
+    private int _poseFailStreak;
+    private bool _frontVerifiedThisRun;
+    private string _mode = "simple";
+    private IReadOnlyList<string> _poseQueue = Array.Empty<string>();
+    private int _poseIndex;
+    private IReadOnlyList<LocalFaceSample> _samples = Array.Empty<LocalFaceSample>();
+
+    /// <summary>Auto-advance first-verify after this many consecutive fails on a non-front pose.</summary>
+    private const int FirstPoseSkipAfterFails = 20;
 
     [ObservableProperty] private string _appName = AppInfo.DisplayName;
     [ObservableProperty] private string _statusTitle = "Face verification";
@@ -29,6 +38,8 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _waitingForHr;
     [ObservableProperty] private bool _isBusy;
     [ObservableProperty] private Bitmap? _preview;
+    [ObservableProperty] private Bitmap? _referenceImage;
+    [ObservableProperty] private bool _showReference;
 
     public bool AllowClose => _allowClose;
     public event Action? RequestClose;
@@ -42,7 +53,7 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
         }
 
         _session = FaceVerifySession.TryRead();
-        if (_session == null || string.IsNullOrWhiteSpace(_session.DeviceToken))
+        if (_session == null || string.IsNullOrWhiteSpace(_session.EmployeeId))
         {
             StatusTitle = "Cannot verify";
             StatusDetail = "Missing login session. Sign in again.";
@@ -69,217 +80,108 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
         IsBusy = true;
         ShowRetry = false;
         WaitingForHr = false;
+        ShowProgress = false;
+        ShowReference = false;
         var ct = _cts.Token;
         try
         {
-            ShowProgress = true;
-            ProgressValue = 0;
-            StatusTitle = "Downloading models";
-            StatusDetail = "Downloading face models into this PC’s local cache…";
-            ProgressText = "";
+            StatusTitle = "Face verification";
+            StatusDetail = "Loading local face data…";
             _store?.Dispose();
             _store = new FaceBiometricStore();
             await _store.InitializeAsync(ct);
-            _api?.Dispose();
-            _api = new FaceApiClient(_session.ApiBase, _session.DeviceToken);
 
-            var downloader = new FaceModelDownloader();
-            var progress = new Progress<(string step, double? fraction)>(p =>
+            if (!File.Exists(FacePaths.DetPath) || !File.Exists(FacePaths.RecPath))
             {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    ProgressText = p.step;
-                    if (p.fraction is { } f) ProgressValue = Math.Clamp(f, 0, 1);
-                });
-            });
-            await downloader.EnsureModelsAsync(_session, _api, progress, ct);
-
-            // 1) Local cache → 2) server fetch → 3) HR message + poll (never blocks tracker/sync).
-            var templates = (await _store.GetTemplatesAsync(_session.EmployeeId, ct)).ToList();
-            if (templates.Count == 0)
-            {
-                StatusTitle = "Syncing face profile";
-                StatusDetail = "Downloading your enrolled face templates from the server…";
-                ProgressText = "";
-
-                FaceEmbeddingsResponse emb;
-                try
-                {
-                    emb = await _api.GetEmbeddingsAsync(ct);
-                }
-                catch (Exception ex)
-                {
-                    await ReportAsync("model_error", null, $"embeddings_fetch: {ex.Message}", ct);
-                    StatusTitle = "Could not reach server";
-                    StatusDetail = "Tracking keeps running. Check the network, then tap Check again.";
-                    ShowRetry = true;
-                    return;
-                }
-
-                if (emb.Profile == null || emb.Embeddings == null || emb.Embeddings.Count == 0
-                    || string.Equals(emb.Status, "none", StringComparison.OrdinalIgnoreCase))
-                {
-                    await EnterWaitingForHrAsync(ct);
-                    return;
-                }
-
-                templates = await PersistEmbeddingsAsync(emb, ct);
-            }
-
-            if (templates.Count == 0)
-            {
-                await EnterWaitingForHrAsync(ct);
+                StatusTitle = "Models not ready";
+                StatusDetail = "Open the tracker once while online so face models can sync, then tap Check again.";
+                ShowRetry = true;
                 return;
             }
 
-            await BeginCameraVerifyAsync(templates, ct);
+            var templates = (await _store.GetTemplatesAsync(_session.EmployeeId, ct)).ToList();
+            _samples = await _store.GetSamplesAsync(_session.EmployeeId, ct);
+            if (templates.Count == 0)
+            {
+                WaitingForHr = true;
+                StatusTitle = "No local face data";
+                StatusDetail = "Meet HR to enroll, then keep the tracker online once so this PC can sync your face package.";
+                ShowRetry = true;
+                return;
+            }
+
+            var firstDone = await _store.IsFirstVerifyCompleteAsync(_session.EmployeeId, ct);
+            if (!firstDone)
+            {
+                _mode = "first";
+                _poseQueue = FacePoseCatalog.OrderedPoseIds(templates.Select(t => t.PoseId));
+                if (_poseQueue.Count == 0)
+                    _poseQueue = new[] { "front" };
+                _poseIndex = 0;
+                StatusTitle = "First-time face check";
+                StatusDetail = $"Step 1 of {_poseQueue.Count}: {FacePoseCatalog.Label(_poseQueue[0])}";
+            }
+            else
+            {
+                _mode = "simple";
+                _poseQueue = Array.Empty<string>();
+                _poseIndex = 0;
+                StatusTitle = "Look at the camera";
+                StatusDetail = "Quick verification — keep your face centered.";
+            }
+
+            if (!string.IsNullOrWhiteSpace(_session.DeviceToken) && !string.IsNullOrWhiteSpace(_session.ApiBase))
+            {
+                _api?.Dispose();
+                _api = new FaceApiClient(_session.ApiBase, _session.DeviceToken);
+            }
+
+            var threshold = _mode == "first"
+                ? Math.Min(0.95, _session.MatchThreshold + 0.05)
+                : _session.MatchThreshold;
+
+            _engine?.Dispose();
+            _engine = new FaceRecognitionEngine();
+            _engine.Initialize(templates, threshold);
+            await BeginCameraVerifyAsync(ct);
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { /* shutdown */ }
         catch (Exception ex)
         {
             StatusTitle = "Face check error";
-            StatusDetail = $"{ex.Message} Tracking and sync keep running in the background.";
+            StatusDetail = $"{ex.Message} Tracking keeps running.";
             ShowRetry = true;
-            try { await ReportAsync("model_error", null, ex.Message, ct); } catch { /* ignore */ }
+            await QueueEventAsync("model_error", null, ex.Message, null, ct);
         }
         finally
         {
-            IsBusy = false;
             _pipelineRunning = false;
+            IsBusy = false;
             ShowProgress = false;
         }
     }
 
-    private async Task EnterWaitingForHrAsync(CancellationToken ct)
+    private async Task BeginCameraVerifyAsync(CancellationToken ct)
     {
-        if (_session == null || _store == null || _api == null) return;
-
-        StatusTitle = "Face not enrolled";
-        StatusDetail = "Meet HR to enroll your face verification";
-        ProgressText = "";
-        ShowProgress = false;
-        WaitingForHr = true;
-        ShowRetry = true;
-        await ReportAsync("no_profile", null, "no active embeddings", ct);
-        await _store.ClearEmployeeAsync(_session.EmployeeId, ct);
-
-        // Keep modal open; poll server so enrollment appears without restart.
-        // Soft gate: tracker/sync are other processes / continue independently.
-        while (!ct.IsCancellationRequested)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(45), ct);
-            try
-            {
-                var emb = await _api.GetEmbeddingsAsync(ct);
-                if (emb.Profile == null || emb.Embeddings == null || emb.Embeddings.Count == 0
-                    || string.Equals(emb.Status, "none", StringComparison.OrdinalIgnoreCase))
-                {
-                    StatusDetail = "Meet HR to enroll your face verification";
-                    continue;
-                }
-
-                WaitingForHr = false;
-                ShowRetry = false;
-                var templates = await PersistEmbeddingsAsync(emb, ct);
-                if (templates.Count == 0) continue;
-                await BeginCameraVerifyAsync(templates, ct);
-                return;
-            }
-            catch
-            {
-                // Network blip — keep waiting; never kill tracking.
-                StatusDetail = "Meet HR to enroll your face verification (will retry when the server is reachable)";
-            }
-        }
-    }
-
-    private async Task<List<LocalFaceTemplate>> PersistEmbeddingsAsync(
-        FaceEmbeddingsResponse emb,
-        CancellationToken ct)
-    {
-        if (_session == null || _store == null || _api == null || emb.Profile == null || emb.Embeddings == null)
-            return new List<LocalFaceTemplate>();
-
-        var profile = new LocalFaceProfile
-        {
-            EmployeeId = _session.EmployeeId,
-            ProfileId = emb.Profile.Id,
-            Status = emb.Profile.Status,
-            ProfileVersion = emb.Profile.ProfileVersion,
-            EnrollmentVersion = emb.Profile.EnrollmentVersion,
-            ModelId = emb.Profile.ModelId,
-            ModelVersion = emb.Profile.ModelVersion,
-            PreprocessVersion = emb.Profile.PreprocessVersion,
-            EmbeddingDims = emb.Profile.EmbeddingDims,
-            EmbeddingCount = emb.Embeddings.Count,
-        };
-        var templates = emb.Embeddings
-            .Where(e => e.Vector is { Length: > 0 })
-            .Select(e => new LocalFaceTemplate
-            {
-                Id = string.IsNullOrWhiteSpace(e.Id) ? Guid.NewGuid().ToString("N") : e.Id,
-                EmployeeId = _session.EmployeeId,
-                ProfileId = e.ProfileId,
-                SampleId = e.SampleId,
-                PoseId = e.PoseId,
-                ModelId = e.ModelId,
-                ModelVersion = e.ModelVersion,
-                PreprocessVersion = e.PreprocessVersion,
-                EmbeddingDims = e.EmbeddingDims,
-                QualityScore = e.QualityScore,
-                Vector = e.Vector!,
-            })
-            .ToList();
-
-        await _store.ReplaceProfileAsync(profile, templates, ct);
-        try
-        {
-            await _api.SyncAckAsync(profile.ProfileVersion, profile.ModelVersion, _session.MachineId, ct);
-            await _store.MarkSyncAckAsync(_session.EmployeeId, profile.ProfileVersion, profile.ModelVersion, ct);
-        }
-        catch { /* ack is best-effort */ }
-
-        return templates;
-    }
-
-    private async Task BeginCameraVerifyAsync(List<LocalFaceTemplate> templates, CancellationToken ct)
-    {
-        if (_session == null || _store == null) return;
-
-        StatusTitle = "Look at the camera";
-        StatusDetail = "Hold still until we verify your face.";
-        ShowProgress = false;
-        WaitingForHr = false;
-
-        _engine?.Dispose();
-        _engine = new FaceRecognitionEngine();
-        try
-        {
-            _engine.Initialize(templates, _session.MatchThreshold);
-        }
-        catch (Exception ex)
-        {
-            var kind = ex.Message.Contains("webcam", StringComparison.OrdinalIgnoreCase)
-                || ex.Message.Contains("camera", StringComparison.OrdinalIgnoreCase)
-                ? "camera_error"
-                : "model_error";
-            await ReportAsync(kind, null, ex.Message, ct);
-            StatusTitle = "Camera / model error";
-            StatusDetail = $"{ex.Message} Tracking keeps running.";
-            ShowRetry = true;
-            return;
-        }
+        if (_engine == null || _session == null || _store == null) return;
+        _failReports = 0;
+        _poseFailStreak = 0;
+        _frontVerifiedThisRun = false;
+        UpdateReferenceForCurrentPose();
 
         while (!ct.IsCancellationRequested)
         {
             FaceMatchResult result;
             try
             {
-                result = await Task.Run(() => _engine.CaptureAndCompare(), ct);
+                var poseFilter = _mode == "first" && _poseIndex < _poseQueue.Count
+                    ? _poseQueue[_poseIndex]
+                    : null;
+                result = await Task.Run(() => _engine.CaptureAndCompare(poseFilter), ct);
             }
             catch (Exception ex)
             {
-                await ReportAsync("camera_error", null, ex.Message, ct);
+                await QueueEventAsync("camera_error", null, ex.Message, CurrentPoseId(), ct);
                 StatusDetail = $"{ex.Message} Tracking keeps running.";
                 ShowRetry = true;
                 return;
@@ -298,12 +200,22 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
 
             if (result.Matched)
             {
-                // Offline-first: persist local verify, then best-effort server audit.
+                var poseId = CurrentPoseId();
+                if (IsFrontPose(poseId))
+                    _frontVerifiedThisRun = true;
+                await QueueEventAsync("verified", result.Score, null, poseId, ct);
+                await _store.MarkVerifyAsync(_session.EmployeeId, "verified", failed: false, ct);
+                _poseFailStreak = 0;
+
+                if (_mode == "first")
+                {
+                    if (await AdvanceFirstPoseOrFinishAsync(ct))
+                        return;
+                    continue;
+                }
+
                 StatusTitle = "Verified";
                 StatusDetail = $"Welcome back. Score {result.Score:0.000}";
-                await _store.MarkVerifyAsync(_session.EmployeeId, "verified", failed: false, ct);
-                try { await ReportAsync("verified", result.Score, null, ct); }
-                catch { /* audit must not block close */ }
                 _allowClose = true;
                 await Task.Delay(900, ct);
                 RequestClose?.Invoke();
@@ -312,41 +224,161 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
 
             if (result.Detail.StartsWith("detect_error", StringComparison.Ordinal))
             {
-                StatusDetail = "Camera processing hiccup — retrying… Tracking keeps running.";
+                StatusDetail = "Camera processing hiccup — retrying…";
                 await Task.Delay(1000, ct);
                 continue;
             }
 
             StatusDetail = result.Detail == "no_face"
                 ? "No face detected — center your face in the frame."
-                : $"Not matched yet (score {result.Score:0.000}). Keep looking at the camera.";
+                : $"Not matched yet (score {result.Score:0.000}). {(_mode == "first" ? FacePoseCatalog.Label(CurrentPoseId() ?? "front") : "Keep looking at the camera.")}";
 
-            if (result.Detail is "failed" or "no_face" or "align_failed")
+            if (result.Detail is "failed" or "no_face" or "align_failed" or "no_templates")
             {
                 _failReports++;
+                _poseFailStreak++;
                 if (_failReports == 1 || _failReports % 15 == 0)
                 {
                     await _store.MarkVerifyAsync(_session.EmployeeId, result.Detail, failed: true, ct);
-                    try { await ReportAsync("failed", result.Score, result.Detail, ct); }
-                    catch { /* best-effort */ }
+                    await QueueEventAsync("failed", result.Score, result.Detail, CurrentPoseId(), ct);
+                }
+
+                // Escape hatch: skip a stuck non-front pose after N consecutive fails
+                // (requires front already verified this run so soft-lock cannot bypass identity).
+                if (_mode == "first"
+                    && _frontVerifiedThisRun
+                    && _poseFailStreak >= FirstPoseSkipAfterFails
+                    && !IsFrontPose(CurrentPoseId()))
+                {
+                    var skipped = CurrentPoseId();
+                    await QueueEventAsync(
+                        "skipped_pose",
+                        result.Score,
+                        $"auto_skip_after_{FirstPoseSkipAfterFails}_fails",
+                        skipped,
+                        ct);
+                    StatusDetail = $"Skipping difficult angle ({FacePoseCatalog.Label(skipped ?? "")}). Continuing…";
+                    _poseFailStreak = 0;
+                    if (await AdvanceFirstPoseOrFinishAsync(ct))
+                        return;
+                    continue;
                 }
             }
 
-            // Below-normal process + ~1s cadence so tracker/sync keep CPU/NIC.
             await Task.Delay(1000, ct);
         }
     }
 
-    private async Task ReportAsync(string result, double? score, string? detail, CancellationToken ct)
+    /// <summary>
+    /// Advances the first-verify pose queue. Returns true when the wizard finished and closed.
+    /// </summary>
+    private async Task<bool> AdvanceFirstPoseOrFinishAsync(CancellationToken ct)
     {
-        if (_api == null || _session == null) return;
+        if (_session == null || _store == null) return false;
+        _poseIndex++;
+        _poseFailStreak = 0;
+        if (_poseIndex < _poseQueue.Count)
+        {
+            StatusTitle = "First-time face check";
+            StatusDetail =
+                $"Step {_poseIndex + 1} of {_poseQueue.Count}: {FacePoseCatalog.Label(_poseQueue[_poseIndex])}";
+            UpdateReferenceForCurrentPose();
+            await Task.Delay(700, ct);
+            return false;
+        }
+
+        if (!_frontVerifiedThisRun)
+        {
+            StatusTitle = "Front angle required";
+            StatusDetail = "Could not verify the front pose. Tap Check again and look straight at the camera.";
+            ShowRetry = true;
+            return true;
+        }
+
+        await _store.MarkFirstVerifyCompleteAsync(_session.EmployeeId, ct);
+        StatusTitle = "Verified";
+        StatusDetail = "All angles matched. Welcome.";
+        _allowClose = true;
+        await Task.Delay(900, ct);
+        RequestClose?.Invoke();
+        return true;
+    }
+
+    private static bool IsFrontPose(string? poseId) =>
+        string.Equals(poseId, "front", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(poseId, "front_return", StringComparison.OrdinalIgnoreCase);
+
+    private string? CurrentPoseId() =>
+        _mode == "first" && _poseIndex < _poseQueue.Count ? _poseQueue[_poseIndex] : null;
+
+    private void UpdateReferenceForCurrentPose()
+    {
         try
         {
-            await _api.VerifyEventAsync(result, _session.MachineId, score, _session.MatchThreshold, detail, ct);
+            ReferenceImage?.Dispose();
+            ReferenceImage = null;
+            ShowReference = false;
+            var pose = CurrentPoseId();
+            if (string.IsNullOrWhiteSpace(pose)) return;
+            var sample = _samples.FirstOrDefault(s =>
+                string.Equals(s.PoseId, pose, StringComparison.OrdinalIgnoreCase)
+                && File.Exists(s.LocalPath));
+            if (sample == null) return;
+            using var fs = File.OpenRead(sample.LocalPath);
+            ReferenceImage = new Bitmap(fs);
+            ShowReference = true;
         }
         catch
         {
-            // Offline-first: server audit is best-effort only.
+            ShowReference = false;
+        }
+    }
+
+    private async Task QueueEventAsync(
+        string result,
+        double? score,
+        string? detail,
+        string? poseId,
+        CancellationToken ct)
+    {
+        if (_store == null || _session == null) return;
+        var ev = new LocalFaceVerifyEvent
+        {
+            Id = Guid.NewGuid().ToString(),
+            EmployeeId = _session.EmployeeId,
+            MachineId = _session.MachineId,
+            Mode = _mode,
+            Trigger = string.IsNullOrWhiteSpace(_session.Trigger) ? "boot" : _session.Trigger,
+            PoseId = poseId ?? "",
+            Result = result,
+            Score = score,
+            Threshold = _session.MatchThreshold,
+            Detail = detail ?? "",
+            CreatedAt = DateTime.UtcNow.ToString("O"),
+        };
+        try { await _store.EnqueueVerifyEventAsync(ev, ct); }
+        catch { /* local queue must not crash UI */ }
+
+        if (_api == null) return;
+        try
+        {
+            await _api.VerifyEventAsync(
+                result,
+                _session.MachineId,
+                score,
+                _session.MatchThreshold,
+                detail,
+                ct,
+                ev.Id,
+                _mode,
+                ev.Trigger,
+                poseId,
+                ev.CreatedAt);
+            await _store.MarkEventsSyncedAsync(new[] { ev.Id }, ct);
+        }
+        catch
+        {
+            // Offline-first: leave queued for tracker warm-up drain.
         }
     }
 
@@ -365,5 +397,6 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
         _api?.Dispose();
         _store?.Dispose();
         Preview?.Dispose();
+        ReferenceImage?.Dispose();
     }
 }

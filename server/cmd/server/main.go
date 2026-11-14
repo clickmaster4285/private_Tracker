@@ -253,8 +253,8 @@ func main() {
 		faceService,
 		cfg.Face.WorkerAPIKey,
 		cfg.Face.ModelsDir,
-		cfg.Face.AdaFacePackagePath,
-		cfg.Face.YuNetPackagePath,
+		cfg.Face.BuffaloDetPackagePath,
+		cfg.Face.BuffaloRecPackagePath,
 	)
 	if cfg.Face.WorkerAPIKey == "" {
 		log.Printf("[server] FACE_WORKER_API_KEY empty — /api/v1/internal/face-worker/* rejects until set")

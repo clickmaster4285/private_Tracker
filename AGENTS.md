@@ -1,7 +1,58 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-12
+> **Last audited:** 2026-11-14
 > **Changelog:**
+>
+> - 2026-11-14: **Face distance band ~50–70 cm (client + server).** Enrollment and soft-lock
+>   reject faces outside face-height/frame-height fraction
+>   (`FACE_DISTANCE_MIN_FRAC`/`MAX` default 0.25–0.48; client `ALPHA_FACE_DISTANCE_*`).
+>   Reasons `too_far` / `too_close`. Client **VERSION 2.2.1**. Restart `python worker.py`;
+>   rebuild Windows installer for soft-lock UX.
+>
+> - 2026-11-14: **InsightFace buffalo_l + stronger verify.** Replaces YuNet+AdaFace with
+>   SCRFD `det_10g` + `w600k_r50` (`model_id=buffalo-l-w600k-r50`,
+>   `face-preprocess-v2-buffalo-l`) on face_worker and Windows client. ORT uses all
+>   CPU threads (`FACE_WORKER_ORT_THREADS` / `ProcessorCount`); soft-lock process
+>   priority **High**; `FaceVerifyYield` parks collectors/sync/screenshots/live/a11y
+>   while verify runs (DLP stays up). Match floor **strictly ≥ 0.85**. Missing/stale
+>   local templates → tracker force-refresh + `request_embeddings.json` loop.
+>   DeviceAuth packages `buffalo-l-det` / `buffalo-l-rec`. **Breaking:** reprocess all
+>   enrollments (AdaFace vectors incompatible). InsightFace commercial license required
+>   for production. Client **VERSION 2.2.0**. Restart API + `python worker.py`; place
+>   ONNX under `face_worker/models/`; rebuild Windows installer; re-bake `config.enc`.
+>
+> - 2026-11-14: **WinForms face soft-locker (government-critical redesign).** Replaces
+>   Avalonia `--face-verify` with WinForms fullscreen soft-lock branded
+>   `alpha-ai-tracker-face-verification` (instant UI; ONNX/camera on background
+>   threads; Normal priority). Soft-lock ≠ Lock Screen / Secure Desktop /
+>   Credential Provider (CP feasibility in
+>   [`doc/face-verify-locker-architecture.md`](doc/face-verify-locker-architecture.md)).
+>   First-local test is **client-only** (`first_local_test_done` label; never
+>   enqueue/POST). Simple-mode: threshold default **0.85**, 3-frame streak +
+>   motion PAD (`pad_static`), DPAPI template blobs, supervisor relaunch until
+>   success gate. Tracker `FaceWarmupService` syncs models/templates + **simple**
+>   events only. Client **VERSION 2.1.4**. Rebuild Windows installer; re-bake
+>   `config.enc` for threshold.
+>
+> - 2026-11-13: **Face verify match parity (LMEDS + pose gate).** Root cause of weak
+>   webcam scores / EMP-10008 stuck on `left`: client `EstimateAffinePartial2D`
+>   used OpenCV default RANSAC while face_worker uses **LMEDS** (~0.68 same-image
+>   cosine). Client align now LMEDS; first-verify auto-skips a non-front pose after
+>   20 fails (audit `skipped_pose`, front still required); worker rejects enroll
+>   poses with cosine-to-front &lt; 0.30 (`pose_too_extreme`) for retake. Heal script
+>   [`server/face_worker/heal_emp_10008_left.py`](server/face_worker/heal_emp_10008_left.py);
+>   parity harness [`parity_check.py`](server/face_worker/parity_check.py) +
+>   `FaceAlignParityTests`. Client **VERSION 2.1.1**. Restart `python worker.py`;
+>   rebuild Windows installer; HR retake EMP-10008 left angles.
+>
+> - 2026-11-13: **Face verify — local images, first strong / restart simple, web module.**
+>   DeviceAuth `GET /face-profiles/me/samples` + image download → LocalAppData
+>   `face/samples/` + `biometric.db`. Modal local-only: first PC verify = multi-pose
+>   wizard; later boot/unlock = simple match. Early launch before `Host.Build`;
+>   `SessionUnlock` relaunch. Events queue → `POST /face-profiles/verify-events/sync`
+>   → migration **070** `face_verify_events`; JWT `/face-verify/events` + web RBAC
+>   `users/face-verify`. Tracker warm-up owns models/embeddings/images. Soft tracking;
+>   hard modal. Client **VERSION 2.0.9**. Restart API; rebuild Windows installer.
 >
 > - 2026-11-13: **Face-verify on every client restart.** `TryLaunchOnSessionStart`
 >   also fires when background LogCollector sees SQLite login while waiting (not only

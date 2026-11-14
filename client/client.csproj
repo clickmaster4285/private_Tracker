@@ -3,7 +3,8 @@
     <!-- Exe (console) so PowerShell waits on protected-uninstall / remove-account.
          Non-CLI launches FreeConsole in Program.cs so the GUI has no black box. -->
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- net10.0 = Linux/mac publish; net10.0-windows = WinForms face soft-locker -->
+    <TargetFrameworks>net10.0;net10.0-windows</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -65,12 +66,28 @@
     <PackageReference Include="Tmds.DBus.Protocol" Version="0.94.2" />
     <PackageReference Include="Interop.UIAutomationClient" Version="10.19041.0" />
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
     <PackageReference Include="SkiaSharp" Version="3.119.4" />
     <!-- Face verify (Windows face-verify CLI): YuNet detect + AdaFace ONNX -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
     <!-- 4.13+ required for FaceDetectorYN (YuNet) — matches face_worker cv2.FaceDetectorYN -->
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20261107" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20261107" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+  </ItemGroup>
+
+  <!-- WinForms soft-locker only on the windows TFM. Keep Forms/Drawing out of global usings
+       so Avalonia Application/Control/Bitmap stay unambiguous. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <UseWindowsForms>true</UseWindowsForms>
+    <DefineConstants>$(DefineConstants);FACE_WINFORMS_LOCKER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Drawing.Imaging" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows'">
+    <Compile Remove="Services/FaceVerify/WinForms/**" />
   </ItemGroup>
 
   <ItemGroup>

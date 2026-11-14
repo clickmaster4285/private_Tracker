@@ -153,8 +153,11 @@ func Setup(
 	if faceHandler != nil {
 		syncGroup.GET("/face-profiles/me", faceHandler.GetMyFaceProfile)
 		syncGroup.GET("/face-profiles/me/embeddings", faceHandler.GetMyEmbeddings)
+		syncGroup.GET("/face-profiles/me/samples", faceHandler.ListMySamples)
+		syncGroup.GET("/face-profiles/me/samples/:sampleId/image", faceHandler.GetMySampleImage)
 		syncGroup.POST("/face-profiles/sync-ack", faceHandler.SyncAck)
 		syncGroup.POST("/face-profiles/verify-event", faceHandler.VerifyEvent)
+		syncAdmit.POST("/face-profiles/verify-events/sync", faceHandler.SyncVerifyEvents)
 		syncGroup.GET("/face-models/manifest", faceHandler.ModelManifest)
 		syncGroup.GET("/face-models/packages/:packageId", faceHandler.DownloadModelPackage)
 	}
@@ -255,6 +258,8 @@ func Setup(
 		employees.GET("/:id/face-profile/samples", faceHandler.ListProfileSamples)
 		employees.GET("/:id/face-profile", faceHandler.GetFaceProfile)
 		employees.DELETE("/:id/face-profile", faceHandler.DeleteFaceProfile)
+		protected.GET("/face-verify/events", faceHandler.ListVerifyEvents)
+		protected.GET("/face-verify/events/:id", faceHandler.GetVerifyEvent)
 	}
 
 	// Device Revocation

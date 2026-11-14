@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alpha-ai-tracker/server/internal/models"
@@ -580,6 +581,143 @@ func (r *FaceRepo) ListModelManifest(ctx context.Context) ([]models.FaceModelVer
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// InsertVerifyEventIdempotent upserts by client_event_id; returns whether a new row was inserted.
+func (r *FaceRepo) InsertVerifyEventIdempotent(ctx context.Context, e *models.FaceVerifyEvent) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		INSERT INTO face_verify_events (
+			client_event_id, employee_id, machine_id, mode, trigger, pose_id,
+			result, score, threshold, detail, client_created_at
+		) VALUES (
+			$1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+		)
+		ON CONFLICT (client_event_id) DO NOTHING
+	`, e.ClientEventID, e.EmployeeID, e.MachineID, e.Mode, e.Trigger, e.PoseID,
+		e.Result, e.Score, e.Threshold, e.Detail, e.ClientCreatedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+type FaceVerifyListFilter struct {
+	EmployeeID string
+	Result     string
+	Mode       string
+	DateFrom   *time.Time
+	DateTo     *time.Time
+	Q          string
+	Page       int
+	PerPage    int
+}
+
+func (r *FaceRepo) ListVerifyEvents(ctx context.Context, f FaceVerifyListFilter) ([]models.FaceVerifyEvent, int, error) {
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PerPage < 1 || f.PerPage > 100 {
+		f.PerPage = 30
+	}
+	offset := (f.Page - 1) * f.PerPage
+
+	where := []string{"1=1"}
+	args := []any{}
+	argN := 1
+	add := func(cond string, v any) {
+		where = append(where, cond)
+		args = append(args, v)
+		argN++
+	}
+	if f.EmployeeID != "" {
+		add(fmt.Sprintf("e.employee_id = $%d", argN), f.EmployeeID)
+	}
+	if f.Result != "" {
+		add(fmt.Sprintf("e.result = $%d", argN), f.Result)
+	}
+	if f.Mode != "" {
+		add(fmt.Sprintf("e.mode = $%d", argN), f.Mode)
+	}
+	if f.DateFrom != nil {
+		add(fmt.Sprintf("e.client_created_at >= $%d", argN), *f.DateFrom)
+	}
+	if f.DateTo != nil {
+		add(fmt.Sprintf("e.client_created_at < $%d", argN), *f.DateTo)
+	}
+	if q := strings.TrimSpace(f.Q); q != "" {
+		like := "%" + q + "%"
+		where = append(where, fmt.Sprintf(
+			"(e.employee_id ILIKE $%d OR COALESCE(emp.name, '') ILIKE $%d OR e.machine_id ILIKE $%d OR e.detail ILIKE $%d)",
+			argN, argN, argN, argN))
+		args = append(args, like)
+		argN++
+	}
+	whereSQL := strings.Join(where, " AND ")
+
+	countSQL := `
+		SELECT COUNT(*)
+		FROM face_verify_events e
+		LEFT JOIN employees emp ON emp.employee_id = e.employee_id
+		WHERE ` + whereSQL
+	var total int
+	if err := r.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	listArgs := append(append([]any{}, args...), f.PerPage, offset)
+	listSQL := fmt.Sprintf(`
+		SELECT e.id::text, e.client_event_id::text, e.employee_id, COALESCE(emp.name, ''),
+		       e.machine_id, e.mode, e.trigger, e.pose_id, e.result,
+		       e.score, e.threshold, e.detail, e.client_created_at, e.synced_at
+		FROM face_verify_events e
+		LEFT JOIN employees emp ON emp.employee_id = e.employee_id
+		WHERE %s
+		ORDER BY e.client_created_at DESC
+		LIMIT $%d OFFSET $%d
+	`, whereSQL, argN, argN+1)
+
+	rows, err := r.pool.Query(ctx, listSQL, listArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []models.FaceVerifyEvent
+	for rows.Next() {
+		var ev models.FaceVerifyEvent
+		if err := rows.Scan(
+			&ev.ID, &ev.ClientEventID, &ev.EmployeeID, &ev.EmployeeName,
+			&ev.MachineID, &ev.Mode, &ev.Trigger, &ev.PoseID, &ev.Result,
+			&ev.Score, &ev.Threshold, &ev.Detail, &ev.ClientCreatedAt, &ev.SyncedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, ev)
+	}
+	return out, total, rows.Err()
+}
+
+func (r *FaceRepo) GetVerifyEvent(ctx context.Context, id string) (*models.FaceVerifyEvent, error) {
+	row := r.pool.QueryRow(ctx, `
+		SELECT e.id::text, e.client_event_id::text, e.employee_id, COALESCE(emp.name, ''),
+		       e.machine_id, e.mode, e.trigger, e.pose_id, e.result,
+		       e.score, e.threshold, e.detail, e.client_created_at, e.synced_at
+		FROM face_verify_events e
+		LEFT JOIN employees emp ON emp.employee_id = e.employee_id
+		WHERE e.id = $1::uuid
+	`, id)
+	var ev models.FaceVerifyEvent
+	err := row.Scan(
+		&ev.ID, &ev.ClientEventID, &ev.EmployeeID, &ev.EmployeeName,
+		&ev.MachineID, &ev.Mode, &ev.Trigger, &ev.PoseID, &ev.Result,
+		&ev.Score, &ev.Threshold, &ev.Detail, &ev.ClientCreatedAt, &ev.SyncedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
 }
 
 type jobScanner interface {

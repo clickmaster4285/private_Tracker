@@ -399,7 +399,7 @@ public class SyncService : BackgroundService
         {
             try
             {
-                if (client.Core.UpdatePriority.ShouldYield)
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
                 {
                     // Silent upgrade in flight — free NIC/CPU for the installer download.
                     CompletePass(drainedAll: true);

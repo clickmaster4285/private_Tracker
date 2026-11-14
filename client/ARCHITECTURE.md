@@ -1,7 +1,11 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-13 (face models from API + fleet TLS)
+> **Last audited:** 2026-11-13 (face verify local images + first/simple modes)
 > **Changelog:**
+> - 2026-11-13: **Local face package + first/simple verify.** Cache enrollment JPEGs
+>   under `face/samples/`; first verify multi-pose wizard; simple on boot/unlock;
+>   early `TryLaunchEarly` before Host.Build; warm-up + event drain in tracker.
+>   **VERSION 2.0.9**.
 > - 2026-11-13: **Face-verify every session start.** `TryLaunchOnSessionStart` on
 >   boot restore, GUI restore/login, and LogCollector login-poll. **VERSION 2.0.8**.
 > - 2026-11-13: **FaceDetectorYN detect + offline verify.** OpenCvSharp 4.13

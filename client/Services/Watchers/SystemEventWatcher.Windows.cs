@@ -79,6 +79,7 @@ public sealed partial class SystemEventWatcher
                         break;
                     case SessionSwitchReason.SessionUnlock:
                         _ = SafeRecordAsync(SessionEventTypes.ScreenUnlock, "systemevents_session_unlock", default);
+                        _ = TryLaunchFaceVerifyOnUnlockAsync();
                         break;
                     // SessionRemoteControl and SessionUnknown intentionally ignored.
                 }
@@ -107,6 +108,22 @@ public sealed partial class SystemEventWatcher
             }
         };
         SystemEvents.SessionEnding += _winSessionEnding;
+    }
+
+    private async Task TryLaunchFaceVerifyOnUnlockAsync()
+    {
+        try
+        {
+            if (!_config.FaceVerifyEnabled) return;
+            var info = await _store.GetEmployeeInfoAsync(CancellationToken.None);
+            if (info == null || string.IsNullOrWhiteSpace(info.EmployeeId)) return;
+            client.Services.FaceVerify.FaceVerifyLauncher.TryLaunchOnSessionStart(
+                _config, info, trigger: "unlock");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Face-verify unlock launch skipped");
+        }
     }
 
     /// <summary>

@@ -71,7 +71,7 @@ public sealed class ScreenshotSyncWorker : BackgroundService
         {
             try
             {
-                if (client.Core.UpdatePriority.ShouldYield)
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken).ConfigureAwait(false);
                     continue;

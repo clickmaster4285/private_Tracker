@@ -115,11 +115,11 @@ public sealed class FaceApiClient : IDisposable
             new AuthenticationHeaderValue("Device", deviceToken);
     }
 
-    public const string PackageYuNet = "yunet";
-    public const string PackageAdaFace = "adaface-ir50";
+    public const string PackageBuffaloDet = "buffalo-l-det";
+    public const string PackageBuffaloRec = "buffalo-l-rec";
 
     /// <summary>
-    /// Downloads a face ONNX package from the API into LocalAppData (YuNet or AdaFace).
+    /// Downloads a face ONNX package from the API into LocalAppData (buffalo_l det/rec).
     /// </summary>
     public async Task DownloadModelPackageAsync(
         string packageId,
@@ -159,12 +159,12 @@ public sealed class FaceApiClient : IDisposable
         }
     }
 
-    /// <summary>Downloads AdaFace ONNX from the API into LocalAppData.</summary>
-    public Task DownloadAdaFacePackageAsync(
+    /// <summary>Downloads buffalo_l recognition ONNX from the API into LocalAppData.</summary>
+    public Task DownloadRecPackageAsync(
         string destPath,
         IProgress<(string step, double? fraction)> progress,
         CancellationToken ct) =>
-        DownloadModelPackageAsync(PackageAdaFace, destPath, "AdaFace", progress, ct);
+        DownloadModelPackageAsync(PackageBuffaloRec, destPath, "buffalo_l", progress, ct);
 
     public async Task<FaceEmbeddingsResponse> GetEmbeddingsAsync(CancellationToken ct)
     {
@@ -193,7 +193,12 @@ public sealed class FaceApiClient : IDisposable
         double? score,
         double? threshold,
         string? detail,
-        CancellationToken ct)
+        CancellationToken ct,
+        string? clientEventId = null,
+        string? mode = null,
+        string? trigger = null,
+        string? poseId = null,
+        string? createdAt = null)
     {
         var url = $"{_apiBase}/api/v1/face-profiles/verify-event";
         using var resp = await _http.PostAsJsonAsync(url, new
@@ -203,10 +208,108 @@ public sealed class FaceApiClient : IDisposable
             threshold,
             clientDeviceId = machineId,
             detail,
+            clientEventId,
+            mode,
+            trigger,
+            poseId,
+            createdAt,
         }, ct);
-        // Soft warning — do not throw on 5xx from lab outages
         _ = resp;
     }
 
+    public async Task<FaceSamplesResponse> GetMySamplesAsync(CancellationToken ct)
+    {
+        var url = $"{_apiBase}/api/v1/face-profiles/me/samples";
+        using var resp = await _http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<FaceSamplesResponse>(JsonOpts, ct);
+        return body ?? new FaceSamplesResponse { Samples = new() };
+    }
+
+    public async Task DownloadSampleImageAsync(string sampleId, string destPath, CancellationToken ct)
+    {
+        var url = $"{_apiBase}/api/v1/face-profiles/me/samples/{Uri.EscapeDataString(sampleId)}/image";
+        var tmp = destPath + ".tmp";
+        try
+        {
+            using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.EnsureSuccessStatusCode();
+            await using var src = await resp.Content.ReadAsStreamAsync(ct);
+            Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
+            await using var dst = File.Create(tmp);
+            await src.CopyToAsync(dst, ct);
+            await dst.FlushAsync(ct);
+            dst.Close();
+            File.Move(tmp, destPath, overwrite: true);
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* ignore */ }
+        }
+    }
+
+    public async Task<FaceVerifySyncResponse> SyncVerifyEventsAsync(
+        IReadOnlyList<LocalFaceVerifyEvent> events,
+        CancellationToken ct)
+    {
+        var url = $"{_apiBase}/api/v1/face-profiles/verify-events/sync";
+        var payload = new
+        {
+            events = events.Select(e => new
+            {
+                clientEventId = e.Id,
+                machineId = e.MachineId,
+                mode = e.Mode,
+                trigger = e.Trigger,
+                poseId = e.PoseId,
+                result = e.Result,
+                score = e.Score,
+                threshold = e.Threshold,
+                detail = e.Detail,
+                createdAt = e.CreatedAt,
+            }).ToList(),
+        };
+        using var resp = await _http.PostAsJsonAsync(url, payload, ct);
+        resp.EnsureSuccessStatusCode();
+        var body = await resp.Content.ReadFromJsonAsync<FaceVerifySyncResponse>(JsonOpts, ct);
+        return body ?? new FaceVerifySyncResponse { AcceptedIds = new() };
+    }
+
     public void Dispose() => _http.Dispose();
+}
+
+public sealed class FaceSamplesResponse
+{
+    [JsonPropertyName("samples")]
+    public List<FaceSamplePackageDto>? Samples { get; set; }
+}
+
+public sealed class FaceSamplePackageDto
+{
+    [JsonPropertyName("sampleId")]
+    public string SampleId { get; set; } = "";
+
+    [JsonPropertyName("poseId")]
+    public string PoseId { get; set; } = "";
+
+    [JsonPropertyName("contentType")]
+    public string? ContentType { get; set; }
+
+    [JsonPropertyName("byteSize")]
+    public long ByteSize { get; set; }
+
+    [JsonPropertyName("contentHash")]
+    public string ContentHash { get; set; } = "";
+
+    [JsonPropertyName("width")]
+    public int Width { get; set; }
+
+    [JsonPropertyName("height")]
+    public int Height { get; set; }
+}
+
+public sealed class FaceVerifySyncResponse
+{
+    [JsonPropertyName("acceptedIds")]
+    public List<string>? AcceptedIds { get; set; }
 }

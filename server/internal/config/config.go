@@ -66,13 +66,12 @@ type FaceConfig struct {
 	// EmbeddingKeySecret seals embedding_ciphertext (AES-GCM). Prefer FACE_EMBEDDING_KEY;
 	// falls back to JWT_SECRET when empty so lab boots without a second secret.
 	EmbeddingKeySecret string
-	// ModelsDir is face_worker/models — shared YuNet + AdaFace ONNX for worker + DeviceAuth download.
+	// ModelsDir is face_worker/models — shared buffalo_l ONNX for worker + DeviceAuth download.
 	ModelsDir string
-	// AdaFacePackagePath is the ONNX file DeviceAuth clients download via
-	// GET /face-models/packages/adaface-ir50 (same file the face_worker uses).
-	AdaFacePackagePath string
-	// YuNetPackagePath is the detector ONNX for GET /face-models/packages/yunet.
-	YuNetPackagePath string
+	// BuffaloDetPackagePath is SCRFD det_10g for GET /face-models/packages/buffalo-l-det.
+	BuffaloDetPackagePath string
+	// BuffaloRecPackagePath is w600k_r50 for GET /face-models/packages/buffalo-l-rec.
+	BuffaloRecPackagePath string
 }
 
 // ScreenshotsConfig points at media/screenshots/{emp}/{yyyy}/{MM}/{dd}/….
@@ -309,9 +308,9 @@ func Load() (*Config, error) {
 			WorkerAPIKey:       strings.TrimSpace(getEnv("FACE_WORKER_API_KEY", "")),
 			WorkerURL:          strings.TrimRight(strings.TrimSpace(getEnv("FACE_WORKER_URL", "http://127.0.0.1:8010")), "/"),
 			EmbeddingKeySecret: strings.TrimSpace(getEnv("FACE_EMBEDDING_KEY", "")),
-			ModelsDir:          strings.TrimSpace(getEnv("FACE_MODELS_DIR", "face_worker/models")),
-			AdaFacePackagePath: strings.TrimSpace(getEnv("FACE_ADAFACE_ONNX", "face_worker/models/adaface_ir50_webface4m.onnx")),
-			YuNetPackagePath:   strings.TrimSpace(getEnv("FACE_YUNET_ONNX", "face_worker/models/face_detection_yunet_2023mar.onnx")),
+			ModelsDir:             strings.TrimSpace(getEnv("FACE_MODELS_DIR", "face_worker/models")),
+			BuffaloDetPackagePath: strings.TrimSpace(getEnv("FACE_BUFFALO_DET_ONNX", "face_worker/models/det_10g.onnx")),
+			BuffaloRecPackagePath: strings.TrimSpace(getEnv("FACE_BUFFALO_REC_ONNX", "face_worker/models/w600k_r50.onnx")),
 		},
 
 		Scale: ScaleConfig{

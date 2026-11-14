@@ -221,6 +221,7 @@ public class LogCollectorService : BackgroundService
         _scheduleCache.RequestImmediatePull();
         _attendanceAggregator.RequestImmediateAggregation();
         _ = PersistInstalledClientVersionAsync();
+        _ = TryFaceWarmupAsync();
 
         if (OperatingSystem.IsWindows())
         {
@@ -233,6 +234,22 @@ public class LogCollectorService : BackgroundService
             {
                 _logger.LogDebug(ex, "Failed to set Windows execution state");
             }
+        }
+    }
+
+    private async Task TryFaceWarmupAsync()
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows() || !_config.FaceVerifyEnabled) return;
+            var info = await _store.GetEmployeeInfoAsync(CancellationToken.None);
+            if (info == null) return;
+            new client.Services.FaceVerify.FaceWarmupService(_config, _logger)
+                .TryStartBackground(info);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Face warm-up kickoff failed");
         }
     }
 
@@ -393,9 +410,11 @@ public class LogCollectorService : BackgroundService
         {
             try
             {
-                if (ClientProcessMode.ParkTrackingWork || UpdatePriority.ShouldYield)
+                if (ClientProcessMode.ParkTrackingWork || UpdatePriority.ShouldYield || FaceVerifyYield.ShouldYield)
                 {
-                    await Task.Delay(UpdatePriority.ShouldYield ? 10_000 : 5000, stoppingToken);
+                    await Task.Delay(
+                        UpdatePriority.ShouldYield || FaceVerifyYield.ShouldYield ? 10_000 : 5000,
+                        stoppingToken);
                     continue;
                 }
 

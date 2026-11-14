@@ -3,9 +3,9 @@ namespace client.Services.FaceVerify;
 public sealed class FaceModelDownloader
 {
     /// <summary>
-    /// Ensures YuNet + AdaFace exist under LocalAppData …/face/models/.
+    /// Ensures buffalo_l det_10g + w600k_r50 exist under LocalAppData …/face/models/.
     /// Both are downloaded from this fleet's API (DeviceAuth) — no GitHub on the PC.
-    /// Optional <c>ALPHA_FACE_ADAFACE_URL</c> / session override only as AdaFace fallback.
+    /// Optional recognition URL override only as fallback.
     /// </summary>
     public async Task EnsureModelsAsync(
         FaceVerifySession session,
@@ -15,46 +15,46 @@ public sealed class FaceModelDownloader
     {
         FacePaths.EnsureDirectories();
 
-        if (!File.Exists(FacePaths.YuNetPath) || new FileInfo(FacePaths.YuNetPath).Length < 100_000)
+        if (!File.Exists(FacePaths.DetPath) || new FileInfo(FacePaths.DetPath).Length < 100_000)
         {
-            progress.Report(("Downloading face detector (YuNet) from API…", 0));
+            progress.Report(("Downloading face detector (SCRFD det_10g) from API…", 0));
             await api.DownloadModelPackageAsync(
-                FaceApiClient.PackageYuNet, FacePaths.YuNetPath, "YuNet", progress, ct);
+                FaceApiClient.PackageBuffaloDet, FacePaths.DetPath, "SCRFD", progress, ct);
         }
         else
         {
             progress.Report(("Face detector ready", 1));
         }
 
-        if (File.Exists(FacePaths.AdaFacePath) && new FileInfo(FacePaths.AdaFacePath).Length > 1_000_000)
+        if (File.Exists(FacePaths.RecPath) && new FileInfo(FacePaths.RecPath).Length > 1_000_000)
         {
             progress.Report(("Recognition model ready", 1));
             return;
         }
 
-        progress.Report(("Downloading recognition model (AdaFace) from API…", 0));
+        progress.Report(("Downloading recognition model (buffalo_l w600k_r50) from API…", 0));
         try
         {
             await api.DownloadModelPackageAsync(
-                FaceApiClient.PackageAdaFace, FacePaths.AdaFacePath, "AdaFace", progress, ct);
+                FaceApiClient.PackageBuffaloRec, FacePaths.RecPath, "buffalo_l", progress, ct);
             progress.Report(("Recognition model ready", 1));
             return;
         }
-        catch (Exception ex) when (!string.IsNullOrWhiteSpace(session.AdaFaceUrl))
+        catch (Exception ex) when (!string.IsNullOrWhiteSpace(session.RecModelUrl))
         {
-            progress.Report(($"API package failed ({ex.Message}); trying ALPHA_FACE_ADAFACE_URL…", 0));
-            await DownloadFileAsync(session.AdaFaceUrl!, FacePaths.AdaFacePath, progress, ct);
+            progress.Report(($"API package failed ({ex.Message}); trying override URL…", 0));
+            await DownloadFileAsync(session.RecModelUrl!, FacePaths.RecPath, progress, ct);
             progress.Report(("Recognition model ready", 1));
             return;
         }
         catch (Exception ex)
         {
             throw new InvalidOperationException(
-                "AdaFace ONNX missing locally and API download failed. " +
-                "Ensure face_worker/models/adaface_ir50_webface4m.onnx exists on the API host " +
-                "(served at GET /face-models/packages/adaface-ir50), " +
-                "or set ALPHA_FACE_ADAFACE_URL. " +
-                $"Local cache: {FacePaths.AdaFacePath}. ({ex.Message})", ex);
+                "buffalo_l w600k_r50 missing locally and API download failed. " +
+                "Ensure face_worker/models/det_10g.onnx and w600k_r50.onnx exist on the API host " +
+                "(served at GET /face-models/packages/buffalo-l-det|buffalo-l-rec), " +
+                "or set ALPHA_FACE_BUFFALO_REC_URL. " +
+                $"Local cache: {FacePaths.RecPath}. ({ex.Message})", ex);
         }
     }
 

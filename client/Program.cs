@@ -275,8 +275,8 @@ if (args.Contains("--timedatewarning") && !args.Contains("--background"))
     return;
 }
 
-// Windows face verify UI (spawned soft-gate after login / session restore).
-// Sibling mutex; no tracker host. Maximized Topmost until match.
+// Windows face soft-locker (spawned after login / session restore).
+// Sibling mutex; no tracker host; WinForms UI (not Avalonia). Soft-lock ≠ Winlogon.
 if (args.Contains("--face-verify") && !args.Contains("--background"))
 {
     client.Services.CliConsole.DetachForGui();
@@ -292,15 +292,22 @@ if (args.Contains("--face-verify") && !args.Contains("--background"))
     try
     {
         EnvLoader.Load();
-        // Soft gate: never starve the tracker/sync process. Face ONNX+webcam is heavy.
-        try { System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
-            System.Diagnostics.ProcessPriorityClass.BelowNormal; } catch { /* ignore */ }
-        App.FaceVerifyMode = true;
-        App.AllowShutdown = true;
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        client.Core.FaceVerifyYield.Set("soft_lock");
+        try
+        {
+            System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
+                System.Diagnostics.ProcessPriorityClass.High;
+        }
+        catch { /* ignore */ }
+#if FACE_WINFORMS_LOCKER
+        client.Services.FaceVerify.WinForms.FaceVerifyLockerHost.Run();
+#else
+        // Non-Windows TFM build: face-verify unsupported.
+#endif
     }
     finally
     {
+        client.Core.FaceVerifyYield.Clear();
         try { faceMutex.ReleaseMutex(); } catch { /* ignore */ }
         try { faceMutex.Dispose(); } catch { /* ignore */ }
     }
@@ -500,6 +507,24 @@ if (isProtectedUninstall && !coldCodeAlreadyApproved)
 }
 
 var config = AppConfig.FromEnv();
+
+// Face-verify early launch (Windows): open local modal before Host.Build so reboot
+// cold-start can show the camera in ~2s when models+templates are already cached.
+if (OperatingSystem.IsWindows()
+    && isBackground
+    && !isRemoveAccount
+    && !isProtectedUninstall
+    && config.FaceVerifyEnabled)
+{
+    try
+    {
+        client.Services.FaceVerify.FaceVerifyLauncher.TryLaunchEarly(config, trigger: "boot");
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"[client] Early face-verify launch skipped: {ex.Message}");
+    }
+}
 
 var builder = Host.CreateApplicationBuilder(args);
 

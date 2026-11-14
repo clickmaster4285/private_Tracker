@@ -4,7 +4,8 @@ using System.Text.Json.Serialization;
 namespace client.Services.FaceVerify;
 
 /// <summary>
-/// Handoff between the tracker (after login) and <c>--face-verify</c> Avalonia subprocess.
+/// Handoff between the tracker and the WinForms soft-locker (<c>--face-verify</c>).
+/// Locker session must not carry device tokens (zero-network soft-lock).
 /// </summary>
 public sealed class FaceVerifySession
 {
@@ -14,9 +15,18 @@ public sealed class FaceVerifySession
     public string DeviceToken { get; set; } = "";
     public string ApiBase { get; set; } = "";
     public string MachineId { get; set; } = "";
-    public double MatchThreshold { get; set; } = 0.4;
-    /// <summary>Optional override URL if API package route is unavailable.</summary>
-    public string? AdaFaceUrl { get; set; }
+    public double MatchThreshold { get; set; } = 0.85;
+    /// <summary>boot | unlock | login — recorded on verify events.</summary>
+    public string Trigger { get; set; } = "boot";
+    /// <summary>Optional override URL for recognition ONNX if API package route is unavailable.</summary>
+    public string? RecModelUrl { get; set; }
+    /// <summary>Legacy alias for <see cref="RecModelUrl"/> (JSON compat).</summary>
+    [JsonPropertyName("adaFaceUrl")]
+    public string? AdaFaceUrl
+    {
+        get => RecModelUrl;
+        set { if (!string.IsNullOrWhiteSpace(value)) RecModelUrl = value; }
+    }
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

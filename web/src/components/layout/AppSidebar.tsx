@@ -74,6 +74,11 @@ const navSections: NavSection[] = [
             module: "users/face-enrollment",
           },
           {
+            label: "Face Verify",
+            path: "/face-verify",
+            module: "users/face-verify",
+          },
+          {
             label: "Departments",
             path: "/departments",
             module: "departments",

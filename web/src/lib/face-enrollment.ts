@@ -1,7 +1,7 @@
 /** Multi-angle face enrollment helpers (browser capture only — no authoritative embeddings). */
 
 export const FACE_POSES = [
-  { id: 'front', shortLabel: 'Front', label: 'Look straight at the camera' },
+  { id: 'front', shortLabel: 'Front', label: 'Look straight at the camera (sit 50–70 cm away)' },
   { id: 'left_slight', shortLabel: 'Slight left', label: 'Turn slightly left' },
   { id: 'left', shortLabel: 'Left', label: 'Turn further left' },
   { id: 'right_slight', shortLabel: 'Slight right', label: 'Turn slightly right' },

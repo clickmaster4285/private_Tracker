@@ -2271,4 +2271,54 @@ export const shadowItApi = {
     request<ShadowItApp>(`/shadow-it/apps/${id}`, { method: 'PATCH', body: data }),
 };
 
+export interface FaceVerifyEvent {
+  id: string;
+  clientEventId: string;
+  employeeId: string;
+  employeeName?: string;
+  machineId: string;
+  mode: string;
+  trigger: string;
+  poseId?: string;
+  result: string;
+  score?: number | null;
+  threshold?: number | null;
+  detail?: string;
+  clientCreatedAt: string;
+  syncedAt: string;
+}
+
+export interface FaceVerifyEventListResponse {
+  events: FaceVerifyEvent[];
+  total: number;
+  page: number;
+  perPage: number;
+}
+
+export const faceVerifyApi = {
+  list: (params?: {
+    q?: string;
+    employeeId?: string;
+    result?: string;
+    mode?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    page?: number;
+    perPage?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.q) sp.set('q', params.q);
+    if (params?.employeeId) sp.set('employeeId', params.employeeId);
+    if (params?.result) sp.set('result', params.result);
+    if (params?.mode) sp.set('mode', params.mode);
+    if (params?.dateFrom) sp.set('dateFrom', params.dateFrom);
+    if (params?.dateTo) sp.set('dateTo', params.dateTo);
+    if (params?.page) sp.set('page', String(params.page));
+    if (params?.perPage) sp.set('perPage', String(params.perPage));
+    const qs = sp.toString();
+    return request<FaceVerifyEventListResponse>('/face-verify/events' + (qs ? `?${qs}` : ''));
+  },
+  get: (id: string) => request<FaceVerifyEvent>(`/face-verify/events/${id}`),
+};
+
 export { ApiError };

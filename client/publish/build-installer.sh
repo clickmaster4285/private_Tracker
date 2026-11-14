@@ -87,15 +87,11 @@ echo "[Build] Building latest Release binary (single source of truth)..."
 
 # Detect the project's TargetFramework from the csproj so this script doesn't
 # hard-code a specific TFM (the project recently moved net8.0 → net10.0).
-TFM="$(grep -oE '<TargetFramework(s)?>[^<]+</TargetFramework(s)?>' "$PROJECT_DIR/client.csproj" \
-       | head -n1 \
-       | sed -E 's@</?TargetFramework(s)?>@@g' \
-       | sed 's/;.*//')"
-if [ -z "$TFM" ]; then
-  echo "ERROR: Could not detect TargetFramework from $PROJECT_DIR/client.csproj"
-  exit 1
-fi
-echo "  Detected TargetFramework: $TFM"
+# Multi-TFM: net10.0 (linux/mac) + net10.0-windows (WinForms soft-locker).
+TFM_WIN="net10.0-windows"
+TFM_UNIX="net10.0"
+TFM="$TFM_WIN"
+echo "  Windows TFM: $TFM_WIN | Unix TFM: $TFM_UNIX"
 
 RELEASE_OUT="$PROJECT_DIR/bin/Release/$TFM"
 mkdir -p "$RELEASE_OUT"
@@ -111,7 +107,7 @@ fi
 #    and identical across publishes. The per-RID apphost shim (client.exe /
 #    client) is platform-specific and embeds resolved paths, so it would
 #    differ even when the underlying code is the same.
-if ! dotnet build "$PROJECT_DIR" -c Release $PUBLISH_ARGS -o "$RELEASE_OUT" --nologo; then
+if ! dotnet build "$PROJECT_DIR" -c Release -f "$TFM_WIN" $PUBLISH_ARGS -o "$RELEASE_OUT" --nologo; then
   echo "ERROR: dotnet build -c Release failed. Aborting before publish so the installer is never built against a broken binary."
   exit 1
 fi
@@ -131,14 +127,14 @@ HAS_ERRORS=false
 declare -A PUBLISH_HASHES
 for RID in win-x64 linux-x64 osx-x64; do
   case "$RID" in
-    win-x64)  OUT="$PUBLISH_WIN"; BUILD_FLAG=$BUILD_WIN ;;
-    linux-x64) OUT="$PUBLISH_LIN"; BUILD_FLAG=$BUILD_LIN ;;
-    osx-x64)  OUT="$PUBLISH_MAC"; BUILD_FLAG=$BUILD_MAC ;;
+    win-x64)  OUT="$PUBLISH_WIN"; BUILD_FLAG=$BUILD_WIN; RID_TFM="$TFM_WIN" ;;
+    linux-x64) OUT="$PUBLISH_LIN"; BUILD_FLAG=$BUILD_LIN; RID_TFM="$TFM_UNIX" ;;
+    osx-x64)  OUT="$PUBLISH_MAC"; BUILD_FLAG=$BUILD_MAC; RID_TFM="$TFM_UNIX" ;;
   esac
   if [ "$BUILD_FLAG" = true ]; then
     rm -rf "$OUT"
-    if dotnet publish "$PROJECT_DIR" -c Release -r "$RID" --self-contained -o "$OUT" $PUBLISH_ARGS; then
-      echo "  $RID -> $OUT"
+    if dotnet publish "$PROJECT_DIR" -c Release -f "$RID_TFM" -r "$RID" --self-contained -o "$OUT" $PUBLISH_ARGS; then
+      echo "  $RID ($RID_TFM) -> $OUT"
 
       # Hash the freshly published client.dll.
       PUBLISHED_DLL="$OUT/client.dll"

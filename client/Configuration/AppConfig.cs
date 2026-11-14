@@ -95,13 +95,13 @@ public class AppConfig
     /// <summary>Spawn face verify on every Windows session start (boot restore / login).</summary>
     public bool FaceVerifyEnabled { get; init; } = true;
     /// <summary>Cosine threshold vs L2 embeddings (calibrate per office webcams).</summary>
-    public double FaceMatchThreshold { get; init; } = 0.4;
+    /// <summary>Strict cosine floor ≥ 0.85 vs L2 buffalo_l embeddings.</summary>
+    public double FaceMatchThreshold { get; init; } = 0.85;
     /// <summary>
-    /// Optional HTTP URL override for AdaFace ONNX only. Default: DeviceAuth download
-    /// of YuNet + AdaFace from GET /face-models/packages/{yunet|adaface-ir50}
-    /// (API serves face_worker/models/) into LocalAppData face/models/.
+    /// Optional HTTP URL override for buffalo_l recognition ONNX. Default: DeviceAuth download
+    /// of det_10g + w600k_r50 from GET /face-models/packages/{buffalo-l-det|buffalo-l-rec}.
     /// </summary>
-    public string? FaceAdaFaceUrl { get; init; }
+    public string? FaceBuffaloRecUrl { get; init; }
 
     // ─── GPS & Location (Phase 3, finalplan §16) ───
     // Default OFF — requires OS location permission + employee consent.
@@ -213,11 +213,13 @@ public class AppConfig
             TimeDateSkewSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_SKEW_SEC"), out var tdSkew) ? tdSkew : 60),
             TimeDateCooldownHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_COOLDOWN_HOURS"), out var tdCool) ? tdCool : 4),
             FaceVerifyEnabled = GetEnv("ALPHA_FACE_VERIFY_ENABLED") is not ("0" or "false" or "False"),
-            FaceMatchThreshold = Math.Clamp(
+            FaceMatchThreshold = Math.Max(0.85, Math.Clamp(
                 double.TryParse(GetEnv("ALPHA_FACE_MATCH_THRESHOLD"), System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.4,
-                0.05, 0.99),
-            FaceAdaFaceUrl = GetEnv("ALPHA_FACE_ADAFACE_URL"),
+                    System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.85,
+                0.05, 0.99)),
+            FaceBuffaloRecUrl = FirstNonEmpty(
+                GetEnv("ALPHA_FACE_BUFFALO_REC_URL"),
+                GetEnv("ALPHA_FACE_ADAFACE_URL")),
             LocationEnabled = GetEnv("ALPHA_LOCATION_ENABLED") is ("1" or "true" or "True"),
             LocationPollSec = Math.Max(60, int.TryParse(GetEnv("ALPHA_LOCATION_POLL_SEC"), out var locPoll) ? locPoll : 300),
             LocationIpFallback = GetEnv("ALPHA_LOCATION_IP_FALLBACK") is ("1" or "true" or "True"),
@@ -260,6 +262,16 @@ public class AppConfig
     {
         var val = Environment.GetEnvironmentVariable(key);
         return string.IsNullOrWhiteSpace(val) ? null : val.Trim();
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+                return v.Trim();
+        }
+        return null;
     }
 
     private static string GenerateMachineId()

@@ -4,7 +4,11 @@
 > **Branch audited:** `agentAttendance` (filesystem-verified).  
 > **Last updated:** 2026-11-12  
 > **Scope:** Multi-angle browser enrollment → server embedding generation → DeviceAuth biometric package + ONNX model download → local storage → local recognition engine ready.  
-> **Out of scope (future):** clock-in/out, breaks, attendance state machine, attendance dashboards/policies/reporting, continuous presence monitoring, automatic clock-out. Liveness/anti-spoofing is documented only as a future security extension.
+> **Out of scope (future):** clock-in/out, breaks, attendance state machine, attendance dashboards/policies/reporting, continuous presence monitoring, automatic clock-out.
+>
+> **Windows soft-locker / first-local / PAD / Credential Provider roadmap:** see
+> [`face-verify-locker-architecture.md`](face-verify-locker-architecture.md). Soft-lock is **not**
+> Windows authentication. Liveness is an active RGB challenge (limited); CP remains design-only.
 >
 > **Shipped so far:** migrations **068**/**069**; JWT enrollment + **retry** + profile sample list; DeviceAuth profile meta + model manifest (packages gated); web Enroll Face dialog with live Checking/Verified/Retry + retake-only; `/employees/face` gallery; **server/face_worker** (**Python** OpenCV face-count; embeddings deferred until AdaFace ONNX license). **Not yet:** embedding persistence, signed model packages, desktop sync/engine.
 

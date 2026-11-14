@@ -42,6 +42,7 @@ var rbacCatalog = []moduleSeed{
 		Submodules: []submodulesSeed{
 			{Key: "users", Name: "Employees", Route: "/employees"},
 			{Key: "users/face-enrollment", Name: "Face Enrollment", Route: "/employees/face"},
+			{Key: "users/face-verify", Name: "Face Verify", Route: "/face-verify"},
 			{Key: "departments", Name: "Departments", Route: "/departments"},
 			{Key: "roles", Name: "Roles", Route: "/roles"},
 			{Key: "kpis", Name: "KPIs & KRAs", Route: "/kpis"},

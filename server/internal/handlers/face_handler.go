@@ -6,26 +6,30 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/models"
+	"github.com/alpha-ai-tracker/server/internal/repository"
 	"github.com/alpha-ai-tracker/server/internal/services"
+	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 )
 
 type FaceHandler struct {
-	svc                *services.FaceService
-	workerAPIKey       string
-	modelsDir          string
-	adaFacePackagePath string
-	yuNetPackagePath   string
+	svc                   *services.FaceService
+	workerAPIKey          string
+	modelsDir             string
+	buffaloDetPackagePath string
+	buffaloRecPackagePath string
 }
 
-func NewFaceHandler(svc *services.FaceService, workerAPIKey, modelsDir, adaFacePackagePath, yuNetPackagePath string) *FaceHandler {
+func NewFaceHandler(svc *services.FaceService, workerAPIKey, modelsDir, buffaloDetPackagePath, buffaloRecPackagePath string) *FaceHandler {
 	return &FaceHandler{
-		svc:                svc,
-		workerAPIKey:       strings.TrimSpace(workerAPIKey),
-		modelsDir:          strings.TrimSpace(modelsDir),
-		adaFacePackagePath: strings.TrimSpace(adaFacePackagePath),
-		yuNetPackagePath:   strings.TrimSpace(yuNetPackagePath),
+		svc:                   svc,
+		workerAPIKey:          strings.TrimSpace(workerAPIKey),
+		modelsDir:             strings.TrimSpace(modelsDir),
+		buffaloDetPackagePath: strings.TrimSpace(buffaloDetPackagePath),
+		buffaloRecPackagePath: strings.TrimSpace(buffaloRecPackagePath),
 	}
 }
 
@@ -293,6 +297,7 @@ func (h *FaceHandler) SyncAck(c echo.Context) error {
 
 // VerifyEvent handles DeviceAuth POST /face-profiles/verify-event
 // Soft warning sink from the Windows --face-verify subprocess (does not gate tracking).
+// Prefer batch SyncVerifyEvents for the Face Verify module; this remains for compatibility.
 func (h *FaceHandler) VerifyEvent(c echo.Context) error {
 	empID, _ := c.Get("employee_id").(string)
 	var body struct {
@@ -301,48 +306,156 @@ func (h *FaceHandler) VerifyEvent(c echo.Context) error {
 		Threshold      *float64 `json:"threshold"`
 		ClientDeviceID string   `json:"clientDeviceId"`
 		Detail         string   `json:"detail"`
+		ClientEventID  string   `json:"clientEventId"`
+		Mode           string   `json:"mode"`
+		Trigger        string   `json:"trigger"`
+		PoseID         string   `json:"poseId"`
+		CreatedAt      string   `json:"createdAt"`
 	}
 	if err := c.Bind(&body); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
 	}
 	result := strings.ToLower(strings.TrimSpace(body.Result))
-	action := "face_verify_failed"
-	switch result {
-	case "verified", "ok", "success":
-		action = "face_verify_ok"
-		result = "verified"
-	case "no_profile", "none":
-		action = "face_verify_no_profile"
-		result = "no_profile"
-	case "model_error":
-		action = "face_verify_model_error"
-		result = "model_error"
-	case "camera_error":
-		action = "face_verify_camera_error"
-		result = "camera_error"
-	case "failed", "mismatch", "not_verified":
-		action = "face_verify_failed"
-		result = "failed"
-	default:
-		if result == "" {
-			return echo.NewHTTPError(http.StatusBadRequest, "result is required")
+	if result == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "result is required")
+	}
+	cid := strings.TrimSpace(body.ClientEventID)
+	if cid == "" {
+		cid = uuid.NewString()
+	}
+	createdAt := strings.TrimSpace(body.CreatedAt)
+	if createdAt == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	resp, err := h.svc.SyncVerifyEvents(c.Request().Context(), empID, []services.FaceVerifySyncItem{{
+		ClientEventID: cid,
+		MachineID:     body.ClientDeviceID,
+		Mode:          body.Mode,
+		Trigger:       body.Trigger,
+		PoseID:        body.PoseID,
+		Result:        result,
+		Score:         body.Score,
+		Threshold:     body.Threshold,
+		Detail:        body.Detail,
+		CreatedAt:     createdAt,
+	}})
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, map[string]any{"ok": true, "acceptedIds": resp.AcceptedIds})
+}
+
+// SyncVerifyEvents handles DeviceAuth POST /face-profiles/verify-events/sync
+func (h *FaceHandler) SyncVerifyEvents(c echo.Context) error {
+	empID, _ := c.Get("employee_id").(string)
+	var body struct {
+		Events []services.FaceVerifySyncItem `json:"events"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
+	}
+	resp, err := h.svc.SyncVerifyEvents(c.Request().Context(), empID, body.Events)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
+// ListMySamples handles DeviceAuth GET /face-profiles/me/samples
+func (h *FaceHandler) ListMySamples(c echo.Context) error {
+	empID, _ := c.Get("employee_id").(string)
+	items, err := h.svc.ListMySamplePackage(c.Request().Context(), empID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	if items == nil {
+		items = []models.FaceSamplePackageItem{}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"samples": items})
+}
+
+// GetMySampleImage handles DeviceAuth GET /face-profiles/me/samples/:sampleId/image
+func (h *FaceHandler) GetMySampleImage(c echo.Context) error {
+	empID, _ := c.Get("employee_id").(string)
+	sample, abs, err := h.svc.GetMySampleFile(c.Request().Context(), empID, c.Param("sampleId"))
+	if err != nil {
+		if strings.Contains(err.Error(), "forbidden") {
+			return echo.NewHTTPError(http.StatusForbidden, "sample belongs to another employee")
 		}
-		action = "face_verify_failed"
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	meta := map[string]any{
-		"result": result,
+	if sample == nil {
+		return echo.NewHTTPError(http.StatusNotFound, "sample not found")
 	}
-	if body.Score != nil {
-		meta["score"] = *body.Score
+	f, err := os.Open(abs)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "file missing")
 	}
-	if body.Threshold != nil {
-		meta["threshold"] = *body.Threshold
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "file missing")
 	}
-	if d := strings.TrimSpace(body.Detail); d != "" {
-		meta["detail"] = d
+	ct := sample.ContentType
+	if ct == "" {
+		ct = "image/jpeg"
 	}
-	_ = h.svc.InsertAudit(c.Request().Context(), empID, body.ClientDeviceID, action, meta)
-	return c.JSON(http.StatusOK, map[string]any{"ok": true})
+	c.Response().Header().Set(echo.HeaderContentType, ct)
+	http.ServeContent(c.Response(), c.Request(), st.Name(), st.ModTime(), f)
+	return nil
+}
+
+// ListVerifyEvents handles JWT GET /face-verify/events
+func (h *FaceHandler) ListVerifyEvents(c echo.Context) error {
+	page, _ := strconv.Atoi(c.QueryParam("page"))
+	perPage, _ := strconv.Atoi(c.QueryParam("perPage"))
+	f := repository.FaceVerifyListFilter{
+		EmployeeID: strings.TrimSpace(c.QueryParam("employeeId")),
+		Result:     strings.TrimSpace(c.QueryParam("result")),
+		Mode:       strings.TrimSpace(c.QueryParam("mode")),
+		Q:          strings.TrimSpace(c.QueryParam("q")),
+		Page:       page,
+		PerPage:    perPage,
+	}
+	if from := strings.TrimSpace(c.QueryParam("dateFrom")); from != "" {
+		if t, err := time.Parse("2006-01-02", from); err == nil {
+			f.DateFrom = &t
+		}
+	}
+	if to := strings.TrimSpace(c.QueryParam("dateTo")); to != "" {
+		if t, err := time.Parse("2006-01-02", to); err == nil {
+			end := t.Add(24 * time.Hour)
+			f.DateTo = &end
+		}
+	}
+	events, total, err := h.svc.ListVerifyEvents(c.Request().Context(), f)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 {
+		perPage = 30
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"events":  events,
+		"total":   total,
+		"page":    page,
+		"perPage": perPage,
+	})
+}
+
+// GetVerifyEvent handles JWT GET /face-verify/events/:id
+func (h *FaceHandler) GetVerifyEvent(c echo.Context) error {
+	ev, err := h.svc.GetVerifyEvent(c.Request().Context(), c.Param("id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+	if ev == nil {
+		return echo.NewHTTPError(http.StatusNotFound, "event not found")
+	}
+	return c.JSON(http.StatusOK, ev)
 }
 
 // ModelManifest handles DeviceAuth GET /face-models/manifest
@@ -351,38 +464,39 @@ func (h *FaceHandler) ModelManifest(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	adaReady := h.resolveAdaFacePackage() != ""
-	yunetReady := h.resolveYuNetPackage() != ""
+	detReady := h.resolveBuffaloDetPackage() != ""
+	recReady := h.resolveBuffaloRecPackage() != ""
 	return c.JSON(http.StatusOK, map[string]any{
-		"models":             list,
-		"preprocessVersion":  "face-preprocess-v1",
-		"packagesAvailable":  adaReady && yunetReady,
-		"yunetAvailable":     yunetReady,
-		"adafaceAvailable":   adaReady,
-		"licenseGatePending": !adaReady,
-		"yunetPackageId":     "yunet",
-		"adafacePackageId":   "adaface-ir50",
-		"modelsDir":          h.modelsDir,
+		"models":               list,
+		"preprocessVersion":    "face-preprocess-v2-buffalo-l",
+		"packagesAvailable":    detReady && recReady,
+		"buffaloDetAvailable":  detReady,
+		"buffaloRecAvailable":  recReady,
+		"licenseGatePending":   !recReady,
+		"buffaloDetPackageId":  "buffalo-l-det",
+		"buffaloRecPackageId":  "buffalo-l-rec",
+		"modelId":              "buffalo-l-w600k-r50",
+		"modelsDir":            h.modelsDir,
 	})
 }
 
 // DownloadModelPackage handles DeviceAuth GET /face-models/packages/:packageId
-// Serves ONNX from face_worker/models (YuNet + AdaFace). Clients cache under LocalAppData.
+// Serves buffalo_l ONNX from face_worker/models. Clients cache under LocalAppData.
 func (h *FaceHandler) DownloadModelPackage(c echo.Context) error {
 	id := strings.TrimSpace(c.Param("packageId"))
 	var path, filename string
 	switch strings.ToLower(id) {
-	case "yunet", "face_detection_yunet_2023mar", "face_detection_yunet_2023mar.onnx":
-		path = h.resolveYuNetPackage()
-		filename = "face_detection_yunet_2023mar.onnx"
+	case "buffalo-l-det", "det_10g", "det_10g.onnx", "scrfd":
+		path = h.resolveBuffaloDetPackage()
+		filename = "det_10g.onnx"
 		if path == "" {
-			return echo.NewHTTPError(http.StatusNotFound, "YuNet ONNX missing on API (face_worker/models or FACE_YUNET_ONNX)")
+			return echo.NewHTTPError(http.StatusNotFound, "buffalo_l det_10g missing on API (face_worker/models or FACE_BUFFALO_DET_ONNX)")
 		}
-	case "adaface-ir50", "adaface_ir50_webface4m.onnx", "adaface":
-		path = h.resolveAdaFacePackage()
-		filename = "adaface_ir50_webface4m.onnx"
+	case "buffalo-l-rec", "w600k_r50", "w600k_r50.onnx", "buffalo-l":
+		path = h.resolveBuffaloRecPackage()
+		filename = "w600k_r50.onnx"
 		if path == "" {
-			return echo.NewHTTPError(http.StatusNotFound, "AdaFace ONNX not configured on API (FACE_ADAFACE_ONNX)")
+			return echo.NewHTTPError(http.StatusNotFound, "buffalo_l w600k_r50 missing on API (FACE_BUFFALO_REC_ONNX)")
 		}
 	default:
 		return echo.NewHTTPError(http.StatusNotFound, "unknown face model package")
@@ -439,12 +553,12 @@ func (h *FaceHandler) resolvePackageFile(explicit string, minSize int64, names .
 	return ""
 }
 
-func (h *FaceHandler) resolveAdaFacePackage() string {
-	return h.resolvePackageFile(h.adaFacePackagePath, 1_000_000, "adaface_ir50_webface4m.onnx")
+func (h *FaceHandler) resolveBuffaloDetPackage() string {
+	return h.resolvePackageFile(h.buffaloDetPackagePath, 100_000, "det_10g.onnx")
 }
 
-func (h *FaceHandler) resolveYuNetPackage() string {
-	return h.resolvePackageFile(h.yuNetPackagePath, 100_000, "face_detection_yunet_2023mar.onnx")
+func (h *FaceHandler) resolveBuffaloRecPackage() string {
+	return h.resolvePackageFile(h.buffaloRecPackagePath, 1_000_000, "w600k_r50.onnx")
 }
 
 // WorkerClaimJob POST /internal/face-worker/claim (optional recovery poll; push mode preferred)
@@ -599,7 +713,7 @@ func (h *FaceHandler) GetMyEmbeddings(c echo.Context) error {
 		"status":             profile.Status,
 		"preprocessVersion":  profile.PreprocessVersion,
 		"normalization":      "l2",
-		"packagesAvailable":  h.resolveAdaFacePackage() != "",
+		"packagesAvailable":  h.resolveBuffaloDetPackage() != "" && h.resolveBuffaloRecPackage() != "",
 	})
 }
 

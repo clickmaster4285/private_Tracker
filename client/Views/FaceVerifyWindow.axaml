@@ -33,48 +33,71 @@
                  MaxWidth="900"/>
     </StackPanel>
 
-    <Border Grid.Row="1"
-            Background="#111827"
-            CornerRadius="16"
-            ClipToBounds="True"
-            BorderBrush="#1F2937"
-            BorderThickness="1">
-      <Grid>
-        <Image Source="{Binding Preview}"
-               Stretch="Uniform"
-               HorizontalAlignment="Center"
-               VerticalAlignment="Center"/>
-        <StackPanel VerticalAlignment="Center"
-                    HorizontalAlignment="Center"
-                    IsVisible="{Binding ShowProgress}"
-                    Spacing="12">
-          <TextBlock Text="{Binding ProgressText}"
-                     HorizontalAlignment="Center"
-                     FontSize="16"
-                     Opacity="0.9"/>
-          <ProgressBar Value="{Binding ProgressValue}"
-                       Minimum="0" Maximum="1"
-                       Width="360" Height="8"/>
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto">
+      <Border Grid.Column="0"
+              Background="#111827"
+              CornerRadius="16"
+              ClipToBounds="True"
+              BorderBrush="#1F2937"
+              BorderThickness="1">
+        <Grid>
+          <Image Source="{Binding Preview}"
+                 Stretch="Uniform"
+                 HorizontalAlignment="Center"
+                 VerticalAlignment="Center"/>
+          <StackPanel VerticalAlignment="Center"
+                      HorizontalAlignment="Center"
+                      IsVisible="{Binding ShowProgress}"
+                      Spacing="12">
+            <TextBlock Text="{Binding ProgressText}"
+                       HorizontalAlignment="Center"
+                       FontSize="16"
+                       Opacity="0.9"/>
+            <ProgressBar Value="{Binding ProgressValue}"
+                         Minimum="0" Maximum="1"
+                         Width="360" Height="8"/>
+          </StackPanel>
+          <StackPanel VerticalAlignment="Center"
+                      HorizontalAlignment="Center"
+                      IsVisible="{Binding WaitingForHr}"
+                      Spacing="16"
+                      MaxWidth="720"
+                      Margin="32">
+            <TextBlock Text="Meet HR to enroll your face verification"
+                       FontSize="28"
+                       FontWeight="SemiBold"
+                       TextAlignment="Center"
+                       TextWrapping="Wrap"/>
+            <TextBlock Text="Your apps and activity keep syncing while this window stays open."
+                       FontSize="15"
+                       Opacity="0.75"
+                       TextAlignment="Center"
+                       TextWrapping="Wrap"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Border Grid.Column="1"
+              Margin="16,0,0,0"
+              Width="220"
+              Background="#111827"
+              CornerRadius="16"
+              ClipToBounds="True"
+              BorderBrush="#1F2937"
+              BorderThickness="1"
+              IsVisible="{Binding ShowReference}">
+        <StackPanel Margin="12" Spacing="8">
+          <TextBlock Text="Reference"
+                     FontSize="12"
+                     Opacity="0.7"
+                     HorizontalAlignment="Center"/>
+          <Image Source="{Binding ReferenceImage}"
+                 Stretch="Uniform"
+                 MaxHeight="280"
+                 HorizontalAlignment="Center"/>
         </StackPanel>
-        <StackPanel VerticalAlignment="Center"
-                    HorizontalAlignment="Center"
-                    IsVisible="{Binding WaitingForHr}"
-                    Spacing="16"
-                    MaxWidth="720"
-                    Margin="32">
-          <TextBlock Text="Meet HR to enroll your face verification"
-                     FontSize="28"
-                     FontWeight="SemiBold"
-                     TextAlignment="Center"
-                     TextWrapping="Wrap"/>
-          <TextBlock Text="Your apps and activity keep syncing while this window stays open."
-                     FontSize="15"
-                     Opacity="0.75"
-                     TextAlignment="Center"
-                     TextWrapping="Wrap"/>
-        </StackPanel>
-      </Grid>
-    </Border>
+      </Border>
+    </Grid>
 
     <StackPanel Grid.Row="2"
                 Orientation="Horizontal"

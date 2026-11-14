@@ -1,11 +1,13 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-13 (face models dir + DeviceAuth YuNet/AdaFace packages)
+> **Last audited:** 2026-11-13 (face verify events + DeviceAuth sample package)
 > **Changelog:**
+> - 2026-11-13: **Face verify activity.** Migration **070** `face_verify_events`; DeviceAuth
+>   `GET /face-profiles/me/samples` + image; `POST /face-profiles/verify-events/sync`;
+>   JWT `GET /face-verify/events`; RBAC `users/face-verify`.
 > - 2026-11-13: **Face models hub.** `face_worker/models/` shared by worker `ensure_models()`
 >   (YuNet auto-download; AdaFace disk / `FACE_ADAFACE_DOWNLOAD_URL`) and DeviceAuth
 >   `GET /face-models/packages/yunet|adaface-ir50`. Env `FACE_MODELS_DIR`, `FACE_YUNET_ONNX`.
-> **Changelog:**
 >
 > - 2026-11-12: **face_worker is Python** under `server/face_worker` (`worker.py`, OpenCV).
 >   Same internal claim/result/complete HTTP contract; not the Avalonia agent.

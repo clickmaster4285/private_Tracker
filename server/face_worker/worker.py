@@ -5,9 +5,9 @@ Server-side face_worker (NOT the Avalonia employee agent).
 Runs an HTTP server (default :8010). The Go API pushes new enrollment jobs:
   POST /v1/process  {"jobId":"..."}  header X-Face-Worker-Key
 
-Worker leases the job, validates each sample (YuNet), and when FACE_ADAFACE_ONNX
-is configured runs AdaFace IR-50 → POST embeddings (AES-GCM stored by API).
-Without the ONNX file, jobs still complete as succeeded/embeddings_deferred.
+Worker leases the job, validates each sample (SCRFD det_10g), and when
+buffalo_l w600k_r50 is configured runs recognition → POST embeddings.
+Without the recognition ONNX, jobs still complete as succeeded/embeddings_deferred.
 """
 
 from __future__ import annotations
@@ -18,31 +18,38 @@ import socket
 import sys
 import threading
 import urllib.request
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import cv2
 import requests
 
 from embed import (
-    AdaFaceEmbedder,
+    DET_FILENAME,
+    REC_FILENAME,
+    BuffaloEmbedder,
+    ScrfdDetector,
+    apply_pose_to_front_gate,
+    check_face_distance,
     detect_faces_detail,
+    distance_frac_bounds,
     embed_single_face,
+    ort_thread_count,
+    resolve_det_path,
+    resolve_rec_path,
+    try_load_detector,
     try_load_embedder,
 )
 
-YUNET_URL = (
-    "https://github.com/opencv/opencv_zoo/raw/main/models/"
-    "face_detection_yunet/face_detection_yunet_2023mar.onnx"
+# InsightFace buffalo_l pack (det_10g + w600k_r50). Override with FACE_BUFFALO_ZIP_URL.
+DEFAULT_BUFFALO_ZIP_URL = (
+    "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"
 )
-YUNET_FILENAME = "face_detection_yunet_2023mar.onnx"
-ADAFACE_FILENAME = "adaface_ir50_webface4m.onnx"
-YUNET_SCORE_THRESHOLD = float(os.environ.get("FACE_WORKER_YUNET_SCORE", "0.5") or "0.5")
-YUNET_NMS_THRESHOLD = 0.3
-YUNET_TOP_K = 5000
-YUNET_MIN_FACE_PX = int(os.environ.get("FACE_WORKER_MIN_FACE_PX", "60") or "60")
+
+DET_SCORE_THRESHOLD = float(os.environ.get("FACE_WORKER_DET_SCORE", "0.5") or "0.5")
+MIN_FACE_PX = int(os.environ.get("FACE_WORKER_MIN_FACE_PX", "60") or "60")
 
 WORKER_DIR = Path(__file__).resolve().parent
 MODELS_DIR = WORKER_DIR / "models"
@@ -53,8 +60,8 @@ SERVER_DOTENV = SERVER_ROOT / ".env"
 API_BASE = ""
 API_KEY = ""
 WORKER_ID = ""
-DETECTOR: cv2.FaceDetectorYN | None = None
-EMBEDDER: AdaFaceEmbedder | None = None
+DETECTOR: ScrfdDetector | None = None
+EMBEDDER: BuffaloEmbedder | None = None
 HTTP: requests.Session | None = None
 PROCESS_LOCK = threading.Lock()
 
@@ -86,7 +93,6 @@ def env(name: str, default: str = "") -> str:
 
 
 def resolve_path(raw: str) -> Path | None:
-    """Resolve a path from server/.env relative to server/ when not absolute."""
     value = (raw or "").strip()
     if not value:
         return None
@@ -109,7 +115,6 @@ def resolve_server_url() -> str:
 
 
 def resolve_tls_verify() -> bool | str:
-    """Trust mkcert/local CA when TLS_CA_FILE or REQUESTS_CA_BUNDLE points at a PEM."""
     for key in ("TLS_CA_FILE", "REQUESTS_CA_BUNDLE"):
         found = resolve_path(env(key))
         if found is not None:
@@ -118,7 +123,6 @@ def resolve_tls_verify() -> bool | str:
 
 
 def resolve_listen() -> tuple[str, int]:
-    """FACE_WORKER_LISTEN=:8010 or 0.0.0.0:8010 → (host, port)."""
     raw = env("FACE_WORKER_LISTEN", ":8010") or ":8010"
     if raw.startswith(":"):
         return "0.0.0.0", int(raw[1:] or "8010")
@@ -147,74 +151,134 @@ def _download_to(path: Path, url: str, label: str) -> None:
                 pass
 
 
-def ensure_yunet_model() -> Path:
-    """Ensure YuNet ONNX under models/. Auto-download from OpenCV zoo if missing."""
+def _det_ready() -> bool:
+    p = resolve_det_path()
+    return p is not None and p.is_file() and p.stat().st_size > 100_000
+
+
+def _rec_ready() -> bool:
+    p = resolve_rec_path()
+    return p is not None and p.is_file() and p.stat().st_size > 1_000_000
+
+
+def _extract_from_zip(zip_path: Path, member_names: list[str], dest_dir: Path) -> list[str]:
+    """Copy named members (basename match) out of a zip into dest_dir. Returns extracted names."""
+    extracted: list[str] = []
+    wanted = {n.lower(): n for n in member_names}
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            base = Path(info.filename).name.lower()
+            if base not in wanted:
+                continue
+            out_name = wanted[base]
+            out_path = dest_dir / out_name
+            print(f"[FaceWorker] extracting {info.filename} → {out_path.name}", flush=True)
+            with zf.open(info) as src, open(out_path, "wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+            extracted.append(out_name)
+    return extracted
+
+
+def ensure_buffalo_pack() -> None:
+    """If det/rec ONNX missing, download InsightFace buffalo_l.zip and extract them."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    path = MODELS_DIR / YUNET_FILENAME
-    if path.exists() and path.stat().st_size > 100_000:
-        return path
-    url = env("FACE_YUNET_DOWNLOAD_URL") or YUNET_URL
-    _download_to(path, url, "YuNet")
-    if not path.exists() or path.stat().st_size <= 100_000:
-        raise RuntimeError(f"YuNet download failed or file too small: {path}")
-    return path
+    need_det = not _det_ready()
+    need_rec = not _rec_ready()
+    if not need_det and not need_rec:
+        return
+
+    # Optional single-file URLs first (air-gapped / mirror).
+    if need_det:
+        det_url = env("FACE_BUFFALO_DET_DOWNLOAD_URL")
+        if det_url:
+            dest = MODELS_DIR / DET_FILENAME
+            _download_to(dest, det_url, "buffalo_l det_10g")
+            need_det = not (dest.exists() and dest.stat().st_size > 100_000)
+    if need_rec:
+        rec_url = env("FACE_BUFFALO_REC_DOWNLOAD_URL")
+        if rec_url:
+            dest = MODELS_DIR / REC_FILENAME
+            _download_to(dest, rec_url, "buffalo_l w600k_r50")
+            need_rec = not (dest.exists() and dest.stat().st_size > 1_000_000)
+
+    if not need_det and not need_rec:
+        return
+
+    zip_url = env("FACE_BUFFALO_ZIP_URL") or DEFAULT_BUFFALO_ZIP_URL
+    zip_path = MODELS_DIR / "buffalo_l.zip"
+    print(
+        f"[FaceWorker] buffalo_l models missing (det={'need' if need_det else 'ok'}, "
+        f"rec={'need' if need_rec else 'ok'}) — downloading pack…",
+        flush=True,
+    )
+    _download_to(zip_path, zip_url, "buffalo_l.zip")
+    try:
+        want = []
+        if need_det:
+            want.append(DET_FILENAME)
+        if need_rec:
+            want.append(REC_FILENAME)
+        got = _extract_from_zip(zip_path, want, MODELS_DIR)
+        if need_det and DET_FILENAME not in got:
+            raise RuntimeError(f"{DET_FILENAME} not found inside buffalo_l.zip")
+        if need_rec and REC_FILENAME not in got:
+            raise RuntimeError(f"{REC_FILENAME} not found inside buffalo_l.zip")
+    finally:
+        try:
+            if zip_path.exists():
+                zip_path.unlink()
+        except OSError:
+            pass
 
 
-def ensure_adaface_model() -> Path | None:
-    """Ensure AdaFace ONNX under models/ when possible.
-
-    Prefer existing FACE_ADAFACE_ONNX / models/adaface_*.onnx.
-    If missing and FACE_ADAFACE_DOWNLOAD_URL is set, download into models/.
-    Returns path when present; None when still missing (embeddings_deferred).
-    """
+def ensure_det_model() -> Path:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    from embed import resolve_onnx_path  # local import after dotenv load
-
-    existing = resolve_onnx_path()
+    existing = resolve_det_path()
     if existing is not None:
         return existing
+    dest = MODELS_DIR / DET_FILENAME
+    if dest.is_file() and dest.stat().st_size > 100_000:
+        return dest
+    raise RuntimeError(
+        f"SCRFD det_10g missing after auto-download — place {DET_FILENAME} under {MODELS_DIR} "
+        "or set FACE_BUFFALO_DET_ONNX / FACE_BUFFALO_ZIP_URL / FACE_BUFFALO_DET_DOWNLOAD_URL"
+    )
 
-    url = env("FACE_ADAFACE_DOWNLOAD_URL")
-    if not url:
-        return None
 
-    dest = MODELS_DIR / ADAFACE_FILENAME
-    _download_to(dest, url, "AdaFace")
-    if dest.exists() and dest.stat().st_size > 1_000_000:
+def ensure_rec_model() -> Path | None:
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    existing = resolve_rec_path()
+    if existing is not None:
+        return existing
+    dest = MODELS_DIR / REC_FILENAME
+    if dest.is_file() and dest.stat().st_size > 1_000_000:
         return dest
     return None
 
 
 def ensure_models() -> Path:
-    """Startup: check models/ for YuNet (+ AdaFace); download missing when URLs allow."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    yunet = ensure_yunet_model()
-    ada = ensure_adaface_model()
+    ensure_buffalo_pack()
+    det = ensure_det_model()
+    rec = ensure_rec_model()
     print(f"[FaceWorker] models dir={MODELS_DIR}", flush=True)
-    print(f"[FaceWorker]   YuNet   = {yunet.name} ({yunet.stat().st_size} bytes)", flush=True)
-    if ada is not None:
-        print(f"[FaceWorker]   AdaFace = {ada.name} ({ada.stat().st_size} bytes)", flush=True)
+    print(f"[FaceWorker]   det_10g = {det.name} ({det.stat().st_size} bytes)", flush=True)
+    if rec is not None:
+        print(f"[FaceWorker]   w600k_r50 = {rec.name} ({rec.stat().st_size} bytes)", flush=True)
     else:
         print(
-            "[FaceWorker]   AdaFace = MISSING — place "
-            f"{ADAFACE_FILENAME} under models/ or set FACE_ADAFACE_ONNX / "
-            "FACE_ADAFACE_DOWNLOAD_URL",
+            f"[FaceWorker]   w600k_r50 = MISSING — place {REC_FILENAME} under models/ or set "
+            "FACE_BUFFALO_ZIP_URL / FACE_BUFFALO_REC_DOWNLOAD_URL",
             flush=True,
         )
-    return yunet
-
-
-def create_yunet_detector(model_path: Path) -> cv2.FaceDetectorYN:
-    if not hasattr(cv2, "FaceDetectorYN_create"):
-        raise RuntimeError("OpenCV FaceDetectorYN missing — upgrade opencv-python-headless")
-    return cv2.FaceDetectorYN_create(
-        str(model_path),
-        "",
-        (320, 320),
-        YUNET_SCORE_THRESHOLD,
-        YUNET_NMS_THRESHOLD,
-        YUNET_TOP_K,
-    )
+    print(f"[FaceWorker]   ORT threads = {ort_thread_count()}", flush=True)
+    return det
 
 
 def report(job_id: str, sample_id: str, status: str, reject_reason: str, face_count: int) -> None:
@@ -264,7 +328,7 @@ def process_job(job_id: str) -> dict[str, Any]:
 
         print(
             f"[FaceWorker] processing job {job_id} samples={len(samples)} "
-            f"adaface={'on' if EMBEDDER else 'off'}",
+            f"buffalo={'on' if EMBEDDER else 'off'}",
             flush=True,
         )
 
@@ -293,7 +357,7 @@ def process_job(job_id: str) -> dict[str, Any]:
                 timeout=120,
             )
             img_resp.raise_for_status()
-            bgr, faces = detect_faces_detail(DETECTOR, img_resp.content, YUNET_MIN_FACE_PX)
+            bgr, faces = detect_faces_detail(DETECTOR, img_resp.content, MIN_FACE_PX)
             face_count = len(faces)
             print(
                 f"[FaceWorker] sample {sample_id} pose={pose_id} faces={face_count}",
@@ -310,6 +374,23 @@ def process_job(job_id: str) -> dict[str, Any]:
                 rejected += 1
                 reject_notes.append(f"{label}: multiple faces ({face_count})")
                 report(job_id, sample_id, "rejected", "multiple_faces", face_count)
+                continue
+
+            # Org distance band (~50–70 cm) via face-height / frame-height.
+            dist_reason = check_face_distance(faces[0], bgr.shape[0])
+            if dist_reason is not None:
+                rejected += 1
+                note = (
+                    f"{label}: too far — sit 50–70 cm from camera"
+                    if dist_reason == "too_far"
+                    else f"{label}: too close — sit 50–70 cm from camera"
+                )
+                reject_notes.append(note)
+                report(job_id, sample_id, "rejected", dist_reason, face_count)
+                print(
+                    f"[FaceWorker] sample {sample_id} pose={pose_id} rejected {dist_reason}",
+                    flush=True,
+                )
                 continue
 
             if EMBEDDER is not None:
@@ -358,7 +439,7 @@ def process_job(job_id: str) -> dict[str, Any]:
                 "succeeded",
                 "embeddings_deferred",
                 "All images passed single-face checks. "
-                "Place AdaFace ONNX at FACE_ADAFACE_ONNX (or models/adaface_ir50_webface4m.onnx) "
+                f"Place {REC_FILENAME} under models/ (or FACE_BUFFALO_REC_ONNX) "
                 "and restart face_worker to persist embeddings.",
             )
             print(f"[FaceWorker] job {job_id} face-check OK; embeddings_deferred", flush=True)
@@ -375,6 +456,42 @@ def process_job(job_id: str) -> dict[str, Any]:
             complete(job_id, "failed", "no_embeddings", "No embeddings produced")
             return {"ok": False, "error": "no_embeddings", "jobId": job_id}
 
+        kept_items, pose_rejected = apply_pose_to_front_gate(embedding_items)
+        if pose_rejected:
+            for bad in pose_rejected:
+                sid = bad.get("sampleId") or ""
+                pose = bad.get("poseId") or ""
+                cos = float(bad.get("cosineToFront") or 0.0)
+                label = pose or sid
+                rejected += 1
+                validated = max(0, validated - 1)
+                reject_notes.append(f"{label}: pose too extreme (cos={cos:.3f} vs front)")
+                if sid:
+                    report(job_id, sid, "rejected", "pose_too_extreme", 1)
+                print(
+                    f"[FaceWorker] sample {sid} pose={pose} rejected pose_too_extreme "
+                    f"cosine_to_front={cos:.3f}",
+                    flush=True,
+                )
+            msg = (
+                f"Rejected {rejected} image(s): {'; '.join(reject_notes)}. "
+                "Retake those angles closer to a mild turn (not a full profile)."
+            )
+            complete(job_id, "needs_more_samples", "sample_rejected", msg)
+            print(
+                f"[FaceWorker] job {job_id} needs_more_samples "
+                f"(pose gate rejected {len(pose_rejected)}, kept {len(kept_items)})",
+                flush=True,
+            )
+            return {
+                "ok": True,
+                "jobId": job_id,
+                "status": "needs_more_samples",
+                "validated": len(kept_items),
+                "rejected": rejected,
+            }
+
+        embedding_items = kept_items
         meta = EMBEDDER.meta
         submit_embeddings(
             job_id,
@@ -436,8 +553,10 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "service": "face_worker",
-                    "adaface": EMBEDDER is not None,
+                    "buffalo": EMBEDDER is not None,
+                    "detector": DETECTOR is not None,
                     "modelVersion": EMBEDDER.meta["modelVersion"] if EMBEDDER else "",
+                    "ortThreads": ort_thread_count(),
                 },
             )
             return
@@ -492,16 +611,18 @@ def main() -> int:
         return 1
 
     try:
-        model_path = ensure_models()
-        DETECTOR = create_yunet_detector(model_path)
+        ensure_models()
+        DETECTOR = try_load_detector(DET_SCORE_THRESHOLD)
+        if DETECTOR is None:
+            raise RuntimeError("SCRFD detector failed to load")
     except Exception as ex:  # noqa: BLE001
-        print(f"Failed to init YuNet / models: {ex}", file=sys.stderr)
+        print(f"Failed to init buffalo_l detector / models: {ex}", file=sys.stderr)
         return 1
 
     try:
         EMBEDDER = try_load_embedder()
     except Exception as ex:  # noqa: BLE001
-        print(f"[FaceWorker] AdaFace init failed (continuing face-check only): {ex}", flush=True)
+        print(f"[FaceWorker] buffalo_l recognition init failed (face-check only): {ex}", flush=True)
         EMBEDDER = None
 
     HTTP = requests.Session()
@@ -516,20 +637,23 @@ def main() -> int:
         }
     )
 
+    dlo, dhi = distance_frac_bounds()
     print(
-        f"[FaceWorker] YuNet ready score>={YUNET_SCORE_THRESHOLD} minFacePx={YUNET_MIN_FACE_PX} model={model_path.name}",
+        f"[FaceWorker] SCRFD ready score>={DET_SCORE_THRESHOLD} minFacePx={MIN_FACE_PX} "
+        f"distanceFrac=[{dlo:.2f},{dhi:.2f}] (~50-70cm) "
+        f"model={DETECTOR.path.name} ortThreads={ort_thread_count()}",
         flush=True,
     )
     if EMBEDDER:
         print(
-            f"[FaceWorker] AdaFace ready dims={EMBEDDER.dims} "
+            f"[FaceWorker] buffalo_l ready dims={EMBEDDER.dims} "
             f"version={EMBEDDER.meta['modelVersion']} path={EMBEDDER.path.name}",
             flush=True,
         )
     else:
         print(
-            "[FaceWorker] AdaFace OFF — set FACE_ADAFACE_ONNX or place "
-            "models/adaface_ir50_webface4m.onnx (embeddings_deferred until then)",
+            f"[FaceWorker] buffalo_l recognition OFF — set FACE_BUFFALO_REC_ONNX or place "
+            f"{REC_FILENAME} (embeddings_deferred until then)",
             flush=True,
         )
     print(

@@ -34,6 +34,11 @@
 ## Parity harness (lab)
 
 Server enrollment embeddings are produced by **Python face_worker** (`server/face_worker`). The Avalonia
-agent will later run the **same ONNX graph** under .NET ONNX Runtime — keep a fixture harness that
-asserts Python vs .NET embeddings match within tolerance on a fixed image set. Pin SHA-256 of the
-approved ONNX file in `face_model_versions.package_sha256` before fleet distribution.
+agent runs the **same ONNX graph** under .NET ONNX Runtime with the same LMEDS align + RGB
+`(pixel/255-0.5)/0.5` scale.
+
+- Python: `server/face_worker/parity_check.py` (optional `--dotnet-json` / `--min-cosine 0.95`)
+- .NET: `client/client.Tests/FaceAlignParityTests.cs` (skips unless models + fixture exist;
+  set `FACE_PARITY=1` to fail hard when missing)
+
+Pin SHA-256 of the approved ONNX file in `face_model_versions.package_sha256` before fleet distribution.

@@ -99,3 +99,32 @@ type FaceEmbeddingTemplate struct {
 	FaceEmbeddingMeta
 	Vector []float32 `json:"vector"`
 }
+
+// FaceSamplePackageItem is DeviceAuth meta for one enrollment image to cache locally.
+type FaceSamplePackageItem struct {
+	SampleID    string `json:"sampleId"`
+	PoseID      string `json:"poseId"`
+	ContentType string `json:"contentType"`
+	ByteSize    int64  `json:"byteSize"`
+	ContentHash string `json:"contentHash"`
+	Width       int    `json:"width,omitempty"`
+	Height      int    `json:"height,omitempty"`
+}
+
+// FaceVerifyEvent is one client face-verify detection synced to the server.
+type FaceVerifyEvent struct {
+	ID              string    `json:"id"`
+	ClientEventID   string    `json:"clientEventId"`
+	EmployeeID      string    `json:"employeeId"`
+	EmployeeName    string    `json:"employeeName,omitempty"`
+	MachineID       string    `json:"machineId"`
+	Mode            string    `json:"mode"`
+	Trigger         string    `json:"trigger"`
+	PoseID          string    `json:"poseId,omitempty"`
+	Result          string    `json:"result"`
+	Score           *float64  `json:"score,omitempty"`
+	Threshold       *float64  `json:"threshold,omitempty"`
+	Detail          string    `json:"detail,omitempty"`
+	ClientCreatedAt time.Time `json:"clientCreatedAt"`
+	SyncedAt        time.Time `json:"syncedAt"`
+}

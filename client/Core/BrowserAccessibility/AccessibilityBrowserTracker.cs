@@ -136,7 +136,7 @@ public sealed class AccessibilityBrowserTracker : BackgroundService
         {
             try
             {
-                if (UpdatePriority.ShouldYield)
+                if (UpdatePriority.ShouldYield || FaceVerifyYield.ShouldYield)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
                     continue;

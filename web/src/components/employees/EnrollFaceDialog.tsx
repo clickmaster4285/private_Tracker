@@ -48,6 +48,8 @@ function rejectLabel(sample: FaceEnrollmentSample): string {
     return `multiple faces (${sample.faceCount ?? '?'})`;
   }
   if (sample.rejectReason === 'no_face') return 'no face detected';
+  if (sample.rejectReason === 'too_far') return 'too far — sit 50–70 cm from camera';
+  if (sample.rejectReason === 'too_close') return 'too close — sit 50–70 cm from camera';
   return sample.rejectReason || 'rejected';
 }
 
@@ -372,7 +374,8 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
               : retryMode
                 ? 'Retake only the red Retry angles, then upload replacements. Verified images stay.'
                 : <>
-                    Follow the pose cue, then{' '}
+                    Sit <span className="text-foreground font-medium">50–70 cm</span> from the
+                    camera. Follow the pose cue, then{' '}
                     <span className="text-foreground font-medium">Capture</span>. Upload after{' '}
                     {FACE_ENROLL_MIN_SAMPLES}+ angles (all {FACE_POSES.length} recommended).
                   </>}

@@ -418,7 +418,7 @@ public partial class MainViewModel : ViewModelBase
 
             _logCollector.SetEmployeeInfo(info.EmployeeId, info.Name, info.Token ?? string.Empty);
             _logCollector.StartTracking();
-            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info);
+            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info, trigger: "login");
 
             // Session restored — wake sync after login jitter so reboot storms of 1000
             // agents do not align on the same second.
@@ -906,7 +906,7 @@ public partial class MainViewModel : ViewModelBase
 
             _logCollector.SetEmployeeInfo(emp.EmployeeId, emp.Name, loginResp.Token ?? string.Empty);
             _logCollector.StartTracking();
-            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, employeeInfo);
+            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, employeeInfo, trigger: "login");
 
             // Login succeeded — drain after a random jitter so 1000 agents do not storm
             // the API in the same second (ALPHA_SYNC_LOGIN_JITTER_SEC).
