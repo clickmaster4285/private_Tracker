@@ -178,7 +178,7 @@ public sealed class PolicyPullWorker : BackgroundService
             return;
         }
 
-        var reboot = LoginReboot.TrySchedule(delaySeconds: 20);
+        var reboot = LoginReboot.TrySchedule(delaySeconds: _cfg.LoginRebootDelaySec);
         await _store.AuditAsync(
             reboot.Ok ? "login_reboot_queued" : "login_reboot_failed",
             reboot.Detail,

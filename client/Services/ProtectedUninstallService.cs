@@ -836,8 +836,10 @@ public sealed class ProtectedUninstallService
     {
         try
         {
-            using var http = client.Core.TlsCertificateTrust.CreateHttpClient(
-                TimeSpan.FromSeconds(HttpVerifyTimeoutSec));
+            using var http = new HttpClient
+            {
+                Timeout = TimeSpan.FromSeconds(HttpVerifyTimeoutSec),
+            };
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
             linked.CancelAfter(TimeSpan.FromSeconds(HttpVerifyTimeoutSec));
 

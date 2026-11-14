@@ -1,7 +1,11 @@
 # Client Architecture — Alpha AI Tracker Desktop App
 
-> **Last audited:** 2026-11-14 (face verify + antivirus / file-transfer merge)
+> **Last audited:** 2026-11-14 (plain HTTP only — TLS removed)
 > **Changelog:**
+> - 2026-11-14: **TLS/HTTPS removed.** Deleted `TlsCertificateTrust`; HttpClient/WebSocket
+>   use default handlers. DlpService no longer applies fleet CA callbacks. Installer no
+>   longer bakes/`InstallOrgTlsCa` for `rootCA.pem`. `ALPHA_SERVER_URL` is `http://…`.
+>   **VERSION 2.3.1**. Re-bake `config.enc` + rebuild Windows installer.
 > - 2026-11-13: **File Download / File Upload DLP rules (DlpService).** `FileTransferEnforcer`
 >   (HKLM `SOFTWARE\Policies\{Google\Chrome, Microsoft\Edge, BraveSoftware\Brave, Chromium}`:
 >   `DownloadRestrictions=3`, `AllowFileSelectionDialogs=0`; drift-only; Clear removes only our exact

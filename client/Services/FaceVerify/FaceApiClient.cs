@@ -105,12 +105,11 @@ public sealed class FaceApiClient : IDisposable
     public FaceApiClient(string apiBase, string deviceToken)
     {
         _apiBase = apiBase.TrimEnd('/');
-        // apiBase may be https://host:8000 or …/api/v1
+        // apiBase may be http://host:8000 or …/api/v1
         if (_apiBase.EndsWith("/api/v1", StringComparison.OrdinalIgnoreCase))
             _apiBase = _apiBase[..^"/api/v1".Length];
 
-        // Same fleet TLS policy as login/sync (OS trust + ALPHA_TLS_CA / bundled rootCA).
-        _http = client.Core.TlsCertificateTrust.CreateHttpClient(TimeSpan.FromMinutes(30));
+        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
         _http.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Device", deviceToken);
     }

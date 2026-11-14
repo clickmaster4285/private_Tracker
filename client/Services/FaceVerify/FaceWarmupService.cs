@@ -24,6 +24,8 @@ public sealed class FaceWarmupService
     {
         if (!OperatingSystem.IsWindows()) return;
         if (!_config.FaceVerifyEnabled) return;
+        // Soft-lock owns CPU/GPU — do not compete with verify for model downloads.
+        if (client.Core.FaceVerifyYield.ShouldYield) return;
         if (string.IsNullOrWhiteSpace(_config.ServerUrl)) return;
         var token = !string.IsNullOrWhiteSpace(info.DeviceToken) ? info.DeviceToken! : info.Token;
         if (string.IsNullOrWhiteSpace(token)) return;
@@ -35,6 +37,7 @@ public sealed class FaceWarmupService
         {
             try
             {
+                if (client.Core.FaceVerifyYield.ShouldYield) return;
                 using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
                 await RunWarmupAsync(config, info, token!, logger, cts.Token);
             }

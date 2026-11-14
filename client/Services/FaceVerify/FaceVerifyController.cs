@@ -17,7 +17,7 @@ public sealed class FaceVerifyController : IDisposable
     private int _poseIndex;
     private int _poseFailStreak;
     private bool _frontVerifiedThisRun;
-    private double _effectiveThreshold = 0.85;
+    private double _effectiveThreshold = 0.8;
     private IReadOnlyList<LocalFaceSample> _samples = Array.Empty<LocalFaceSample>();
     private bool _allowClose;
     private bool _running;
@@ -108,10 +108,8 @@ public sealed class FaceVerifyController : IDisposable
                 StatusDetail = "Sit 50–70 cm away — keep your face centered.";
             }
 
-            var baseTh = Math.Max(0.85, _session.MatchThreshold);
-            _effectiveThreshold = _mode == "first"
-                ? Math.Min(0.95, baseTh + 0.05)
-                : baseTh;
+            // Same floor for first-local and simple verify (no first-mode +0.05 bump).
+            _effectiveThreshold = Math.Max(0.8, _session.MatchThreshold);
 
             StatusDetail += $" (threshold {_effectiveThreshold:0.00})";
             UpdateReferencePath();

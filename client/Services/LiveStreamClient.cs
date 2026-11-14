@@ -137,7 +137,6 @@ public sealed class LiveStreamClient : BackgroundService
         else
             ws.Options.SetRequestHeader("Authorization", $"Bearer {employee.Token}");
         ClientIdentityHeaders.Apply(ws.Options);
-        client.Core.TlsCertificateTrust.Apply(ws.Options);
 
         _logger.LogInformation("LiveStreamClient connecting to {Url}", wsUrl);
         await ws.ConnectAsync(new Uri(wsUrl), ct);

@@ -15,7 +15,7 @@ public sealed class FaceVerifySession
     public string DeviceToken { get; set; } = "";
     public string ApiBase { get; set; } = "";
     public string MachineId { get; set; } = "";
-    public double MatchThreshold { get; set; } = 0.85;
+    public double MatchThreshold { get; set; } = 0.8;
     /// <summary>boot | unlock | login — recorded on verify events.</summary>
     public string Trigger { get; set; } = "boot";
     /// <summary>Optional override URL for recognition ONNX if API package route is unavailable.</summary>

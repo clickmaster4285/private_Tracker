@@ -128,10 +128,15 @@ internal static class AppAllowEnforcer
         if (!OperatingSystem.IsWindows())
             return new Result(false, false, "unsupported_os");
 
-        Interlocked.Increment(ref _generation);
         lock (Gate)
         {
-            // Always wipe the local AppLocker store — fingerprint short-circuit left Exe
+            // Already cleared in this process — skip PowerShell / AppID restart.
+            if (!_policyMaybePresent && _lastFingerprint == "")
+                return new Result(false, true, "already_clear");
+
+            Interlocked.Increment(ref _generation);
+
+            // Wipe the local AppLocker store — fingerprint short-circuit left Exe
             // Enforce in AppID memory after protected-uninstall when pipe unlock raced.
             TryDeleteLocalAppLockerStore();
 

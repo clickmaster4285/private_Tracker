@@ -1,7 +1,10 @@
 # Web Architecture — Alpha AI Tracker Dashboard
 
-> **Last audited:** 2026-11-14 (face enrollment + antivirus / file-transfer merge)
+> **Last audited:** 2026-11-14 (plain HTTP only — TLS removed)
 > **Changelog:**
+> - 2026-11-14: **TLS/HTTPS removed.** `npm run dev` is plain `next dev` (deleted
+>   `scripts/dev-https.mjs`). `.env` uses `API_PROXY_TARGET=http://…` and
+>   `NEXT_PUBLIC_WS_URL=ws://…`; default rewrite target is `http://localhost:8080`.
 > - 2026-11-13: **`/dlp-rules` File Download / File Upload triggers.** `DlpTrigger` gains
 >   `file_download` / `file_upload`; form shows an inline hint for them (Block / Alert + Block blocks
 >   Chrome/Edge/Brave downloads or the file picker on every Windows PC). Alert labels

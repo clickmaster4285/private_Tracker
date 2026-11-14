@@ -20,9 +20,22 @@ internal static class DeleteBlockAclEnforcer
     private const InheritanceFlags Inherit =
         InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
 
+    private static string _lastRootsFingerprint = "\0";
+    private static DateTimeOffset _lastOkApply = DateTimeOffset.MinValue;
+    private static bool _lastApplyOk;
+    private static string _lastClearFingerprint = "\0";
+    private static bool _clearVerified;
+
     public sealed record Result(bool Changed, bool Applied, string Detail);
 
-    public static Result Apply()
+    public static Result Apply() => Apply(TimeSpan.FromSeconds(300));
+
+    /// <summary>
+    /// Apply Deny Delete ACEs. When the ready Fixed/Removable root set is unchanged and the
+    /// last apply succeeded, skip ACL reads until <paramref name="recheckEvery"/> elapses
+    /// (tamper recheck). Marker JSON is rewritten only when the marked set changes.
+    /// </summary>
+    public static Result Apply(TimeSpan recheckEvery)
     {
         if (!OperatingSystem.IsWindows())
             return new Result(false, false, "unsupported_os");
@@ -30,7 +43,17 @@ internal static class DeleteBlockAclEnforcer
         lock (Gate)
         {
             var roots = EnumerateTargetRoots();
+            var fp = string.Join("|", roots);
+            var now = DateTimeOffset.UtcNow;
+            if (_lastApplyOk &&
+                fp == _lastRootsFingerprint &&
+                now - _lastOkApply < recheckEvery)
+            {
+                return new Result(false, true, "skipped_stable");
+            }
+
             var marked = LoadMarkedRoots();
+            var markedBefore = string.Join("|", marked);
             var changed = 0;
             var ok = 0;
             var errors = new List<string>();
@@ -50,11 +73,29 @@ internal static class DeleteBlockAclEnforcer
                 }
             }
 
-            SaveMarkedRoots(marked);
+            var markedAfter = string.Join("|", marked);
+            if (markedAfter != markedBefore)
+                SaveMarkedRoots(marked);
+
             var detail = $"roots={roots.Count} ok={ok} changed={changed}";
             if (errors.Count > 0)
                 detail += " err=" + string.Join(",", errors.Take(4));
-            return new Result(changed > 0, ok > 0 || roots.Count == 0, detail);
+
+            var applied = ok > 0 || roots.Count == 0;
+            if (applied && errors.Count == 0)
+            {
+                _lastRootsFingerprint = fp;
+                _lastOkApply = now;
+                _lastApplyOk = true;
+                _clearVerified = false;
+                _lastClearFingerprint = "\0";
+            }
+            else
+            {
+                _lastApplyOk = false;
+            }
+
+            return new Result(changed > 0, applied, detail);
         }
     }
 
@@ -65,9 +106,14 @@ internal static class DeleteBlockAclEnforcer
 
         lock (Gate)
         {
+            var roots = EnumerateTargetRoots();
+            var rootsFp = string.Join("|", roots);
             var marked = LoadMarkedRoots();
+            if (_clearVerified && marked.Count == 0 && rootsFp == _lastClearFingerprint)
+                return new Result(false, true, "already_clear");
+
             var targets = new SortedSet<string>(marked, StringComparer.OrdinalIgnoreCase);
-            foreach (var r in EnumerateTargetRoots())
+            foreach (var r in roots)
                 targets.Add(NormalizeRoot(r));
 
             var changed = 0;
@@ -96,6 +142,14 @@ internal static class DeleteBlockAclEnforcer
             }
 
             SaveMarkedRoots(marked);
+            _lastRootsFingerprint = "\0";
+            _lastApplyOk = false;
+            _lastOkApply = DateTimeOffset.MinValue;
+            if (errors.Count == 0)
+            {
+                _clearVerified = true;
+                _lastClearFingerprint = rootsFp;
+            }
             var detail = $"cleared={cleared} changed={changed}";
             if (errors.Count > 0)
                 detail += " err=" + string.Join(",", errors.Take(4));

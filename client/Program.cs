@@ -293,6 +293,7 @@ if (args.Contains("--face-verify") && !args.Contains("--background"))
     {
         EnvLoader.Load();
         client.Core.FaceVerifyYield.Set("soft_lock");
+        client.Services.FaceVerify.FaceVerifyAppKiller.StartIfEnabled();
         try
         {
             System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
@@ -307,6 +308,7 @@ if (args.Contains("--face-verify") && !args.Contains("--background"))
     }
     finally
     {
+        client.Services.FaceVerify.FaceVerifyAppKiller.Stop();
         client.Core.FaceVerifyYield.Clear();
         try { faceMutex.ReleaseMutex(); } catch { /* ignore */ }
         try { faceMutex.Dispose(); } catch { /* ignore */ }
@@ -657,16 +659,12 @@ if (!isProtectedUninstall && !isRemoveAccount)
         sp.GetRequiredService<client.Services.Screenshots.ScreenshotSyncWorker>());
 }
 
-// HTTP Client — private-network HTTPS: OS trust + optional ALPHA_TLS_CA / bundled tls/rootCA.pem
+// HTTP Client — plain HTTP to the API (no custom TLS trust).
 builder.Services.AddSingleton<HttpClient>(_ =>
-    client.Core.TlsCertificateTrust.CreateHttpClient(TimeSpan.FromSeconds(120)));
 {
-    var ca = client.Core.TlsCertificateTrust.ResolveCaPemPath();
-    if (client.Core.TlsCertificateTrust.InsecureLabOverride)
-        Console.Error.WriteLine("[client] WARNING: ALPHA_TLS_INSECURE=true — TLS verify disabled (lab only)");
-    else if (!string.IsNullOrWhiteSpace(ca))
-        Console.WriteLine($"[client] TLS extra CA: {ca}");
-}
+    var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+    return http;
+});
 
 // Installed App Detector (cross-platform)
 builder.Services.AddSingleton<IInstalledAppDetector, InstalledAppDetector>();

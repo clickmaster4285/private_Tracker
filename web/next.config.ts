@@ -11,7 +11,7 @@ function resolveApiProxyTarget(): string {
   if (fromPublic) {
     return fromPublic.replace(/\/api\/v1$/i, "") || fromPublic;
   }
-  return "https://localhost:8080";
+  return "http://localhost:8080";
 }
 
 const apiProxyTarget = resolveApiProxyTarget();

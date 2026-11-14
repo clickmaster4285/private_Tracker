@@ -8,7 +8,7 @@ namespace AlphaAITracker.Service;
 /// pipe op <c>RequestPolicyPull</c> (the tracker forwards the server's
 /// <c>policy_changed</c> WebSocket push).</item>
 /// <item><see cref="EnforceNow"/> — "a new bundle was saved": EnforceWorker applies it
-/// immediately instead of waiting out its 15 s tick.</item>
+/// immediately instead of waiting out <c>ALPHA_DLP_ENFORCE_TICK_SEC</c>.</item>
 /// </list>
 /// Each signal holds at most one pending wake, so bursts collapse into one pass.
 /// </summary>

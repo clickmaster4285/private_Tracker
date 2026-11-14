@@ -311,7 +311,14 @@ begin
   SetEnvKey(EnvPath, 'ALPHA_DLP_DELETE_BLOCK', '{#ALPHA_DLP_DELETE_BLOCK}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_FILE_TRANSFER_BLOCK', '{#ALPHA_DLP_FILE_TRANSFER_BLOCK}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_LOGIN_REBOOT', '{#ALPHA_DLP_LOGIN_REBOOT}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC', '{#ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_POLICY_POLL_SEC', '{#ALPHA_DLP_POLICY_POLL_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_ENFORCE_TICK_SEC', '{#ALPHA_DLP_ENFORCE_TICK_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_APP_SWEEP_SEC', '{#ALPHA_DLP_APP_SWEEP_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_DNS_PIN_SEC', '{#ALPHA_DLP_DNS_PIN_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_TCP_KILL_SEC', '{#ALPHA_DLP_TCP_KILL_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_PORT_GUARD_SEC', '{#ALPHA_DLP_PORT_GUARD_SEC}');
+  SetEnvKey(EnvPath, 'ALPHA_DLP_DELETE_RECHECK_SEC', '{#ALPHA_DLP_DELETE_RECHECK_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_ALERT_SYNC_SEC', '{#ALPHA_DLP_ALERT_SYNC_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_PIPE_NAME', '{#WINDOWS_DLP_PIPE_NAME}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_WATCHDOG', '{#ALPHA_DLP_WATCHDOG}');
@@ -325,31 +332,6 @@ begin
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_AUTO_INSTALL', '{#ALPHA_UPDATE_AUTO_INSTALL}');
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_CHECK_INTERVAL_SEC', '{#ALPHA_UPDATE_CHECK_INTERVAL_SEC}');
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_DOWNLOAD_JITTER_SEC', '{#ALPHA_UPDATE_DOWNLOAD_JITTER_SEC}');
-end;
-
-// Private-LAN HTTPS: copy baked tls\rootCA.pem → ProgramData and LocalMachine\Root.
-// Runs elevated (PrivilegesRequired=admin). Idempotent on upgrade / silent update.
-// No employee action — same CA that signed the API leaf must be present at bake time
-// (build-installer.sh copies repo certs\rootCA.pem into publish\windows\tls\).
-procedure InstallOrgTlsCa;
-var
-  Src, DestDir, Dest: string;
-  ResultCode: Integer;
-begin
-  Src := ExpandConstant('{app}\tls\rootCA.pem');
-  if not FileExists(Src) then
-    Exit;
-
-  DestDir := ExpandConstant('{commonappdata}\{#APP_MUTEX}\tls');
-  ForceDirectories(DestDir);
-  Dest := DestDir + '\rootCA.pem';
-  if not CopyFile(Src, Dest, False) then
-    Exit;
-
-  // Prefer certutil (PEM). Non-zero exit is non-fatal — TlsCertificateTrust still
-  // loads the ProgramData PEM as ExtraStore for HttpClient/WebSocket.
-  Exec('certutil.exe', '-addstore -f Root "' + Dest + '"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure InstallDlpService;
@@ -488,7 +470,6 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    InstallOrgTlsCa;
     InstallDlpService;
     GInstallSucceeded := True;
   end;

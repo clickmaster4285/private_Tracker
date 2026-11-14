@@ -65,6 +65,14 @@ public sealed class WsClient : BackgroundService
         var backoffSec = Math.Max(1, _config.WsReconnectBaseSec);
         while (!stoppingToken.IsCancellationRequested)
         {
+            // Soft-lock / update priority: park reconnect so we do not burn CPU/network mid-verify.
+            if (UpdatePriority.ShouldYield || FaceVerifyYield.ShouldYield)
+            {
+                try { await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken); }
+                catch (OperationCanceledException) { break; }
+                continue;
+            }
+
             EmployeeInfo? employee = null;
             try
             {
@@ -157,7 +165,6 @@ public sealed class WsClient : BackgroundService
             else
                 ws.Options.SetRequestHeader("Authorization", $"Bearer {employee.Token}");
             ClientIdentityHeaders.Apply(ws.Options);
-            client.Core.TlsCertificateTrust.Apply(ws.Options);
 
             _logger.LogInformation("WsClient connecting to {Url}", wsUrl);
             await ws.ConnectAsync(new Uri(wsUrl), ct);

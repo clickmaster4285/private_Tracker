@@ -38,22 +38,11 @@ builder.Services.AddSingleton<RemovableDriveMonitor>();
 builder.Services.AddHttpClient("dlp", c =>
 {
     c.Timeout = TimeSpan.FromSeconds(60);
-}).ConfigurePrimaryHttpMessageHandler(() =>
-{
-    // DlpService cannot reference client.dll — duplicate minimal trust from env / ProgramData.
-    var handler = new HttpClientHandler();
-    ApplyFleetTls(handler);
-    return handler;
 });
 builder.Services.AddHttpClient("update-download", c =>
 {
     // Multi-hundred-MB installers — same ceiling as the Avalonia AppUpdateService.
     c.Timeout = TimeSpan.FromMinutes(15);
-}).ConfigurePrimaryHttpMessageHandler(() =>
-{
-    var handler = new HttpClientHandler();
-    ApplyFleetTls(handler);
-    return handler;
 });
 
 builder.Services.AddSingleton<SilentUpdateState>();
@@ -81,58 +70,3 @@ logger.LogInformation(
     OperatingSystem.IsLinux() ? "linux" : OperatingSystem.IsWindows() ? "windows" : "other");
 
 await host.RunAsync();
-
-// Fleet private-network HTTPS (mirrors client.Core.TlsCertificateTrust — DlpService is a separate assembly).
-static void ApplyFleetTls(HttpClientHandler handler)
-{
-    var insecure = Environment.GetEnvironmentVariable("ALPHA_TLS_INSECURE");
-    if (insecure is "1" or "true" or "True" or "yes" or "YES" or "on" or "ON")
-    {
-        handler.ServerCertificateCustomValidationCallback =
-            HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
-        return;
-    }
-
-    var caPath = Environment.GetEnvironmentVariable("ALPHA_TLS_CA")?.Trim();
-    if (string.IsNullOrWhiteSpace(caPath) || !File.Exists(caPath))
-    {
-        var progData = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "AlphaAITracker", "tls", "rootCA.pem");
-        if (File.Exists(progData)) caPath = progData;
-        else
-        {
-            var beside = Path.Combine(AppContext.BaseDirectory, "tls", "rootCA.pem");
-            caPath = File.Exists(beside) ? beside : null;
-        }
-    }
-
-    if (string.IsNullOrWhiteSpace(caPath) || !File.Exists(caPath))
-        return;
-
-    var path = caPath;
-    handler.ServerCertificateCustomValidationCallback = (_, cert, _, errors) =>
-    {
-        if (cert == null) return false;
-        if (errors == System.Net.Security.SslPolicyErrors.None) return true;
-        try
-        {
-            using var ca = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPemFile(path);
-            using var chain = new System.Security.Cryptography.X509Certificates.X509Chain();
-            chain.ChainPolicy.ExtraStore.Add(ca);
-            chain.ChainPolicy.VerificationFlags =
-                System.Security.Cryptography.X509Certificates.X509VerificationFlags.AllowUnknownCertificateAuthority;
-            chain.ChainPolicy.RevocationMode =
-                System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck;
-            using var leaf = new System.Security.Cryptography.X509Certificates.X509Certificate2(cert);
-            if (!chain.Build(leaf)) return false;
-            foreach (var el in chain.ChainElements)
-            {
-                if (el.Certificate.Thumbprint.Equals(ca.Thumbprint, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
-            return false;
-        }
-        catch { return false; }
-    };
-}

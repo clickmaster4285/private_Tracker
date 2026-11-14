@@ -59,6 +59,12 @@ public sealed class TimeDateWarningWorker : BackgroundService
         {
             try
             {
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    continue;
+                }
+
                 await CheckAndMaybeWarnAsync(stoppingToken);
             }
             catch (OperationCanceledException) { throw; }

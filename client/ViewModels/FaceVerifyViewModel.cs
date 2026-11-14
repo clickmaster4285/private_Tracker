@@ -136,9 +136,8 @@ public partial class FaceVerifyViewModel : ViewModelBase, IDisposable
                 _api = new FaceApiClient(_session.ApiBase, _session.DeviceToken);
             }
 
-            var threshold = _mode == "first"
-                ? Math.Min(0.95, _session.MatchThreshold + 0.05)
-                : _session.MatchThreshold;
+            // Same threshold for first-local and simple verify.
+            var threshold = _session.MatchThreshold;
 
             _engine?.Dispose();
             _engine = new FaceRecognitionEngine();

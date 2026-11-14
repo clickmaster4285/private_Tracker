@@ -4,7 +4,7 @@ How work actually moves through this repo — the loops you run daily, and the g
 
 Rules live in [AGENTS.md](./AGENTS.md) §6; this file is the *procedure* for obeying them. File locations: [FILE_HIERARCHY.md](./FILE_HIERARCHY.md).
 
-*Last audited: 2026-11-13 — Windows installer auto-trusts private-LAN HTTPS (`certs/rootCA.pem` baked → Inno `InstallOrgTlsCa`). Prior 2026-11-10: `ALPHA_DLP_DELETE_BLOCK` local switch joins other `ALPHA_DLP_*` keys in `.env` → `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` / `EnvBootstrap`. Prior 2026-11-07: client auto-update from server `setup/`. Commands verified against `client/publish/*.sh`, `client/DlpService/install-service.ps1`, `server/Makefile`, `web/package.json`.*
+*Last audited: 2026-11-14 — stack is plain HTTP only (TLS/HTTPS / mkcert / installer CA bake removed; see `certs.md`). Prior 2026-11-10: `ALPHA_DLP_DELETE_BLOCK` local switch joins other `ALPHA_DLP_*` keys in `.env` → `generate-windows-vars.sh` → Inno `service.env` / `install-service.ps1` / `EnvBootstrap`. Prior 2026-11-07: client auto-update from server `setup/`. Commands verified against `client/publish/*.sh`, `client/DlpService/install-service.ps1`, `server/Makefile`, `web/package.json`.*
 
 ---
 
@@ -16,11 +16,8 @@ Everything in §1 is the fast loop. Everything in §5 is the loop that decides w
 
 ### Live stream / presence config (Installer-Parity)
 
-**Private-LAN HTTPS (fleet):** keep `certs/rootCA.pem` (same CA that signed the API leaf)
-present when running `publish/build-installer.sh -b win`. The bake copies it into
-`publish/windows/tls/`; Inno installs it into LocalMachine\Root + ProgramData
-automatically. Set `ALPHA_SERVER_URL=https://…` in `client/.env`; leave `ALPHA_TLS_CA`
-unset. Missing `rootCA.pem` at bake → installer warning and HTTPS login fails on PCs.
+**API URL (fleet):** set `ALPHA_SERVER_URL=http://API_HOST:PORT` in `client/.env` before
+bake. The stack does not use TLS — do not bake `https://` URLs. See [`certs.md`](./certs.md).
 
 When changing stream or presence knobs, update **both** `client/.env` (dev) **and** bake `config.enc` before shipping:
 

@@ -63,8 +63,8 @@ public class AppUpdateService : ObservableObject, IHostedService
         _logger = logger;
 
         // The shared HttpClient timeout is fine for releases JSON but short for large
-        // installers. Dedicated client keeps the same TLS trust policy (org CA / GPO).
-        _downloadHttp = client.Core.TlsCertificateTrust.CreateHttpClient(TimeSpan.FromMinutes(15));
+        // installers.
+        _downloadHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(15) };
 
         CheckForUpdatesCommand = new AsyncRelayCommand(
             () => CheckForUpdatesCoreAsync(auto: false, CancellationToken.None));

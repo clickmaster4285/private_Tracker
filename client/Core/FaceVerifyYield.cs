@@ -2,7 +2,8 @@ namespace client.Core;
 
 /// <summary>
 /// While the Windows soft-locker (<c>--face-verify</c>) is open, heavy tracker work
-/// yields CPU/bandwidth (collectors, sync, screenshots, live stream, browser a11y).
+/// yields CPU/bandwidth (collectors, sync, screenshots, live stream, browser a11y,
+/// idle/TA, location, ports, timedate, WS reconnect, face warmup).
 /// DLP enforcement is never parked. Flag: LocalAppData …/face/verify_yield.
 /// </summary>
 public static class FaceVerifyYield

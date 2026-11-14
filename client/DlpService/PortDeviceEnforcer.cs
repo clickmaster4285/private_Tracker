@@ -38,11 +38,27 @@ internal static class PortDeviceEnforcer
     private static readonly ConcurrentDictionary<string, DateTimeOffset> GuardBackoff =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private static readonly ConcurrentDictionary<string, (DateTimeOffset At, string[] Ids)> ClassPresentCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan ClassPresentCacheTtl = TimeSpan.FromSeconds(5);
+
+    private static int _needsFullReconcile;
+
     /// <summary>One device the fast guard had to disable again.</summary>
     public sealed record GuardHit(string InstanceId, string Outcome);
 
     /// <summary>True when there is anything for the fast guard to watch.</summary>
     public static bool HasGuardTargets => _guardInstances.Length > 0 || _guardClasses.Length > 0;
+
+    /// <summary>
+    /// True once when GuardTick re-disabled a device (or caller forced). EnforceWorker
+    /// consumes this to break the stable-Apply short-circuit.
+    /// </summary>
+    public static bool ConsumeNeedsFullReconcile() =>
+        Interlocked.Exchange(ref _needsFullReconcile, 0) != 0;
+
+    public static void RequestFullReconcile() =>
+        Interlocked.Exchange(ref _needsFullReconcile, 1);
 
     /// <summary>
     /// Fast re-check (native calls only, no PowerShell): every blocked instance and every
@@ -60,9 +76,10 @@ internal static class PortDeviceEnforcer
         try
         {
             var allow = _guardAllow;
+            // Always re-query known blocked instance IDs; class present lists are cached briefly.
             var targets = new HashSet<string>(_guardInstances, StringComparer.OrdinalIgnoreCase);
             foreach (var g in _guardClasses)
-                foreach (var id in CfgMgrDevices.ListPresentByClass(g))
+                foreach (var id in ListPresentByClassCached(g))
                     targets.Add(id);
 
             foreach (var id in targets)
@@ -72,9 +89,14 @@ internal static class PortDeviceEnforcer
                 var s = CfgMgrDevices.Query(id);
                 if (s.State != CfgMgrDevices.DevState.Enabled) continue; // missing / already off
                 // Native only: a vetoed device (in-use keyboard) must not spawn PowerShell
-                // every 2 s. The 15 s full Apply still tries the PowerShell fallback.
+                // every tick. Full Apply still tries the PowerShell fallback.
                 var r = SetPnpEnabled(id, enable: false, allowFallback: false);
-                if (r == PnpOutcome.Changed) { DisabledInstances[id] = 0; GuardBackoff.TryRemove(id, out _); }
+                if (r == PnpOutcome.Changed)
+                {
+                    DisabledInstances[id] = 0;
+                    GuardBackoff.TryRemove(id, out _);
+                    Interlocked.Exchange(ref _needsFullReconcile, 1);
+                }
                 else if (r is PnpOutcome.Vetoed or PnpOutcome.Failed)
                     GuardBackoff[id] = DateTimeOffset.UtcNow.AddSeconds(60); // Windows refused — back off
                 hits.Add(new GuardHit(id, r.ToString().ToLowerInvariant()));
@@ -85,6 +107,18 @@ internal static class PortDeviceEnforcer
             Monitor.Exit(Gate);
         }
         return hits;
+    }
+
+    private static IReadOnlyList<string> ListPresentByClassCached(string classGuid)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (ClassPresentCache.TryGetValue(classGuid, out var cached) &&
+            now - cached.At < ClassPresentCacheTtl)
+            return cached.Ids;
+
+        var ids = CfgMgrDevices.ListPresentByClass(classGuid).ToArray();
+        ClassPresentCache[classGuid] = (now, ids);
+        return ids;
     }
 
     /// <summary>

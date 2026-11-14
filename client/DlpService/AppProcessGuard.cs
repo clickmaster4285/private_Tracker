@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AlphaAITracker.Service;
@@ -12,6 +15,12 @@ internal static class AppProcessGuard
 {
     public sealed record Result(int Examined, int Killed, string Detail);
 
+    private static readonly object MatcherGate = new();
+    private static string _matcherFingerprint = "\0";
+    private static List<PathMatcher> _cachedMatchers = new();
+
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+
     /// <summary>
     /// Kill interactive / user EXEs that are not allowed. Never touches kernel/critical
     /// system process names (even when path is unreadable).
@@ -21,7 +30,7 @@ internal static class AppProcessGuard
         if (!OperatingSystem.IsWindows())
             return new Result(0, 0, "unsupported_os");
 
-        var allow = BuildAllowMatchers(allowApps);
+        var allow = GetAllowMatchers(allowApps);
         var killed = 0;
         var examined = 0;
         var examples = new List<string>();
@@ -38,15 +47,17 @@ internal static class AppProcessGuard
                     if (IsNeverKillName(name))
                         continue;
 
-                    // Interactive shells / Settings — force-kill in user sessions (session > 0)
-                    // when path is unknown. Session 0 (services) PowerShell is left alone so
-                    // Set-AppLockerPolicy can run. Published allow.apps paths still win.
-                    var interactiveDenied = IsDeniedInteractiveName(name) && SafeSessionId(proc) > 0;
+                    var sessionId = SafeSessionId(proc);
+                    // Session 0 services: only force-check denied interactive names (should be 0).
+                    // Skip the rest — MainModule on services is expensive and usually access-denied.
+                    var interactiveDenied = IsDeniedInteractiveName(name) && sessionId > 0;
+                    if (sessionId == 0 && !interactiveDenied)
+                        continue;
 
                     string? path = null;
                     try
                     {
-                        path = proc.MainModule?.FileName;
+                        path = TryGetProcessImagePath(proc.Id) ?? proc.MainModule?.FileName;
                     }
                     catch
                     {
@@ -83,6 +94,35 @@ internal static class AppProcessGuard
             ? $"examined={examined} killed=0"
             : $"examined={examined} killed={killed} eg={string.Join(" | ", examples)}";
         return new Result(examined, killed, detail);
+    }
+
+    /// <summary>Stable fingerprint of allow.apps paths used for matcher cache + sweep cadence.</summary>
+    public static string AllowAppsFingerprint(IReadOnlyList<AllowAppEntry> allowApps)
+    {
+        var sb = new StringBuilder();
+        var paths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in allowApps)
+        {
+            if (!string.IsNullOrWhiteSpace(a.Path))
+                paths.Add(a.Path.Trim());
+        }
+        foreach (var p in paths)
+            sb.Append(p).Append('\n');
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        return Convert.ToHexString(SHA256.HashData(bytes));
+    }
+
+    private static List<PathMatcher> GetAllowMatchers(IReadOnlyList<AllowAppEntry> allowApps)
+    {
+        var fp = AllowAppsFingerprint(allowApps);
+        lock (MatcherGate)
+        {
+            if (fp == _matcherFingerprint && _cachedMatchers.Count > 0)
+                return _cachedMatchers;
+            _cachedMatchers = BuildAllowMatchers(allowApps);
+            _matcherFingerprint = fp;
+            return _cachedMatchers;
+        }
     }
 
     internal static List<PathMatcher> BuildAllowMatchers(IReadOnlyList<AllowAppEntry> allowApps)
@@ -224,6 +264,25 @@ internal static class AppProcessGuard
         catch { return -1; }
     }
 
+    private static string? TryGetProcessImagePath(int pid)
+    {
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
+        if (handle == IntPtr.Zero)
+            return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            var size = (uint)sb.Capacity;
+            if (!QueryFullProcessImageName(handle, 0, sb, ref size))
+                return null;
+            return sb.ToString(0, (int)size);
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
     private static string ReplacePrefix(string path, string macro, string? value)
     {
         if (string.IsNullOrEmpty(value)) return path;
@@ -231,6 +290,16 @@ internal static class AppProcessGuard
             return value + path[macro.Length..];
         return path;
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint processAccess, bool inheritHandle, uint processId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(
+        IntPtr hProcess, uint flags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
 
     internal sealed class PathMatcher
     {

@@ -3,18 +3,18 @@ using System.Text.Json;
 namespace AlphaAITracker.Service;
 
 /// <summary>
-/// Fast port/device guard. <see cref="EnforceWorker"/> does the full reconcile every ~15 s
-/// (registry class denies, PowerShell fallback, allow list). This worker only re-checks the
-/// already-published block set every <see cref="Interval"/> using native CfgMgr32 calls
-/// (no process spawns), so a device the employee re-enables in Device Manager or Network
-/// Connections is disabled again within ~2 s instead of after the next full pass.
+/// Fast port/device guard. <see cref="EnforceWorker"/> does the full reconcile on policy
+/// change / pending / Guard-reported reblock. This worker only re-checks the already-published
+/// block set using native CfgMgr32 calls (no process spawns). Adaptive interval: 2s for ~30s
+/// after a reblock hit, else <c>ALPHA_DLP_PORT_GUARD_SEC</c> (default 10).
 ///
 /// Every re-block is audited and raised as a <c>device_control</c> alert (action
 /// <c>reblocked</c>), rate-limited per device so a fight with the user cannot flood the inbox.
 /// </summary>
 public sealed class PortGuardWorker : BackgroundService
 {
-    private static readonly TimeSpan Interval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan FastInterval = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan FastWindow = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan AlertEvery = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan WarnEvery = TimeSpan.FromMinutes(30);
 
@@ -23,6 +23,7 @@ public sealed class PortGuardWorker : BackgroundService
     private readonly ILogger<PortGuardWorker> _logger;
     private readonly Dictionary<string, DateTimeOffset> _lastAlert = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastWarn = new(StringComparer.OrdinalIgnoreCase);
+    private DateTimeOffset _fastUntil = DateTimeOffset.MinValue;
 
     public PortGuardWorker(DlpConfig cfg, PolicyStore store, ILogger<PortGuardWorker> logger)
     {
@@ -37,17 +38,26 @@ public sealed class PortGuardWorker : BackgroundService
             return;
 
         await _store.InitializeAsync(stoppingToken);
-        _logger.LogInformation("PortGuardWorker running (every {Sec}s, native CfgMgr32)", Interval.TotalSeconds);
+        _logger.LogInformation(
+            "PortGuardWorker running (idle every {Sec}s, fast 2s after reblock, native CfgMgr32)",
+            _cfg.PortGuardSec);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                _cfg.RefreshLocalSwitches();
                 if (_cfg.PortBlock && PortDeviceEnforcer.HasGuardTargets)
                 {
                     var hits = await Task.Run(PortDeviceEnforcer.GuardTick, stoppingToken);
                     if (hits.Count > 0)
+                    {
+                        _fastUntil = DateTimeOffset.UtcNow.Add(FastWindow);
                         await HandleHitsAsync(hits, stoppingToken);
+                        // Wake Enforce so fingerprint-stable Apply short-circuit breaks soon.
+                        if (hits.Any(h => h.Outcome is "changed"))
+                            DlpSignals.RequestEnforce();
+                    }
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -59,7 +69,13 @@ public sealed class PortGuardWorker : BackgroundService
                 _logger.LogWarning(ex, "PortGuardWorker tick failed");
             }
 
-            try { await Task.Delay(Interval, stoppingToken); }
+            try
+            {
+                var delay = DateTimeOffset.UtcNow < _fastUntil
+                    ? FastInterval
+                    : TimeSpan.FromSeconds(Math.Max(2, _cfg.PortGuardSec));
+                await Task.Delay(delay, stoppingToken);
+            }
             catch (OperationCanceledException) { break; }
         }
     }

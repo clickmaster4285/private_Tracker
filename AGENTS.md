@@ -3,6 +3,46 @@
 > **Last audited:** 2026-11-14
 > **Changelog:**
 >
+> - 2026-11-14: **Face match threshold 0.8 for first + simple.** Default /
+>   `ALPHA_FACE_MATCH_THRESHOLD` floor lowered from 0.85 → **0.8**; removed first-mode
+>   `+0.05` bump so both soft-lock paths use the same score. Client **VERSION 2.3.8**.
+>   Installer-Parity: re-bake `config.enc` + rebuild Windows installer.
+>
+> - 2026-11-14: **DLP idle cadence for older office PCs (i5 3rd-gen / 8 GB).** Ship defaults
+>   stretched: enforce **60s**, app sweep **120s**, DNS pin **10s**, TCP kill **30s**, port
+>   guard **15s**, delete recheck **600s**. Fast fight paths unchanged (5s / 1.5s / 2s).
+>   Client **VERSION 2.3.7**. Installer-Parity: re-bake `config.enc` + rebuild Windows
+>   installer; restart DLP on the lab PC so `service.env` picks up the new values.
+>
+> - 2026-11-14: **DLP idle CPU optimization (fail-closed).** Enforce tick split from policy
+>   poll (`ALPHA_DLP_ENFORCE_TICK_SEC`). Adaptive AppProcessGuard (5s after kill / idle
+>   sweep) + matcher cache + `QueryFullProcessImageName`; AppLocker Clear short-circuit.
+>   DnsBlockPinWorker: TCP kill on new pins + throttle, adaptive pin interval, DNS-cache
+>   hash skip. Port Apply fingerprint-stable skip + adaptive PortGuard; Delete-block root
+>   fingerprint. Blockers stay default **true**. Client **VERSION 2.3.4** (defaults later
+>   retuned in 2.3.7 for older PCs). Installer-Parity: re-bake `config.enc` + rebuild
+>   Windows installer / restart DLP service so `service.env` picks up the new knobs.
+>
+> - 2026-11-14: **Login reboot delay env + dim-light face verify + soft-lock isolation.**
+>   `ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC` (default **5**, clamp 5–120) replaces hardcoded
+>   20s post-login reboot. Soft-lock: CLAHE + lower det score on dim frames, camera
+>   auto-exposure boost, DirectML ORT (+CPU), extended `FaceVerifyYield` parking, and
+>   `ALPHA_FACE_VERIFY_KILL_APPS` (default true) user-session app sweep (shell/DLP/tracker
+>   never killed). Client **VERSION 2.3.2**. Installer-Parity: re-bake `config.enc` +
+>   rebuild Windows installer; restart DLP service for reboot-delay key.
+>
+> - 2026-11-14: **Auth cookies match `main`.** Removed `COOKIE_SECURE` /
+>   `ConfigureAuthCookies` / `ServerConfig.CookieSecure`. `auth_token` +
+>   `refresh_token` again hardcode `Secure: false` (plain HTTP). Restart API.
+>
+> - 2026-11-14: **Plain HTTP only — TLS/HTTPS removed.** Dropped Echo `StartTLS` /
+>   `TLS_*` env, web `scripts/dev-https.mjs` + mkcert `.env` keys, client
+>   `TlsCertificateTrust` / `ALPHA_TLS_*`, DlpService fleet CA handler, Inno
+>   `InstallOrgTlsCa`, bake of `certs/rootCA.pem`, and `install-org-ca.ps1`.
+>   API / Next / client / face_worker / WS use `http://` / `ws://`. Client
+>   **VERSION 2.3.1**. Restart API + `npm run dev` + face_worker; re-bake
+>   `config.enc` + rebuild Windows installer so fleet points at `http://…`.
+>
 > - 2026-11-14: **Merge face verify (HEAD) + antivirus / file-transfer (sohaib).** Face
 >   stays migrations **068–070**; antivirus/file-transfer renumbered to **071–075** so both
 >   land on one DB. Client **VERSION 2.2.1** (face soft-lock) + sohaib DlpService AV guard

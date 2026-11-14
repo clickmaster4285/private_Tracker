@@ -95,8 +95,13 @@ public class AppConfig
     /// <summary>Spawn face verify on every Windows session start (boot restore / login).</summary>
     public bool FaceVerifyEnabled { get; init; } = true;
     /// <summary>Cosine threshold vs L2 embeddings (calibrate per office webcams).</summary>
-    /// <summary>Strict cosine floor ≥ 0.85 vs L2 buffalo_l embeddings.</summary>
-    public double FaceMatchThreshold { get; init; } = 0.85;
+    /// <summary>Strict cosine floor ≥ 0.8 vs L2 buffalo_l embeddings (first + simple).</summary>
+    public double FaceMatchThreshold { get; init; } = 0.8;
+    /// <summary>
+    /// While soft-lock is open, kill non-critical user-session apps so CPU/GPU go to verify.
+    /// Never kills shell / DLP / tracker. Default true.
+    /// </summary>
+    public bool FaceVerifyKillApps { get; init; } = true;
     /// <summary>
     /// Optional HTTP URL override for buffalo_l recognition ONNX. Default: DeviceAuth download
     /// of det_10g + w600k_r50 from GET /face-models/packages/{buffalo-l-det|buffalo-l-rec}.
@@ -213,10 +218,11 @@ public class AppConfig
             TimeDateSkewSec = Math.Max(5, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_SKEW_SEC"), out var tdSkew) ? tdSkew : 60),
             TimeDateCooldownHours = Math.Max(1, int.TryParse(GetEnv("ALPHA_TA_TIMEDATE_COOLDOWN_HOURS"), out var tdCool) ? tdCool : 4),
             FaceVerifyEnabled = GetEnv("ALPHA_FACE_VERIFY_ENABLED") is not ("0" or "false" or "False"),
-            FaceMatchThreshold = Math.Max(0.85, Math.Clamp(
+            FaceMatchThreshold = Math.Max(0.8, Math.Clamp(
                 double.TryParse(GetEnv("ALPHA_FACE_MATCH_THRESHOLD"), System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.85,
+                    System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.8,
                 0.05, 0.99)),
+            FaceVerifyKillApps = GetEnv("ALPHA_FACE_VERIFY_KILL_APPS") is not ("0" or "false" or "False"),
             FaceBuffaloRecUrl = FirstNonEmpty(
                 GetEnv("ALPHA_FACE_BUFFALO_REC_URL"),
                 GetEnv("ALPHA_FACE_ADAFACE_URL")),

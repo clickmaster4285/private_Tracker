@@ -25,11 +25,14 @@ public sealed class EnforceWorker : BackgroundService
     private DateTimeOffset _lastLockdownWarn = DateTimeOffset.MinValue;
     private string? _lastAppLockdownState;
     private DateTimeOffset _lastAppLockdownWarn = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextAppSweepDue = DateTimeOffset.MinValue;
+    private string _lastAppSweepAllowFp = "\0";
     private string? _lastDeleteBlockState;
     private string? _lastFileTransferState;
     private DateTimeOffset _lastFileTransferTamperAlert = DateTimeOffset.MinValue;
     private static readonly TimeSpan FileTransferTamperAlertEvery = TimeSpan.FromMinutes(10);
     private string _lastPortFingerprint = "\0";
+    private bool _portApplyStable;
 
     public EnforceWorker(
         DlpConfig cfg,
@@ -129,9 +132,8 @@ public sealed class EnforceWorker : BackgroundService
 
             try
             {
-                // Match a fast policy poll in lab (e.g. 1s); cap at 15s for normal installs.
-                var tickSec = Math.Clamp(_cfg.PolicyPollSec, 1, 15);
-                // A freshly saved policy (DlpSignals.RequestEnforce) wakes it immediately.
+                // Idle enforce cadence (independent of policy pull). Policy publish wakes immediately.
+                var tickSec = Math.Clamp(_cfg.EnforceTickSec, 5, 120);
                 await DlpSignals.WaitEnforceAsync(TimeSpan.FromSeconds(tickSec), stoppingToken);
             }
             catch (OperationCanceledException)
@@ -222,12 +224,19 @@ public sealed class EnforceWorker : BackgroundService
                 _logger.LogInformation("Port control CLEARED (detail={Detail})", clear.Detail);
             }
             if (clear.Applied)
+            {
                 _lastPortFingerprint = fp;
+                _portApplyStable = true;
+            }
             return;
         }
 
-        // Always re-reconcile while blocks are active so unplug/replug and late plug-ins
-        // are caught every Enforce tick. Fingerprint only suppresses duplicate alerts.
+        // Skip full Apply when policy fingerprint is unchanged, last Apply was stable, and
+        // PortGuard has not reported a reblock. Guard still catches re-enables between ticks.
+        var needsReconcile = PortDeviceEnforcer.ConsumeNeedsFullReconcile();
+        if (fp == _lastPortFingerprint && _portApplyStable && !needsReconcile)
+            return;
+
         var result = await Task.Run(() => PortDeviceEnforcer.Apply(instances, classes, allows), ct);
         await _store.AuditAsync("port_control_apply",
             $"instances={instances.Count} classes={classes.Count} allows={allows.Count} " +
@@ -237,11 +246,13 @@ public sealed class EnforceWorker : BackgroundService
         {
             _logger.LogWarning("Port control needs Administrator / LocalSystem — not applied");
             _lastPortFingerprint = "\0"; // force retry awareness
+            _portApplyStable = false;
             return;
         }
         if (!result.Applied)
         {
             _lastPortFingerprint = "\0";
+            _portApplyStable = false;
             if (result.Pending)
             {
                 _logger.LogDebug(
@@ -276,6 +287,8 @@ public sealed class EnforceWorker : BackgroundService
         }
 
         _lastPortFingerprint = fp;
+        // Stable only when nothing pending — Guard covers re-enable fights until next wake.
+        _portApplyStable = !result.Pending;
     }
 
     /// <summary>
@@ -373,7 +386,10 @@ public sealed class EnforceWorker : BackgroundService
             return;
         }
 
-        var result = await Task.Run(DeleteBlockAclEnforcer.Apply, ct);
+        var result = await Task.Run(
+            () => DeleteBlockAclEnforcer.Apply(TimeSpan.FromSeconds(_cfg.DeleteRecheckSec)), ct);
+        if (result.Detail.StartsWith("skipped", StringComparison.Ordinal))
+            return;
         if (result.Applied)
         {
             if (result.Changed || _lastDeleteBlockState != "on")
@@ -454,12 +470,27 @@ public sealed class EnforceWorker : BackgroundService
             _lastAppLockdownState = "on";
         }
 
-        // AppLocker does not kill already-running apps. Sweep every tick while lockdown is ON.
+        // AppLocker does not kill already-running apps. Adaptive sweep: within 5s after a kill
+        // or AppLocker change; otherwise every ALPHA_DLP_APP_SWEEP_SEC while lockdown is ON.
+        var allowFp = AppProcessGuard.AllowAppsFingerprint(apps);
+        var now = DateTimeOffset.UtcNow;
+        var policyChanged = allowFp != _lastAppSweepAllowFp || result.Changed;
+        if (policyChanged)
+            _nextAppSweepDue = DateTimeOffset.MinValue;
+        if (now < _nextAppSweepDue && !policyChanged)
+            return;
+
         var sweep = await Task.Run(() => AppProcessGuard.Sweep(apps), ct);
+        _lastAppSweepAllowFp = allowFp;
         if (sweep.Killed > 0)
         {
             await _store.AuditAsync("app_process_kill", sweep.Detail, ct);
             _logger.LogWarning("App allowlist killed {Count} process(es): {Detail}", sweep.Killed, sweep.Detail);
+            _nextAppSweepDue = now.AddSeconds(5);
+        }
+        else
+        {
+            _nextAppSweepDue = now.AddSeconds(Math.Max(5, _cfg.AppSweepSec));
         }
     }
 

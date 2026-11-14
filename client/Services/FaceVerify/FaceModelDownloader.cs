@@ -67,7 +67,7 @@ public sealed class FaceModelDownloader
         var tmp = destPath + ".tmp";
         try
         {
-            using var http = client.Core.TlsCertificateTrust.CreateHttpClient(TimeSpan.FromMinutes(30));
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
             using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
             resp.EnsureSuccessStatusCode();
             var total = resp.Content.Headers.ContentLength;

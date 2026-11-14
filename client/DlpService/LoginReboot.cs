@@ -13,7 +13,7 @@ internal static class LoginReboot
     /// Schedule a forced reboot. Returns false if the OS rejected the request
     /// (caller should keep the pending flag and retry).
     /// </summary>
-    public static (bool Ok, string Detail) TrySchedule(int delaySeconds = 20)
+    public static (bool Ok, string Detail) TrySchedule(int delaySeconds = 5)
     {
         if (!OperatingSystem.IsWindows())
             return (false, "unsupported_os");

@@ -57,6 +57,12 @@ public class PortDeviceCollector : BackgroundService
         {
             try
             {
+                if (client.Core.UpdatePriority.ShouldYield || client.Core.FaceVerifyYield.ShouldYield)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                    continue;
+                }
+
                 var ports = await ScanWindowsAsync(stoppingToken);
                 if (ports.Count > 0)
                 {

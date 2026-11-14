@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace AlphaAITracker.Service;
 
 /// <summary>
@@ -11,6 +14,9 @@ namespace AlphaAITracker.Service;
 /// </summary>
 public sealed class DnsBlockPinWorker : BackgroundService
 {
+    private static readonly TimeSpan FastPinWindow = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan FastPinInterval = TimeSpan.FromSeconds(1.5);
+
     private readonly DlpConfig _cfg;
     private readonly WebBlockState _webBlock;
     private readonly PolicyStore _store;
@@ -18,6 +24,9 @@ public sealed class DnsBlockPinWorker : BackgroundService
     private readonly HashSet<string> _seenHosts = new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _lastLog = DateTimeOffset.MinValue;
     private bool _clearedWhileEmpty;
+    private DateTimeOffset _fastUntil = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastTcpKill = DateTimeOffset.MinValue;
+    private string _lastCacheHash = "\0";
 
     public DnsBlockPinWorker(
         DlpConfig cfg,
@@ -43,13 +52,15 @@ public sealed class DnsBlockPinWorker : BackgroundService
 
         await _store.InitializeAsync(stoppingToken);
         _logger.LogInformation(
-            "DnsBlockPinWorker running ({Mode})",
-            OperatingSystem.IsLinux() ? "resolve→nft pin" : "DNS-cache → firewall IP pin");
+            "DnsBlockPinWorker running ({Mode}; idle={Idle}s tcpKill={Tcp}s)",
+            OperatingSystem.IsLinux() ? "resolve→nft pin" : "DNS-cache → firewall IP pin",
+            _cfg.DnsPinSec, _cfg.TcpKillSec);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                _cfg.RefreshLocalSwitches();
                 await TickAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -63,7 +74,10 @@ public sealed class DnsBlockPinWorker : BackgroundService
 
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(1.5), stoppingToken);
+                var delay = DateTimeOffset.UtcNow < _fastUntil
+                    ? FastPinInterval
+                    : TimeSpan.FromSeconds(Math.Max(1, _cfg.DnsPinSec));
+                await Task.Delay(delay, stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -79,6 +93,7 @@ public sealed class DnsBlockPinWorker : BackgroundService
         {
             if (_seenHosts.Count > 0)
                 _seenHosts.Clear();
+            _lastCacheHash = "\0";
             // EnforceWorker Apply clears PINs; this is a belt-and-suspenders heal if
             // WebBlockState is empty but orphan PIN-* rules remain (e.g. crash mid-clear).
             if (!_clearedWhileEmpty)
@@ -115,6 +130,7 @@ public sealed class DnsBlockPinWorker : BackgroundService
             if (cacheNames.Count == 0)
                 return;
 
+            var cacheHash = HashHostNames(cacheNames);
             matchedHosts = new List<string>();
             foreach (var host in cacheNames)
             {
@@ -124,7 +140,19 @@ public sealed class DnsBlockPinWorker : BackgroundService
             }
 
             if (matchedHosts.Count == 0)
+            {
+                _lastCacheHash = cacheHash;
                 return;
+            }
+
+            // Unchanged DNS-cache name set and no prior pin activity this generation → skip DoH/pin.
+            if (cacheHash == _lastCacheHash && DateTimeOffset.UtcNow >= _fastUntil)
+            {
+                // Still throttle TCP kill for long-lived sockets while matches exist.
+                await MaybeThrottledTcpKillAsync(matchedHosts, generation, ct);
+                return;
+            }
+            _lastCacheHash = cacheHash;
         }
 
         var ips = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -141,8 +169,19 @@ public sealed class DnsBlockPinWorker : BackgroundService
         // Stale generation → Apply already cleared PINs for a newer policy; drop this batch.
         var newlyPinned = DomainBlockEnforcer.PinRemoteIps(ips, generation);
         var killed = 0;
-        if (newlyPinned > 0 || matchedHosts.Count > 0)
+        var now = DateTimeOffset.UtcNow;
+        if (newlyPinned > 0)
+        {
             killed = TcpConnectionKiller.KillToRemoteIps(ips);
+            _lastTcpKill = now;
+            _fastUntil = now.Add(FastPinWindow);
+        }
+        else if (matchedHosts.Count > 0 &&
+                 now - _lastTcpKill >= TimeSpan.FromSeconds(Math.Max(5, _cfg.TcpKillSec)))
+        {
+            killed = TcpConnectionKiller.KillToRemoteIps(ips);
+            _lastTcpKill = now;
+        }
 
         if (newlyPinned > 0 || killed > 0)
         {
@@ -160,5 +199,41 @@ public sealed class DnsBlockPinWorker : BackgroundService
                     string.Join(",", matchedHosts.Take(3)));
             }
         }
+    }
+
+    private async Task MaybeThrottledTcpKillAsync(
+        List<string> matchedHosts, long generation, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastTcpKill < TimeSpan.FromSeconds(Math.Max(5, _cfg.TcpKillSec)))
+            return;
+
+        var ips = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var host in matchedHosts)
+        {
+            foreach (var ip in DomainBlockEnforcer.ResolvePublicIps(host, forceRefresh: false))
+                ips.Add(ip);
+        }
+        if (ips.Count == 0)
+            return;
+
+        var killed = TcpConnectionKiller.KillToRemoteIps(ips);
+        _lastTcpKill = now;
+        if (killed > 0)
+        {
+            await _store.AuditAsync(
+                "web_dns_pin",
+                $"gen={generation} hosts={matchedHosts.Count} pin_new=0 ips={ips.Count} tcp_kill={killed} throttle=1",
+                ct);
+        }
+    }
+
+    private static string HashHostNames(IReadOnlyList<string> names)
+    {
+        var sorted = names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase);
+        var sb = new StringBuilder();
+        foreach (var n in sorted)
+            sb.Append(n).Append('\n');
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())));
     }
 }

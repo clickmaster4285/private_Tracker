@@ -35,6 +35,12 @@ public sealed class FaceRecognitionEngine : IDisposable
     private const int NumAnchors = 2;
     private const int DetInput = 640;
     private const float DetThresh = 0.5f;
+    /// <summary>Lower SCRFD score when frame mean luminance is dim.</summary>
+    private const float DetThreshDim = 0.35f;
+    private const float QualityScoreFloor = 0.65f;
+    private const float QualityScoreFloorDim = 0.55f;
+    /// <summary>Mean gray &lt; this → CLAHE + dim det/quality floors.</summary>
+    private const double DimLumaMean = 70.0;
     private const float NmsThresh = 0.4f;
     private const int MinFacePx = 60;
     private const int RequiredMatchStreak = 3;
@@ -53,7 +59,7 @@ public sealed class FaceRecognitionEngine : IDisposable
     private bool _useKps = true;
     private readonly Dictionary<(int, int, int), float[,]> _centerCache = new();
     private readonly List<(string? PoseId, float[] Vector)> _templates = new();
-    private double _threshold = 0.85;
+    private double _threshold = 0.8;
     private bool _disposed;
     private int _matchStreak;
     private double _motionAccum;
@@ -70,7 +76,7 @@ public sealed class FaceRecognitionEngine : IDisposable
         if (!OperatingSystem.IsWindows())
             throw new PlatformNotSupportedException("Face verify is Windows-only.");
 
-        _threshold = Math.Max(0.85, threshold);
+        _threshold = Math.Max(0.8, threshold);
         _templates.Clear();
         foreach (var t in templates)
         {
@@ -89,6 +95,7 @@ public sealed class FaceRecognitionEngine : IDisposable
         }
         if (_cam == null || !_cam.IsOpened())
             throw new InvalidOperationException("Could not open webcam.");
+        TryBoostCameraLowLight(_cam);
     }
 
     /// <summary>Load SCRFD + buffalo_l recognition without opening the webcam.</summary>
@@ -108,6 +115,17 @@ public sealed class FaceRecognitionEngine : IDisposable
             IntraOpNumThreads = threads,
             InterOpNumThreads = threads,
         };
+#if FACE_WINFORMS_LOCKER
+        try
+        {
+            opts.AppendExecutionProvider_DML(0);
+            Console.Error.WriteLine("[face] ORT EP=DirectML (+CPU fallback), threads=" + threads);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[face] DirectML unavailable ({ex.Message}); CPU only, threads={threads}");
+        }
+#endif
         opts.AppendExecutionProvider_CPU();
 
         _det?.Dispose();
@@ -119,6 +137,23 @@ public sealed class FaceRecognitionEngine : IDisposable
         _detOutputs = _det.OutputMetadata.Keys.ToArray();
         _useKps = _detOutputs.Length == 9;
         _centerCache.Clear();
+    }
+
+    /// <summary>Best-effort auto-exposure / gain for dim offices (DirectShow props vary by webcam).</summary>
+    private static void TryBoostCameraLowLight(VideoCapture cam)
+    {
+        try
+        {
+            // Many DSHOW drivers: 0.75 = auto exposure on.
+            cam.Set(VideoCaptureProperties.AutoExposure, 0.75);
+            cam.Set(VideoCaptureProperties.Brightness, Math.Max(cam.Get(VideoCaptureProperties.Brightness), 0.55));
+            cam.Set(VideoCaptureProperties.Gain, Math.Max(cam.Get(VideoCaptureProperties.Gain), 0.4));
+            cam.Set(VideoCaptureProperties.Contrast, Math.Max(cam.Get(VideoCaptureProperties.Contrast), 0.45));
+        }
+        catch
+        {
+            // Driver may reject any property — ignore.
+        }
     }
 
     public float[]? EmbedImageFile(string imagePath)
@@ -158,7 +193,9 @@ public sealed class FaceRecognitionEngine : IDisposable
                 return new FaceMatchResult { Detail = "camera_frame_empty" };
 
             var preview = frame.Clone();
-            var faces = DetectFaces(frame);
+            var dim = IsDimFrame(frame);
+            // Detect on CLAHE-enhanced copy when dim; align/embed stay on raw for enrollment parity.
+            var faces = DetectFaces(frame, dim);
             if (faces.Count < 1)
             {
                 ResetMatchStreak();
@@ -190,7 +227,8 @@ public sealed class FaceRecognitionEngine : IDisposable
 
             using (aligned)
             {
-                if (best.Score < 0.65f || Math.Max(best.W, best.H) < MinFacePx * 1.2)
+                var qualityFloor = dim ? QualityScoreFloorDim : QualityScoreFloor;
+                if (best.Score < qualityFloor || Math.Max(best.W, best.H) < MinFacePx * 1.2)
                 {
                     ResetMatchStreak();
                     return new FaceMatchResult { PreviewBgr = preview, Detail = "low_quality", Score = 0 };
@@ -361,7 +399,62 @@ public sealed class FaceRecognitionEngine : IDisposable
         public float Score;
     }
 
-    private List<ScrfdFace> DetectFaces(Mat bgr)
+    private static bool IsDimFrame(Mat bgr)
+    {
+        if (bgr.Empty()) return false;
+        using var gray = new Mat();
+        Cv2.CvtColor(bgr, gray, ColorConversionCodes.BGR2GRAY);
+        return Cv2.Mean(gray).Val0 < DimLumaMean;
+    }
+
+    /// <summary>CLAHE on L channel — geometry unchanged so landmarks map to the raw frame.</summary>
+    private static Mat EnhanceClaheBgr(Mat bgr)
+    {
+        using var lab = new Mat();
+        Cv2.CvtColor(bgr, lab, ColorConversionCodes.BGR2Lab);
+        var channels = Cv2.Split(lab);
+        try
+        {
+            using var clahe = Cv2.CreateCLAHE(clipLimit: 2.0, tileGridSize: new OpenCvSharp.Size(8, 8));
+            clahe.Apply(channels[0], channels[0]);
+            using var merged = new Mat();
+            Cv2.Merge(channels, merged);
+            var outBgr = new Mat();
+            Cv2.CvtColor(merged, outBgr, ColorConversionCodes.Lab2BGR);
+            return outBgr;
+        }
+        finally
+        {
+            foreach (var c in channels) c.Dispose();
+        }
+    }
+
+    private List<ScrfdFace> DetectFaces(Mat bgr, bool? dimOverride = null)
+    {
+        if (_det == null || bgr.Empty() || bgr.Width < 16 || bgr.Height < 16)
+            return new List<ScrfdFace>();
+
+        var dim = dimOverride ?? IsDimFrame(bgr);
+        var detThresh = dim ? DetThreshDim : DetThresh;
+        Mat work = bgr;
+        Mat? enhanced = null;
+        try
+        {
+            if (dim)
+            {
+                enhanced = EnhanceClaheBgr(bgr);
+                work = enhanced;
+            }
+
+            return DetectFacesCore(work, detThresh);
+        }
+        finally
+        {
+            enhanced?.Dispose();
+        }
+    }
+
+    private List<ScrfdFace> DetectFacesCore(Mat bgr, float detThresh)
     {
         var list = new List<ScrfdFace>();
         if (_det == null || bgr.Empty() || bgr.Width < 16 || bgr.Height < 16)
@@ -422,7 +515,7 @@ public sealed class FaceRecognitionEngine : IDisposable
             var num = scores.Length;
             for (var i = 0; i < num; i++)
             {
-                if (scores[i] < DetThresh) continue;
+                if (scores[i] < detThresh) continue;
                 var bi = i * 4;
                 var x1 = anchors[i, 0] - bboxPreds[bi] * stride;
                 var y1 = anchors[i, 1] - bboxPreds[bi + 1] * stride;

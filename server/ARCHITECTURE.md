@@ -1,7 +1,13 @@
 # Server Architecture — Alpha AI Tracker API
 
-> **Last audited:** 2026-11-14 (face verify + antivirus / file-transfer merge)
+> **Last audited:** 2026-11-14 (auth cookies match main)
 > **Changelog:**
+> - 2026-11-14: **Auth cookies match `main`.** Dropped `COOKIE_SECURE` env and
+>   `ConfigureAuthCookies`; `auth_token` / `refresh_token` hardcode `Secure: false`.
+>   Restart API.
+> - 2026-11-14: **TLS/HTTPS removed.** Echo always `Start` (no `StartTLS`); `TLS_*` config
+>   gone. face_worker always uses `http://` and no longer loads `TLS_CA_FILE` /
+>   `REQUESTS_CA_BUNDLE`. Restart API + `python worker.py`.
 > - 2026-11-13: **DLP rule triggers `file_download` / `file_upload`.** Migration **075** widens
 >   `dlp_rules_trigger_check`; `allowedTriggers` accepts both. Enforced on Windows by DlpService when an
 >   enabled rule with action block / alert_block is published (rides the existing bundle `rules[]`; no

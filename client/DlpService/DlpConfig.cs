@@ -12,6 +12,22 @@ public sealed class DlpConfig
     public string DeviceToken { get; private set; } = "";
     public string DataDir { get; init; } = "";
     public int PolicyPollSec { get; private set; } = 300;
+    /// <summary>
+    /// Idle EnforceWorker pass interval (seconds). Independent of <see cref="PolicyPollSec"/>.
+    /// Policy publish still wakes immediately via <c>DlpSignals</c>. Clamped 5–120.
+    /// Default 60 suits older office PCs (e.g. i5 3rd-gen / 8 GB); fast path still wakes on publish.
+    /// </summary>
+    public int EnforceTickSec { get; private set; } = 60;
+    /// <summary>Quiet AppProcessGuard interval (seconds). After a kill, sweeps within 5s.</summary>
+    public int AppSweepSec { get; private set; } = 120;
+    /// <summary>Idle DnsBlockPinWorker poll (seconds). Fast 1.5s for ~30s after a new pin.</summary>
+    public int DnsPinSec { get; private set; } = 10;
+    /// <summary>Throttled full TCP kill while blocked hosts match (seconds). New pins kill immediately.</summary>
+    public int TcpKillSec { get; private set; } = 30;
+    /// <summary>Idle PortGuardWorker interval (seconds). Fast 2s for ~30s after a reblock.</summary>
+    public int PortGuardSec { get; private set; } = 15;
+    /// <summary>Delete-block ACL tamper recheck when volume set unchanged (seconds).</summary>
+    public int DeleteRecheckSec { get; private set; } = 600;
     public int AlertSyncSec { get; private set; } = 60;
     /// <summary>
     /// Local kill-switches for each blocker (client .env -> service.env). When false the
@@ -42,6 +58,11 @@ public sealed class DlpConfig
     /// force-apply blockers, then reboot once. Off = no reboot (still polls policy).
     /// </summary>
     public bool LoginReboot { get; init; } = true;
+    /// <summary>
+    /// Seconds until forced reboot after post-login force-apply (<c>shutdown /t</c>).
+    /// Clamped 5–120 when scheduling.
+    /// </summary>
+    public int LoginRebootDelaySec { get; init; } = 5;
     /// <summary>
     /// Parsed so an existing <c>ALPHA_DLP_MAX_LOCAL_ALERTS</c> still loads.
     /// Unsynced alerts are not deleted when this count is passed.
@@ -114,6 +135,12 @@ public sealed class DlpConfig
                 ? d
                 : defaultDir,
             PolicyPollSec = GetInt("ALPHA_DLP_POLICY_POLL_SEC", 300),
+            EnforceTickSec = Math.Clamp(GetInt("ALPHA_DLP_ENFORCE_TICK_SEC", 60), 5, 120),
+            AppSweepSec = Math.Max(5, GetInt("ALPHA_DLP_APP_SWEEP_SEC", 120)),
+            DnsPinSec = Math.Max(1, GetInt("ALPHA_DLP_DNS_PIN_SEC", 10)),
+            TcpKillSec = Math.Max(5, GetInt("ALPHA_DLP_TCP_KILL_SEC", 30)),
+            PortGuardSec = Math.Max(2, GetInt("ALPHA_DLP_PORT_GUARD_SEC", 15)),
+            DeleteRecheckSec = Math.Max(30, GetInt("ALPHA_DLP_DELETE_RECHECK_SEC", 600)),
             AlertSyncSec = GetInt("ALPHA_DLP_ALERT_SYNC_SEC", 60),
             UsbBlock = GetBool("ALPHA_DLP_USB_BLOCK", true),
             WebBlock = GetBool("ALPHA_DLP_WEB_BLOCK", true),
@@ -123,6 +150,7 @@ public sealed class DlpConfig
             DeleteBlock = GetBool("ALPHA_DLP_DELETE_BLOCK", true),
             FileTransferBlock = GetBool("ALPHA_DLP_FILE_TRANSFER_BLOCK", true),
             LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
+            LoginRebootDelaySec = Math.Clamp(GetInt("ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC", 5), 5, 120),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
             DedupSec = GetInt("ALPHA_DLP_DEDUP_SEC", 300),
             PipeName = Environment.GetEnvironmentVariable("ALPHA_DLP_PIPE_NAME") is { Length: > 0 } p
@@ -188,6 +216,18 @@ public sealed class DlpConfig
         PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true);
         var poll = GetInt("ALPHA_DLP_POLICY_POLL_SEC", PolicyPollSec);
         if (poll > 0) PolicyPollSec = poll;
+        var enforce = GetInt("ALPHA_DLP_ENFORCE_TICK_SEC", EnforceTickSec);
+        if (enforce > 0) EnforceTickSec = Math.Clamp(enforce, 5, 120);
+        var appSweep = GetInt("ALPHA_DLP_APP_SWEEP_SEC", AppSweepSec);
+        if (appSweep > 0) AppSweepSec = Math.Max(5, appSweep);
+        var dnsPin = GetInt("ALPHA_DLP_DNS_PIN_SEC", DnsPinSec);
+        if (dnsPin > 0) DnsPinSec = Math.Max(1, dnsPin);
+        var tcpKill = GetInt("ALPHA_DLP_TCP_KILL_SEC", TcpKillSec);
+        if (tcpKill > 0) TcpKillSec = Math.Max(5, tcpKill);
+        var portGuard = GetInt("ALPHA_DLP_PORT_GUARD_SEC", PortGuardSec);
+        if (portGuard > 0) PortGuardSec = Math.Max(2, portGuard);
+        var deleteRecheck = GetInt("ALPHA_DLP_DELETE_RECHECK_SEC", DeleteRecheckSec);
+        if (deleteRecheck > 0) DeleteRecheckSec = Math.Max(30, deleteRecheck);
         var alert = GetInt("ALPHA_DLP_ALERT_SYNC_SEC", AlertSyncSec);
         if (alert > 0) AlertSyncSec = alert;
     }

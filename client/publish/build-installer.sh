@@ -294,23 +294,9 @@ if [ -f "$CONFIG_ENC" ]; then
   done
 fi
 
-# Bundle org TLS root CA so the Windows installer can auto-trust private-LAN HTTPS
-# (no employee / IT manual certutil). Same PEM that signed server TLS leaf.
-REPO_ROOT="$(dirname "$PROJECT_DIR")"
-ORG_CA_SRC="$REPO_ROOT/certs/rootCA.pem"
-if [ "$BUILD_WIN" = true ] && [ -d "$PUBLISH_WIN" ]; then
-  echo ""
-  echo "[TLS] Bundling org root CA for installer auto-trust..."
-  mkdir -p "$PUBLISH_WIN/tls"
-  if [ -f "$ORG_CA_SRC" ]; then
-    cp "$ORG_CA_SRC" "$PUBLISH_WIN/tls/rootCA.pem"
-    cp "$SCRIPT_DIR/install-org-ca.ps1" "$PUBLISH_WIN/tls/install-org-ca.ps1"
-    echo "  ✓ $ORG_CA_SRC → publish/windows/tls/rootCA.pem"
-  else
-    rm -f "$PUBLISH_WIN/tls/rootCA.pem"
-    echo "  WARNING: $ORG_CA_SRC missing — HTTPS login will fail on fleet PCs"
-    echo "           until certs/rootCA.pem exists at bake time (see certs.md)."
-  fi
+# Drop any leftover TLS CA bundle from older publishes (stack is plain HTTP only).
+if [ "$BUILD_WIN" = true ] && [ -d "$PUBLISH_WIN/tls" ]; then
+  rm -rf "$PUBLISH_WIN/tls"
 fi
 
 # Windows installer
