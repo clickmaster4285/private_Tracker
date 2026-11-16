@@ -28,6 +28,9 @@ internal sealed class FaceVerifyLockerForm : Form
 {
     private readonly Label _title;
     private readonly Label _status;
+    private readonly Label _downloadMeta;
+    private readonly ProgressBar _downloadBar;
+    private readonly Panel _downloadPanel;
     private readonly PictureBox _preview;
     private readonly PictureBox _reference;
     private readonly Label _refLabel;
@@ -64,6 +67,33 @@ internal sealed class FaceVerifyLockerForm : Form
             TextAlign = ContentAlignment.MiddleCenter,
             BackColor = Color.FromArgb(22, 22, 28),
         };
+        _downloadPanel = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 56,
+            BackColor = Color.FromArgb(22, 22, 28),
+            Visible = false,
+            Padding = new Padding(80, 8, 80, 8),
+        };
+        _downloadBar = new ProgressBar
+        {
+            Dock = DockStyle.Top,
+            Height = 14,
+            Style = ProgressBarStyle.Marquee,
+            MarqueeAnimationSpeed = 30,
+            Minimum = 0,
+            Maximum = 1000,
+        };
+        _downloadMeta = new Label
+        {
+            Dock = DockStyle.Fill,
+            Text = "",
+            ForeColor = Color.Silver,
+            Font = new Font("Segoe UI", 10f),
+            TextAlign = ContentAlignment.MiddleCenter,
+        };
+        _downloadPanel.Controls.Add(_downloadMeta);
+        _downloadPanel.Controls.Add(_downloadBar);
         _preview = new PictureBox
         {
             Dock = DockStyle.Fill,
@@ -88,6 +118,7 @@ internal sealed class FaceVerifyLockerForm : Form
         };
 
         Controls.Add(_preview);
+        Controls.Add(_downloadPanel);
         Controls.Add(_status);
         Controls.Add(_title);
         Controls.Add(_refLabel);
@@ -127,6 +158,21 @@ internal sealed class FaceVerifyLockerForm : Form
             {
                 _title.Text = _controller?.StatusTitle ?? Text;
                 _status.Text = _controller?.StatusDetail ?? "";
+                var showDl = _controller?.ShowDownloadProgress == true;
+                _downloadPanel.Visible = showDl;
+                if (showDl)
+                {
+                    if (_controller!.DownloadIndeterminate)
+                    {
+                        _downloadBar.Style = ProgressBarStyle.Marquee;
+                    }
+                    else
+                    {
+                        _downloadBar.Style = ProgressBarStyle.Continuous;
+                        _downloadBar.Value = (int)Math.Clamp(_controller.DownloadFraction * 1000, 0, 1000);
+                    }
+                    _downloadMeta.Text = _controller.DownloadMeta ?? "";
+                }
                 var refPath = _controller?.ReferenceImagePath ?? "";
                 if (!string.IsNullOrWhiteSpace(refPath) && File.Exists(refPath))
                 {

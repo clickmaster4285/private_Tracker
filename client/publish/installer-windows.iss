@@ -23,6 +23,9 @@ AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
+; win-x64 publish — install under Program Files (not Program Files (x86)).
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ChangesAssociations=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
@@ -39,7 +42,12 @@ UninstallDisplayName={#MyAppName}
 CreateUninstallRegKey=yes
 ; Force silent kill before any install steps
 
+; Remove DirectML leftovers from 2.4.0 DirectML ORT builds on upgrade.
+[InstallDelete]
+Type: files; Name: "{app}\DirectML.dll"
+
 [Languages]
+
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
@@ -52,10 +60,13 @@ Source: "windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs creat
 Source: "windows\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace; Check: DirExists(ExpandConstant('{src}\windows\Service'))
 Source: "windows\config.enc"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist; Check: FileExists(ExpandConstant('{src}\windows\config.enc'))
 Source: "..\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion
-; Optional full VC++ redist (ALPHA_BUNDLE_VC_REDIST=1). Check: is install-time only —
-; missing Source still fails compile, so gate with ISPP FileExists.
+; Keep VC++ redistributables under {app}\redist (not only {tmp}) so post-install
+; Exec can run them reliably and IT can re-run / verify. Bake always downloads both.
 #if FileExists(AddBackslash(SourcePath) + "windows\redist\vc_redist.x64.exe")
-Source: "windows\redist\vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+Source: "windows\redist\vc_redist.x64.exe"; DestDir: "{app}\redist"; Flags: ignoreversion
+#endif
+#if FileExists(AddBackslash(SourcePath) + "windows\redist\vc_redist.x86.exe")
+Source: "windows\redist\vc_redist.x86.exe"; DestDir: "{app}\redist"; Flags: ignoreversion
 #endif
 
 [Registry]
@@ -69,8 +80,8 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Install VC++ CRT system-wide when the optional redistributable was bundled.
-Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing Visual C++ runtime..."; Flags: waituntilterminated; Check: FileExists(ExpandConstant('{tmp}\vc_redist.x64.exe'))
+; VC++ is installed from CurStepChanged(ssPostInstall) → InstallVcRedists (logged).
+; [Run] alone was unreliable on clean Win10 (quiet child install skipped / no Control Panel entry).
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -466,10 +477,54 @@ begin
   RemoveDlpService;
 end;
 
+// Quiet-install Microsoft Visual C++ 2015-2022 (x64 + x86) from {app}\redist.
+// Exit 0 = ok, 1638 = newer/same already installed, 3010 = ok + reboot needed.
+// Writes {app}\redist\vc_redist_install.log so lab PCs can prove what ran.
+procedure InstallOneVcRedist(const ExeName: string; var LogText: string);
+var
+  ExePath: string;
+  ResultCode: Integer;
+  Ok: Boolean;
+begin
+  ExePath := ExpandConstant('{app}\redist\' + ExeName);
+  if not FileExists(ExePath) then
+  begin
+    LogText := LogText + ExeName + ': MISSING' + #13#10;
+    Exit;
+  end;
+  // /install /quiet /norestart — official VS 2015-2022 redistributable switches.
+  Ok := Exec(ExePath, '/install /quiet /norestart', ExpandConstant('{app}\redist'),
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not Ok then
+    LogText := LogText + ExeName + ': Exec failed (GetLastError path)' + #13#10
+  else if (ResultCode = 0) or (ResultCode = 1638) or (ResultCode = 3010) then
+    LogText := LogText + ExeName + ': OK exit=' + IntToStr(ResultCode) + #13#10
+  else
+    LogText := LogText + ExeName + ': FAILED exit=' + IntToStr(ResultCode) + #13#10;
+  if ResultCode = 3010 then
+    GNeedsRestart := True;
+end;
+
+procedure InstallVcRedists;
+var
+  LogPath, LogText: string;
+begin
+  ForceDirectories(ExpandConstant('{app}\redist'));
+  LogText := 'VC++ redistributable install ' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + #13#10;
+  WizardForm.StatusLabel.Caption := 'Installing Visual C++ runtime (x64)…';
+  InstallOneVcRedist('vc_redist.x64.exe', LogText);
+  WizardForm.StatusLabel.Caption := 'Installing Visual C++ runtime (x86)…';
+  InstallOneVcRedist('vc_redist.x86.exe', LogText);
+  LogPath := ExpandConstant('{app}\redist\vc_redist_install.log');
+  SaveStringToFile(LogPath, LogText, False);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
+    // CRT system install BEFORE service start — face ORT / vpx need it on clean Win10.
+    InstallVcRedists;
     InstallDlpService;
     GInstallSucceeded := True;
   end;

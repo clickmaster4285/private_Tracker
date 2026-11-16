@@ -1,7 +1,72 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-14
+> **Last audited:** 2026-11-16
 > **Changelog:**
+>
+> - 2026-11-16: **Client startup forces VC++ before anything loads.** New
+> `VcRedistBootstrap`: on every Windows launch (tracker / soft-lock / background) checks
+> `HKLM\…\VC\Runtimes\x64\Installed=1`; if missing, **stops** and runs
+> `{app}\redist\vc_redist.x64.exe` (+ x86) with `/install /quiet /norestart` and UAC
+> `runas`, logs `vc_redist_runtime_install.log`, re-checks registry — exit 40 if still
+> missing. Inno half: bake both redists into `{app}\redist`, Pascal `InstallVcRedists` at
+> `ssPostInstall` (not fragile `[Run]` `{tmp}`). App-local full CRT unchanged.
+> Client **VERSION 2.4.6**. Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake).
+>
+> - 2026-11-16: **Always install VC++ 2015–2022 x64 on Windows Setup (clean Win10 Pro).**
+> `ensure-vpx-native.ps1` now copies the **full** CRT set app-local (`vcruntime140`,
+> `msvcp140`, plus `_1` / atomic_wait / codecvt / `concrt140` / `vccorlib140` when present)
+> and **always** downloads `redist/vc_redist.x64.exe` (bake fails if CRT or redist missing;
+> `ALPHA_BUNDLE_VC_REDIST=0` only to skip download when mirrored). Soft-lock / live-stream
+> preload + probe cover `MSVCP140`. Client **VERSION 2.4.5** (install path fixed in 2.4.6).
+>
+> - 2026-11-16: **AV self-protection — Defender never blocks / quarantines the product's own
+> files.** DlpService: `ProductAvExclusions` now covers **every** install root (both Program
+> Files roots + wherever the service actually runs, so old `Program Files (x86)` installs are
+> excluded); per-tick enforce also ensures **`AttackSurfaceReductionOnlyExclusions`** (ASR
+> prevalence / ransomware rules ignore plain exclusions and hit the unsigned `client.exe`).
+> New `DefenderGuard.EnsureSelfProtection` + single-flight `AvSelfProtection` (30 s floor):
+> path/process/ASR exclusions + `MpCmdRun -Restore -FilePath` for quarantined files **under
+> product paths only**. Runs at guard startup, on any Defender 1006–1008 / 1116–1119 / **1121**
+> (ASR block, now watched) whose path is ours (audit `av_self_block`, no malware alert), and via
+> new pipe op **`EnsureAvSelfProtection`** (not DLP-gated; needs `ALPHA_AV_ENFORCE`). Client
+> soft-lock probes ORT **before** constructing ORT types; on a missing file or AV/policy Win32
+> code it shows "Repairing antivirus access…", calls the pipe, re-probes (2 tries). Win32 code is
+> now captured straight after `LoadLibraryExW` and mapped (225/226/5/1260/4551/193/126).
+> `client.csproj` native-copy targets skip passes with empty `TargetDir` / `PublishDir`. Client
+> **VERSION 2.4.4**. Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake).
+>
+> - 2026-11-16: **Face ORT load harden (providers_shared + Win32 + x64 Program Files).** Lab
+>   soft-lock showed `onnxruntime.dll` present but `TryLoad` failed after auto-update /
+>   reinstall under `Program Files (x86)`. Root gaps: missing sibling
+>   `onnxruntime_providers_shared.dll`, vague errors, Inno `{autopf}` without 64-bit mode,
+>   and possible DirectML leftovers. Fix: `OrtNativeBootstrap` preloads CRT →
+>   `providers_shared` → ORT via `LoadLibraryEx(LOAD_WITH_ALTERED_SEARCH_PATH)` and reports
+>   Win32 codes; `ensure-ort-native.ps1`/`.sh` require both natives + strip `DirectML.dll`;
+>   MSBuild AfterBuild/Publish flatten natives; Inno
+>   `ArchitecturesInstallIn64BitMode=x64compatible` + `[InstallDelete] DirectML.dll`.
+>   Client **VERSION 2.4.3**. Installer-Parity: rebuild Windows Setup; full reinstall on
+>   tester PCs (no `config.enc` re-bake).
+>
+> - 2026-11-16: **Face soft-lock ORT back to CPU (f960fca parity).** Windows NuGet reverted from
+>   `Microsoft.ML.OnnxRuntime.DirectML` → **`Microsoft.ML.OnnxRuntime`** (CPU). DirectML’s
+>   native hard-imports `DirectML.dll` and failed with opaque `NativeMethods` type-init on
+>   lab PCs; working commit `f960fca` never used DirectML. Keep CLAHE / 0.8 threshold /
+>   camera boost. New `OrtNativeBootstrap` preloads CRT + `onnxruntime.dll`; soft-lock shows
+>   honest missing-DLL text; `ensure-ort-native.sh` fails the Windows bake if
+>   `onnxruntime.dll` is absent. Client **VERSION 2.4.1**. Installer-Parity: rebuild Windows
+>   Setup and reinstall tester PCs (no `config.enc` re-bake required for this ORT swap).
+>
+
+> - 2026-11-16: **Defender product self-exclusion + face model download ETA (both UIs).**
+>   DlpService `ProductAvExclusions` + `DefenderGuard` now **ensures** path/process exclusions
+>   every AV tick for Program Files (`Alpha AI Tracker`), `%ProgramData%\AlphaAITracker`,
+>   per-user `%LocalAppData%\AlphaAITracker`, and `client.exe` / `AlphaAITracker.Service.exe`
+>   (CFA allowed apps when `ALPHA_AV_CFA` on). IT extras still via `ALPHA_AV_ALLOWED_EXCLUSIONS`;
+>   all other preference exclusions stay fail-closed removed. Face ONNX warm-up publishes
+>   byte-rate ETA (`FaceDownloadProgress`); tracker shows Avalonia/WinForms download UI;
+>   soft-lock downloads missing models with ProgressBar + ETA then continues verify. Client
+>   **VERSION 2.3.9**. Installer-Parity: rebuild Windows installer (no `config.enc` re-bake —
+>   exclusions are code-derived); restart DLP service to pick up the guard.
 >
 > - 2026-11-14: **Face match threshold 0.8 for first + simple.** Default /
 >   `ALPHA_FACE_MATCH_THRESHOLD` floor lowered from 0.85 → **0.8**; removed first-mode

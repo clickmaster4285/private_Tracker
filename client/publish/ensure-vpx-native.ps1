@@ -1,5 +1,6 @@
-﻿# Bundle VC++ CRT DLLs next to the Windows client so vpxmd.dll (SIPSorceryMedia.Encoders)
-# can LoadLibrary on machines that do not have the system VC++ 2015-2022 redistributable.
+﻿# Bundle the full VC++ 2015–2022 x64 CRT next to the Windows client AND always
+# download vc_redist.x64.exe so Inno can quiet-install the system redistributable
+# on clean Win10 Pro PCs (Programs and Features will then show "Microsoft Visual C++ …").
 # Microsoft permits app-local redistribution of these CRT binaries with the application.
 param(
     [string]$OutDir = ""
@@ -31,7 +32,9 @@ function Find-First([string[]]$candidates) {
 
 $vsRoots = @(
     "${env:ProgramFiles}\Microsoft Visual Studio\2022",
-    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022"
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022",
+    "${env:ProgramFiles}\Microsoft Visual Studio\2019",
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019"
 ) | Where-Object { Test-Path $_ }
 
 $crtDirs = @()
@@ -44,47 +47,84 @@ foreach ($root in $vsRoots) {
     $crtDirs += $(if ($desktop.Count -gt 0) { $desktop } else { $found })
 }
 
-$names = @("vcruntime140.dll", "vcruntime140_1.dll")
-$copied = 0
-foreach ($name in $names) {
+# Required for ORT / vpxmd; extras copied when present so every VC++ CRT piece ships.
+$requiredNames = @("vcruntime140.dll", "msvcp140.dll")
+$optionalNames = @(
+    "vcruntime140_1.dll",
+    "msvcp140_1.dll",
+    "msvcp140_atomic_wait.dll",
+    "msvcp140_codecvt_ids.dll",
+    "concrt140.dll",
+    "vccorlib140.dll"
+)
+$allNames = $requiredNames + $optionalNames
+
+$copiedRequired = @()
+foreach ($name in $allNames) {
     $candidates = @()
     foreach ($dir in $crtDirs) {
         $candidates += (Join-Path $dir $name)
     }
     $candidates += (Join-Path $env:WINDIR "System32\$name")
-    $candidates += (Join-Path $env:WINDIR "System32\$($name.ToUpper())")
 
     $src = Find-First $candidates
     if ($null -eq $src) {
-        Write-Warning "ensure-vpx-native: $name not found (VS Redist or System32)."
+        if ($requiredNames -contains $name) {
+            Write-Warning "ensure-vpx-native: REQUIRED $name not found (VS Redist or System32)."
+        }
         continue
     }
 
     $dest = Join-Path $OutDir $name
     Copy-Item -LiteralPath $src.FullName -Destination $dest -Force
     Write-Host "  ✓ $name ← $($src.FullName)"
-    $copied++
+    if ($requiredNames -contains $name) { $copiedRequired += $name }
 }
 
-if ($copied -eq 0) {
-    Write-Warning "ensure-vpx-native: no CRT DLLs copied into $OutDir — live stream may fail without VC++ redist."
-    exit 0
+foreach ($need in $requiredNames) {
+    if (-not (Test-Path -LiteralPath (Join-Path $OutDir $need))) {
+        throw "ensure-vpx-native: missing required CRT $need in $OutDir — cannot bake Windows Setup."
+    }
 }
 
-# Optional full redistributable for the Inno installer [Run] step.
+# Always bundle BOTH x64 + x86 system redistributables (Inno quiet-installs both).
+# Set ALPHA_BUNDLE_VC_REDIST=0 to skip download when IT already mirrored the exes.
 $redistDir = Join-Path $OutDir "redist"
-$redistExe = Join-Path $redistDir "vc_redist.x64.exe"
-if ($env:ALPHA_BUNDLE_VC_REDIST -eq "1" -and -not (Test-Path -LiteralPath $redistExe)) {
-    New-Item -ItemType Directory -Path $redistDir -Force | Out-Null
-    $url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
-    Write-Host "  ↓ Downloading VC++ redistributable → $redistExe"
+$skipDownload = $env:ALPHA_BUNDLE_VC_REDIST -eq "0"
+New-Item -ItemType Directory -Path $redistDir -Force | Out-Null
+
+$redists = @(
+    @{ Name = "vc_redist.x64.exe"; Url = "https://aka.ms/vs/17/release/vc_redist.x64.exe" },
+    @{ Name = "vc_redist.x86.exe"; Url = "https://aka.ms/vs/17/release/vc_redist.x86.exe" }
+)
+foreach ($r in $redists) {
+    $dest = Join-Path $redistDir $r.Name
+    if ((Test-Path -LiteralPath $dest) -and ((Get-Item -LiteralPath $dest).Length -gt 1MB)) {
+        Write-Host "  ✓ $($r.Name) (already present)"
+        continue
+    }
+    if ($skipDownload) {
+        throw "ensure-vpx-native: missing $dest and ALPHA_BUNDLE_VC_REDIST=0 (no download)."
+    }
+    Write-Host "  ↓ Downloading $($r.Name) → $dest"
     try {
-        Invoke-WebRequest -Uri $url -OutFile $redistExe -UseBasicParsing
-        Write-Host "  ✓ vc_redist.x64.exe"
+        Invoke-WebRequest -Uri $r.Url -OutFile $dest -UseBasicParsing
+        if (-not (Test-Path -LiteralPath $dest) -or ((Get-Item -LiteralPath $dest).Length -lt 1MB)) {
+            throw "download produced empty/small file"
+        }
+        Write-Host "  ✓ $($r.Name) ($([math]::Round((Get-Item $dest).Length/1MB, 1)) MB)"
     }
     catch {
-        Write-Warning "ensure-vpx-native: failed to download vc_redist.x64.exe: $_"
+        throw "ensure-vpx-native: failed to download $($r.Name): $_"
     }
 }
 
+foreach ($r in $redists) {
+    $dest = Join-Path $redistDir $r.Name
+    if (-not (Test-Path -LiteralPath $dest)) {
+        throw "ensure-vpx-native: missing $dest — Windows Setup would skip system VC++ install."
+    }
+}
+
+Write-Host "  ✓ CRT required: $($copiedRequired -join ', '); redist x64+x86 ready"
 exit 0

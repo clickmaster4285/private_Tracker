@@ -302,8 +302,10 @@ fi
 # Windows installer
 if [ "$BUILD_WIN" = true ]; then
   echo ""
-  echo "[Windows] Bundling VCRUNTIME140 for vpxmd (live stream)..."
+  echo "[Windows] Bundling full VC++ CRT + vc_redist.x64.exe (ORT / live stream)..."
   bash "$SCRIPT_DIR/ensure-vpx-native.sh" "$PUBLISH_WIN"
+  echo "[Windows] Checking face ORT natives (onnxruntime.dll + providers_shared)..."
+  bash "$SCRIPT_DIR/ensure-ort-native.sh" "$PUBLISH_WIN"
   echo ""
   echo "[Windows] Building Windows installer..."
   bash "$SCRIPT_DIR/generate-windows-vars.sh"

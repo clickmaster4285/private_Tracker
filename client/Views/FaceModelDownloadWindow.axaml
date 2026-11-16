@@ -1,0 +1,55 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:client.ViewModels"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="440" d:DesignHeight="220"
+        x:Class="client.Views.FaceModelDownloadWindow"
+        x:DataType="vm:FaceModelDownloadViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="{Binding AppName} — Face models"
+        WindowStartupLocation="CenterScreen"
+        CanResize="False"
+        Width="440" Height="220"
+        MinWidth="400" MinHeight="200"
+        Topmost="True"
+        Background="{StaticResource CanvasBrush}"
+        Foreground="{StaticResource FgBrush}">
+
+  <Border Padding="28" Classes="fade-in">
+    <Grid RowDefinitions="Auto,Auto,Auto,Auto,*">
+      <TextBlock Text="{Binding AppName}"
+                 Classes="eyebrow"
+                 Opacity="0.7"
+                 Margin="0,0,0,8"/>
+      <TextBlock Grid.Row="1"
+                 Text="{Binding Title}"
+                 Classes="h2"
+                 TextWrapping="Wrap"
+                 Margin="0,0,0,12"/>
+      <TextBlock Grid.Row="2"
+                 Text="{Binding StatusText}"
+                 FontSize="13.5"
+                 TextWrapping="Wrap"
+                 Foreground="{StaticResource MutedFgBrush}"
+                 Margin="0,0,0,10"/>
+      <ProgressBar Grid.Row="3"
+                   Minimum="0" Maximum="1"
+                   Value="{Binding ProgressValue}"
+                   IsIndeterminate="{Binding IsIndeterminate}"
+                   Height="10"
+                   Margin="0,0,0,8"/>
+      <Grid Grid.Row="4" ColumnDefinitions="*,Auto">
+        <TextBlock Text="{Binding MbText}"
+                   FontSize="12"
+                   Opacity="0.8"
+                   VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="1"
+                   Text="{Binding EtaText}"
+                   FontSize="12"
+                   FontWeight="SemiBold"
+                   VerticalAlignment="Center"/>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

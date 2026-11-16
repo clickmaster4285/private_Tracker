@@ -295,15 +295,33 @@ internal static class DefenderGuard
         // registry edit is the strongest bypass. Remove weakening values first.
         RemovePolicyOverrides(changed, errors);
 
+        // Product self-exclusions are always ensured (and never removed). IT extras from
+        // ALPHA_AV_ALLOWED_EXCLUSIONS stay on the allowlist; everything else is removed.
+        var product = ProductAvExclusions.Build();
+        var allowMerged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var x in ProductAvExclusions.FlattenAllowlist(product))
+            if (!string.IsNullOrWhiteSpace(x)) allowMerged.Add(ProductAvExclusions.NormalizePath(x));
+        foreach (var x in allowedExclusions)
+        {
+            if (string.IsNullOrWhiteSpace(x) || x.Contains('\n')) continue;
+            var n = ProductAvExclusions.NormalizePath(x.Trim());
+            if (n.Length > 0) allowMerged.Add(n);
+        }
+
         // Newline-joined (not JSON): PS 5.1 ConvertFrom-Json wraps arrays in one object.
-        var allowList = string.Join("\n", allowedExclusions
-            .Where(x => !string.IsNullOrWhiteSpace(x) && !x.Contains('\n')));
+        var allowList = string.Join("\n", allowMerged);
+        var productPaths = string.Join("\n", product.Paths);
+        var productProcs = string.Join("\n", product.Processes);
+        var cfaApps = string.Join("\n", product.CfaAllowedApps);
 
         var cfa = !hardening.Enabled || !hardening.ControlledFolderAccess
             ? ""
             : (hardening.CfaAudit ? "AuditMode" : "Enabled");
         var script = EnforceScript
             .Replace("__ALLOWED__", EscapePs(allowList), StringComparison.Ordinal)
+            .Replace("__PRODUCT_PATHS__", EscapePs(productPaths), StringComparison.Ordinal)
+            .Replace("__PRODUCT_PROCS__", EscapePs(productProcs), StringComparison.Ordinal)
+            .Replace("__CFA_APPS__", EscapePs(cfaApps), StringComparison.Ordinal)
             .Replace("__HARDEN__", hardening.Enabled ? "1" : "0", StringComparison.Ordinal)
             .Replace("__ASR_ACTION__", hardening.AsrAudit ? "AuditMode" : "Enabled", StringComparison.Ordinal)
             .Replace("__ASR_IDS__", EscapePs(string.Join("\n", AsrRuleIds)), StringComparison.Ordinal)
@@ -343,7 +361,22 @@ internal static class DefenderGuard
     // recommended default, which already quarantines.
     private const string EnforceScript = """
         $ErrorActionPreference = 'Continue'
-        $allowed = @('__ALLOWED__' -split "`n" | Where-Object { $_ })
+        function Norm([string]$s) {
+          if (-not $s) { return '' }
+          $t = $s.Trim().TrimEnd('\','/')
+          try { $t = [System.IO.Path]::GetFullPath($t) } catch { }
+          return $t.TrimEnd('\','/')
+        }
+        function AllowedContains([string]$x) {
+          $n = Norm $x
+          if (-not $n) { return $false }
+          foreach ($a in $allowed) { if ((Norm $a).ToLowerInvariant() -eq $n.ToLowerInvariant()) { return $true } }
+          return $false
+        }
+        $allowed = @('__ALLOWED__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
+        $productPaths = @('__PRODUCT_PATHS__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
+        $productProcs = @('__PRODUCT_PROCS__' -split "`n" | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $cfaApps = @('__CFA_APPS__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
         $changed = New-Object System.Collections.ArrayList
         $errors = New-Object System.Collections.ArrayList
         $hardened = New-Object System.Collections.ArrayList
@@ -369,7 +402,7 @@ internal static class DefenderGuard
           }
           if (@($p.ThreatIDDefaultAction_Ids | Where-Object { $_ }).Count -gt 0) { [void]$d.Add('threat_overrides') }
           foreach ($x in @($p.ExclusionPath) + @($p.ExclusionProcess) + @($p.ExclusionExtension)) {
-            if ($x -and -not ($allowed -contains $x)) { [void]$d.Add('exclusions'); break }
+            if ($x -and -not (AllowedContains $x)) { [void]$d.Add('exclusions'); break }
           }
           return ,$d
         }
@@ -394,12 +427,38 @@ internal static class DefenderGuard
         if (@(6, 8, 9) -contains [int]$p.SevereThreatDefaultAction) { Fix 'threat_action_severe' { Set-MpPreference -SevereThreatDefaultAction Remove -ErrorAction Stop } }
         $ids = @($p.ThreatIDDefaultAction_Ids | Where-Object { $_ })
         if ($ids.Count -gt 0) { Fix 'threat_overrides' { Remove-MpPreference -ThreatIDDefaultAction_Ids $ids -ErrorAction Stop } }
-        foreach ($x in @($p.ExclusionPath | Where-Object { $_ -and -not ($allowed -contains $_) })) { Fix ('exclusion_path:' + $x) { Remove-MpPreference -ExclusionPath $x -ErrorAction Stop } }
-        foreach ($x in @($p.ExclusionProcess | Where-Object { $_ -and -not ($allowed -contains $_) })) { Fix ('exclusion_process:' + $x) { Remove-MpPreference -ExclusionProcess $x -ErrorAction Stop } }
-        foreach ($x in @($p.ExclusionExtension | Where-Object { $_ -and -not ($allowed -contains $_) })) { Fix ('exclusion_extension:' + $x) { Remove-MpPreference -ExclusionExtension $x -ErrorAction Stop } }
-        # ── Advanced hardening (ASR / CFA / scan tuning) — reported separately from tamper ──
+        foreach ($x in @($p.ExclusionPath | Where-Object { $_ -and -not (AllowedContains $_) })) { Fix ('exclusion_path:' + $x) { Remove-MpPreference -ExclusionPath $x -ErrorAction Stop } }
+        foreach ($x in @($p.ExclusionProcess | Where-Object { $_ -and -not (AllowedContains $_) })) { Fix ('exclusion_process:' + $x) { Remove-MpPreference -ExclusionProcess $x -ErrorAction Stop } }
+        foreach ($x in @($p.ExclusionExtension | Where-Object { $_ -and -not (AllowedContains $_) })) { Fix ('exclusion_extension:' + $x) { Remove-MpPreference -ExclusionExtension $x -ErrorAction Stop } }
+
+        # ── Product self-exclusion ensure (never reported as tamper) ──
         function Harden([string]$name, [scriptblock]$sb) {
           try { & $sb; [void]$hardened.Add($name) } catch { [void]$errors.Add($name + ': ' + $_.Exception.Message) }
+        }
+        $p2 = Get-MpPreference
+        $curPaths = @($p2.ExclusionPath | ForEach-Object { Norm $_ } | Where-Object { $_ })
+        $curProcs = @($p2.ExclusionProcess | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
+        foreach ($xp in $productPaths) {
+          $hit = $false
+          foreach ($c in $curPaths) { if ($c.ToLowerInvariant() -eq $xp.ToLowerInvariant()) { $hit = $true; break } }
+          if (-not $hit) { Harden ('product_exclusion_path:' + $xp) { Add-MpPreference -ExclusionPath $xp -ErrorAction Stop } }
+        }
+        foreach ($xp in $productProcs) {
+          $hit = $false
+          $xn = Norm $xp
+          foreach ($c in $curProcs) {
+            $cn = Norm $c
+            if ($c.Equals($xp, [StringComparison]::OrdinalIgnoreCase) -or ($xn -and $cn -and $cn.ToLowerInvariant() -eq $xn.ToLowerInvariant())) { $hit = $true; break }
+          }
+          if (-not $hit) { Harden ('product_exclusion_process:' + $xp) { Add-MpPreference -ExclusionProcess $xp -ErrorAction Stop } }
+        }
+        # ASR rules (prevalence / ransomware) do not reliably honour plain exclusions —
+        # client.exe is unsigned + rare, so product folders get ASR-only exclusions too.
+        $curAsrEx = @($p2.AttackSurfaceReductionOnlyExclusions | ForEach-Object { Norm $_ } | Where-Object { $_ })
+        foreach ($xp in $productPaths) {
+          $hit = $false
+          foreach ($c in $curAsrEx) { if ($c.ToLowerInvariant() -eq $xp.ToLowerInvariant()) { $hit = $true; break } }
+          if (-not $hit) { Harden ('product_asr_exclusion:' + $xp) { Add-MpPreference -AttackSurfaceReductionOnlyExclusions $xp -ErrorAction Stop } }
         }
         if ('__HARDEN__' -eq '1') {
           $ph = Get-MpPreference
@@ -432,6 +491,14 @@ internal static class DefenderGuard
             $cfaWant = switch ($cfa) { 'Enabled' { 1 } 'AuditMode' { 2 } default { 0 } }
             if ([int]$ph.EnableControlledFolderAccess -ne $cfaWant) {
               Harden ('controlled_folder_access:' + $cfa) { Set-MpPreference -EnableControlledFolderAccess $cfa -ErrorAction Stop }
+            }
+            # Keep product EXEs allowed so CFA cannot block tracker / DLP writes.
+            $ph2 = Get-MpPreference
+            $curCfa = @($ph2.ControlledFolderAccessAllowedApplications | ForEach-Object { Norm $_ } | Where-Object { $_ })
+            foreach ($app in $cfaApps) {
+              $hit = $false
+              foreach ($c in $curCfa) { if ($c.ToLowerInvariant() -eq $app.ToLowerInvariant()) { $hit = $true; break } }
+              if (-not $hit) { Harden ('cfa_allow:' + $app) { Add-MpPreference -ControlledFolderAccessAllowedApplications $app -ErrorAction Stop } }
             }
           }
         }
@@ -592,6 +659,114 @@ internal static class DefenderGuard
     }
 
     /// <summary>
+    /// Fast self-protection pass (no full guard enforce): ensure path / process / ASR-only
+    /// exclusions for every product folder, then restore any product file Defender has
+    /// quarantined (by original file path, so unrelated threats are never restored).
+    /// Safe to call from the pipe (soft-lock ORT load failure) and on self-block events.
+    /// </summary>
+    public static (bool Ok, IReadOnlyList<string> Added, IReadOnlyList<string> Restored, IReadOnlyList<string> Errors)
+        EnsureSelfProtection()
+    {
+        if (!OperatingSystem.IsWindows())
+            return (false, [], [], ["unsupported_os"]);
+
+        var product = ProductAvExclusions.Build();
+        var script = SelfProtectScript
+            .Replace("__PRODUCT_PATHS__", EscapePs(string.Join("\n", product.Paths)), StringComparison.Ordinal)
+            .Replace("__PRODUCT_PROCS__", EscapePs(string.Join("\n", product.Processes)), StringComparison.Ordinal);
+
+        var (exit, stdout, stderr) = RunPowerShell(script, TimeSpan.FromSeconds(90));
+        var json = LastJsonLine(stdout);
+        if (json is null)
+            return (false, [], [], [$"self_protect_failed exit={exit} {Trim(stderr, 200)}"]);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var added = Strings(doc.RootElement, "added").ToList();
+            var restored = Strings(doc.RootElement, "restored").ToList();
+            var errors = Strings(doc.RootElement, "errors").ToList();
+            return (errors.Count == 0, added, restored, errors);
+        }
+        catch (Exception ex)
+        {
+            return (false, [], [], ["self_protect_parse_failed " + ex.GetType().Name]);
+        }
+    }
+
+    private const string SelfProtectScript = """
+        $ErrorActionPreference = 'Continue'
+        function Norm([string]$s) {
+          if (-not $s) { return '' }
+          $t = $s.Trim()
+          if ($t.StartsWith('file:_', [StringComparison]::OrdinalIgnoreCase)) { $t = $t.Substring(6) }
+          $t = $t.TrimEnd('\','/')
+          try { $t = [System.IO.Path]::GetFullPath($t) } catch { }
+          return $t.TrimEnd('\','/')
+        }
+        function Has($list, [string]$v) {
+          foreach ($c in $list) { if ($c -and $c.ToLowerInvariant() -eq $v.ToLowerInvariant()) { return $true } }
+          return $false
+        }
+        function UnderProduct([string]$f) {
+          $n = (Norm $f).ToLowerInvariant()
+          if (-not $n) { return $false }
+          foreach ($r in $productPaths) {
+            $rl = $r.ToLowerInvariant()
+            if ($n -eq $rl -or $n.StartsWith($rl + '\')) { return $true }
+          }
+          return $false
+        }
+        $productPaths = @('__PRODUCT_PATHS__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
+        $productProcs = @('__PRODUCT_PROCS__' -split "`n" | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $added = New-Object System.Collections.ArrayList
+        $restored = New-Object System.Collections.ArrayList
+        $errors = New-Object System.Collections.ArrayList
+
+        $p = Get-MpPreference
+        $curPaths = @($p.ExclusionPath | ForEach-Object { Norm $_ })
+        $curProcs = @($p.ExclusionProcess | ForEach-Object { if ($_) { $_.ToString().Trim() } })
+        $curAsr = @($p.AttackSurfaceReductionOnlyExclusions | ForEach-Object { Norm $_ })
+        foreach ($x in $productPaths) {
+          if (-not (Has $curPaths $x)) {
+            try { Add-MpPreference -ExclusionPath $x -ErrorAction Stop; [void]$added.Add('path:' + $x) } catch { [void]$errors.Add('path:' + $x + ': ' + $_.Exception.Message) }
+          }
+          if (-not (Has $curAsr $x)) {
+            try { Add-MpPreference -AttackSurfaceReductionOnlyExclusions $x -ErrorAction Stop; [void]$added.Add('asr:' + $x) } catch { [void]$errors.Add('asr:' + $x + ': ' + $_.Exception.Message) }
+          }
+        }
+        foreach ($x in $productProcs) {
+          if (-not (Has $curProcs $x)) {
+            try { Add-MpPreference -ExclusionProcess $x -ErrorAction Stop; [void]$added.Add('process:' + $x) } catch { [void]$errors.Add('process:' + $x + ': ' + $_.Exception.Message) }
+          }
+        }
+
+        # Restore product files Defender quarantined (exclusions above stop a re-detect).
+        $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+        $files = New-Object System.Collections.ArrayList
+        try {
+          foreach ($d in @(Get-MpThreatDetection -ErrorAction Stop)) {
+            foreach ($r in @($d.Resources)) {
+              if (-not $r) { continue }
+              $s = [string]$r
+              if (-not $s.StartsWith('file:_', [StringComparison]::OrdinalIgnoreCase)) { continue }
+              $f = Norm $s
+              if ((UnderProduct $f) -and -not (Test-Path -LiteralPath $f) -and -not (Has $files $f)) { [void]$files.Add($f) }
+            }
+          }
+        } catch { [void]$errors.Add('threat_list: ' + $_.Exception.Message) }
+        foreach ($f in $files) {
+          if (-not (Test-Path -LiteralPath $mp)) { [void]$errors.Add('mpcmdrun_missing'); break }
+          try {
+            $out = & $mp -Restore -FilePath $f 2>&1 | Out-String
+            if (Test-Path -LiteralPath $f) { [void]$restored.Add($f) } else { [void]$errors.Add('restore:' + $f + ': ' + $out.Trim()) }
+          } catch { [void]$errors.Add('restore:' + $f + ': ' + $_.Exception.Message) }
+        }
+
+        [ordered]@{ added = @($added); restored = @($restored); errors = @($errors) } | ConvertTo-Json -Compress -Depth 3
+        """;
+
+    /// <summary>
     /// Restore one quarantined item (admin false-positive). ThreatID is validated numeric and
     /// passed through an environment variable (never interpolated into the script).
     /// </summary>
@@ -643,7 +818,7 @@ internal static class DefenderGuard
     /// fire for every routine change including the guard's own; drift is caught by Enforce.)
     /// </summary>
     public static readonly int[] WatchedEventIds =
-        [1006, 1007, 1008, 1116, 1117, 1118, 1119, 5001, 5010, 5012, 5013];
+        [1006, 1007, 1008, 1116, 1117, 1118, 1119, 1121, 5001, 5010, 5012, 5013];
 
     /// <summary>Events with RecordId &gt; <paramref name="afterRecordId"/>, oldest first.</summary>
     public static List<DefenderEvent> ReadEvents(long afterRecordId, int max = 200)

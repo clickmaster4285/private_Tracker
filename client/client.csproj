@@ -68,9 +68,8 @@
     <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
     <PackageReference Include="SkiaSharp" Version="3.119.4" />
-    <!-- Face verify: CPU ORT on non-Windows TFM; DirectML+CPU on Windows soft-locker -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" Condition="'$(TargetFramework)' != 'net10.0-windows'" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.20.1" Condition="'$(TargetFramework)' == 'net10.0-windows'" />
+    <!-- Face verify: CPU ORT on all TFMs (fleet-reliable; matches working f960fca — no DirectML.dll). -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
     <!-- 4.13+ required for FaceDetectorYN (YuNet) — matches face_worker cv2.FaceDetectorYN -->
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20261107" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20261107" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
@@ -118,12 +117,21 @@
   <!-- Live-stream VP8 needs VCRUNTIME140 app-local when the PC has no VC++ redist.
        Pass the output dir via env (TargetDir/PublishDir end with `\`, which breaks
        quoted -OutDir under cmd.exe). -->
-  <Target Name="CopyVpxVcRuntime" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+  <Target Name="CopyVpxVcRuntime" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(TargetDir)' != ''">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\publish\ensure-vpx-native.ps1&quot;" EnvironmentVariables="ALPHA_VPX_OUTDIR=$(TargetDir)" />
   </Target>
-  <Target Name="CopyVpxVcRuntimeOnPublish" AfterTargets="Publish" Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+  <Target Name="CopyVpxVcRuntimeOnPublish" AfterTargets="Publish" Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(PublishDir)' != ''">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\publish\ensure-vpx-native.ps1&quot;" EnvironmentVariables="ALPHA_VPX_OUTDIR=$(PublishDir)" />
   </Target>
+
+  <!-- Face soft-lock CPU ORT: both natives must sit next to client.exe (not only under runtimes/). -->
+  <Target Name="EnsureOrtNatives" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(TargetDir)' != ''">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\publish\ensure-ort-native.ps1&quot;" EnvironmentVariables="ALPHA_ORT_OUTDIR=$(TargetDir)" />
+  </Target>
+  <Target Name="EnsureOrtNativesOnPublish" AfterTargets="Publish" Condition="$([MSBuild]::IsOSPlatform('Windows')) And '$(PublishDir)' != ''">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\publish\ensure-ort-native.ps1&quot;" EnvironmentVariables="ALPHA_ORT_OUTDIR=$(PublishDir)" />
+  </Target>
 </Project>
+
 
 

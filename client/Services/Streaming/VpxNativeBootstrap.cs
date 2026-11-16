@@ -23,10 +23,16 @@ public static class VpxNativeBootstrap
         if (Interlocked.Exchange(ref _done, 1) != 0) return;
 
         var baseDir = AppContext.BaseDirectory;
-        TryPreload(Path.Combine(baseDir, "VCRUNTIME140.dll"));
-        TryPreload(Path.Combine(baseDir, "vcruntime140.dll"));
-        TryPreload(Path.Combine(baseDir, "VCRUNTIME140_1.dll"));
-        TryPreload(Path.Combine(baseDir, "vcruntime140_1.dll"));
+        foreach (var name in new[]
+                 {
+                     "VCRUNTIME140.dll", "vcruntime140.dll",
+                     "VCRUNTIME140_1.dll", "vcruntime140_1.dll",
+                     "MSVCP140.dll", "msvcp140.dll",
+                     "MSVCP140_1.dll", "msvcp140_1.dll",
+                     "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll",
+                     "concrt140.dll", "vccorlib140.dll",
+                 })
+            TryPreload(Path.Combine(baseDir, name));
 
         try
         {
@@ -53,11 +59,19 @@ public static class VpxNativeBootstrap
 
         if (!NativeLibrary.TryLoad(vpxPath, out var handle))
         {
-            var hasCrt = File.Exists(Path.Combine(baseDir, "VCRUNTIME140.dll"))
-                         || File.Exists(Path.Combine(baseDir, "vcruntime140.dll"));
-            return hasCrt
-                ? $"Failed to load vpxmd.dll from {vpxPath} (CRT present). Check bitness / AV quarantine."
-                : "Failed to load vpxmd.dll — VCRUNTIME140.dll is missing. Install VC++ 2015-2022 x64 redistributable or use client 1.0.8+ which ships it app-local.";
+            var hasVcruntime = File.Exists(Path.Combine(baseDir, "VCRUNTIME140.dll"))
+                               || File.Exists(Path.Combine(baseDir, "vcruntime140.dll"));
+            var hasMsvcp = File.Exists(Path.Combine(baseDir, "MSVCP140.dll"))
+                           || File.Exists(Path.Combine(baseDir, "msvcp140.dll"));
+            if (!hasVcruntime || !hasMsvcp)
+            {
+                var missing = !hasVcruntime && !hasMsvcp
+                    ? "VCRUNTIME140.dll and MSVCP140.dll"
+                    : !hasVcruntime ? "VCRUNTIME140.dll" : "MSVCP140.dll";
+                return $"Failed to load vpxmd.dll — {missing} missing. " +
+                       "Install/reinstall 2.4.5+ Windows Setup or Microsoft Visual C++ 2015-2022 x64.";
+            }
+            return $"Failed to load vpxmd.dll from {vpxPath} (CRT present). Check bitness / AV quarantine.";
         }
 
         NativeLibrary.Free(handle);

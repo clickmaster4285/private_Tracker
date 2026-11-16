@@ -1,8 +1,13 @@
+using client.Configuration;
+using client.Core;
+using Microsoft.Data.Sqlite;
+
 namespace client.Services.FaceVerify;
 
 /// <summary>
 /// Avalonia-free verification controller for the WinForms soft-locker.
-/// Zero network: never constructs FaceApiClient; first-mode never enqueues events.
+/// Local-only for camera match; downloads ONNX models only when missing (with ETA).
+/// First-mode never enqueues verify events.
 /// </summary>
 public sealed class FaceVerifyController : IDisposable
 {
@@ -28,6 +33,12 @@ public sealed class FaceVerifyController : IDisposable
     public bool AllowClose => _allowClose;
     public string Mode => _mode;
     public double EffectiveThreshold => _effectiveThreshold;
+
+    /// <summary>True while ONNX packages are downloading.</summary>
+    public bool ShowDownloadProgress { get; private set; }
+    public double DownloadFraction { get; private set; }
+    public string DownloadMeta { get; private set; } = "";
+    public bool DownloadIndeterminate { get; private set; } = true;
 
     public event Action? Changed;
     public event Action? Completed;
@@ -55,12 +66,12 @@ public sealed class FaceVerifyController : IDisposable
             _store = new FaceBiometricStore();
             await _store.InitializeAsync(_cts.Token);
 
-            if (!File.Exists(FacePaths.DetPath) || !File.Exists(FacePaths.RecPath))
+            if (!File.Exists(FacePaths.DetPath) || !File.Exists(FacePaths.RecPath)
+                || new FileInfo(FacePaths.DetPath).Length < 100_000
+                || new FileInfo(FacePaths.RecPath).Length <= 1_000_000)
             {
-                StatusTitle = "Models not ready";
-                StatusDetail = "Keep the tracker online once so models sync, then retry.";
-                RaiseChanged();
-                return;
+                if (!await EnsureModelsDownloadedAsync(_session, _cts.Token))
+                    return;
             }
 
             var templates = (await _store.GetTemplatesAsync(_session.EmployeeId, _cts.Token)).ToList();
@@ -118,6 +129,8 @@ public sealed class FaceVerifyController : IDisposable
             StatusDetail = "Loading camera and recognition models…";
             RaiseChanged();
 
+            await EnsureOrtLoadableAsync(_cts.Token);
+
             _engine = new FaceRecognitionEngine();
             await Task.Run(() => _engine.Initialize(templates, _effectiveThreshold), _cts.Token);
 
@@ -132,13 +145,75 @@ public sealed class FaceVerifyController : IDisposable
         catch (Exception ex)
         {
             StatusTitle = "Face check error";
-            StatusDetail = ex.Message;
+            StatusDetail = FormatOrtLoadError(ex);
             RaiseChanged();
         }
         finally
         {
             _running = false;
         }
+    }
+
+    /// <summary>
+    /// Probe ORT before touching its types (a failed <c>NativeMethods</c> type init is cached
+    /// for the process). When antivirus is the likely cause, ask the LocalSystem DLP service
+    /// to re-apply product exclusions and restore our quarantined files, then probe again.
+    /// </summary>
+    private async Task EnsureOrtLoadableAsync(CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var probe = OrtNativeBootstrap.ProbeWindowsLoadError(out var avSuspected);
+        if (probe is null || !avSuspected) return;
+
+        var title = StatusTitle;
+        var detail = StatusDetail;
+        StatusTitle = "Repairing antivirus access…";
+        StatusDetail = "Antivirus blocked the face engine. Restoring the tracker's own files…";
+        RaiseChanged();
+
+        for (var attempt = 0; attempt < 2 && probe is not null; attempt++)
+        {
+            await DlpPipeClient.SendAsync(
+                new { op = "EnsureAvSelfProtection" },
+                connectTimeoutMs: 5_000,
+                responseTimeoutMs: 120_000,
+                ct: ct);
+
+            // Defender restores asynchronously; give the file a moment to reappear.
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            OrtNativeBootstrap.ResetForRetry();
+            probe = OrtNativeBootstrap.ProbeWindowsLoadError(out _);
+        }
+
+        if (probe is not null)
+            throw new InvalidOperationException(probe);
+
+        StatusTitle = title;
+        StatusDetail = detail;
+        RaiseChanged();
+    }
+
+    private static string FormatOrtLoadError(Exception ex)
+    {
+        var probe = OrtNativeBootstrap.ProbeWindowsLoadError();
+        if (!string.IsNullOrWhiteSpace(probe))
+            return probe!;
+
+        if (ex is TypeInitializationException tie)
+        {
+            var inner = tie.InnerException;
+            while (inner != null)
+            {
+                if (inner is DllNotFoundException or BadImageFormatException)
+                    return inner.Message;
+                if (!string.IsNullOrWhiteSpace(inner.Message))
+                    return inner.Message;
+                inner = inner.InnerException;
+            }
+        }
+
+        return ex.InnerException?.Message ?? ex.Message;
     }
 
     private async Task LoopAsync(CancellationToken ct)
@@ -332,6 +407,134 @@ public sealed class FaceVerifyController : IDisposable
         || string.Equals(poseId, "front_return", StringComparison.OrdinalIgnoreCase);
 
     private void RaiseChanged() => Changed?.Invoke();
+
+    /// <summary>
+    /// Soft-lock path: download missing ONNX packages with progress + ETA, then continue verify.
+    /// Credentials come from tracker SQLite + AppConfig (session deliberately omits the token).
+    /// </summary>
+    private async Task<bool> EnsureModelsDownloadedAsync(FaceVerifySession session, CancellationToken ct)
+    {
+        StatusTitle = "Downloading face models";
+        StatusDetail = "Preparing download…";
+        ShowDownloadProgress = true;
+        DownloadIndeterminate = true;
+        DownloadFraction = 0;
+        DownloadMeta = "";
+        RaiseChanged();
+
+        if (!TryResolveDownloadCreds(session, out var apiBase, out var token, out var recUrl))
+        {
+            StatusTitle = "Models not ready";
+            StatusDetail = "Keep the tracker online once so models sync, then retry.";
+            ShowDownloadProgress = false;
+            RaiseChanged();
+            return false;
+        }
+
+        try
+        {
+            using var api = new FaceApiClient(apiBase, token);
+            var downloadSession = new FaceVerifySession
+            {
+                EmployeeId = session.EmployeeId,
+                EmployeeName = session.EmployeeName,
+                DeviceToken = token,
+                ApiBase = apiBase,
+                MachineId = session.MachineId,
+                MatchThreshold = session.MatchThreshold,
+                RecModelUrl = recUrl,
+            };
+            var progress = new Progress<FaceDownloadProgress>(p =>
+            {
+                StatusDetail = p.Step;
+                DownloadMeta = string.IsNullOrEmpty(p.EtaText)
+                    ? p.MbLine
+                    : (string.IsNullOrEmpty(p.MbLine) ? p.EtaText! : $"{p.MbLine}  ·  {p.EtaText}");
+                if (p.Fraction is { } f)
+                {
+                    DownloadFraction = Math.Clamp(f, 0, 1);
+                    DownloadIndeterminate = false;
+                }
+                if (p.IsFailed)
+                {
+                    StatusTitle = "Download failed";
+                    StatusDetail = p.Error ?? p.Step;
+                }
+                RaiseChanged();
+            });
+            var downloader = new FaceModelDownloader();
+            await downloader.EnsureModelsAsync(downloadSession, api, progress, ct);
+
+            ShowDownloadProgress = false;
+            DownloadFraction = 1;
+            DownloadIndeterminate = false;
+            StatusDetail = "Face models ready";
+            RaiseChanged();
+            return File.Exists(FacePaths.DetPath) && File.Exists(FacePaths.RecPath);
+        }
+        catch (Exception ex)
+        {
+            StatusTitle = "Download failed";
+            StatusDetail = ex.Message;
+            ShowDownloadProgress = false;
+            RaiseChanged();
+            return false;
+        }
+    }
+
+    private static bool TryResolveDownloadCreds(
+        FaceVerifySession session,
+        out string apiBase,
+        out string token,
+        out string? recUrl)
+    {
+        apiBase = "";
+        token = "";
+        recUrl = session.RecModelUrl;
+
+        if (!string.IsNullOrWhiteSpace(session.DeviceToken) && !string.IsNullOrWhiteSpace(session.ApiBase))
+        {
+            apiBase = session.ApiBase.TrimEnd('/');
+            token = session.DeviceToken;
+            return true;
+        }
+
+        try
+        {
+            var config = AppConfig.FromEnv();
+            apiBase = (config.ServerUrl ?? "").TrimEnd('/');
+            recUrl ??= config.FaceBuffaloRecUrl;
+
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var paths = TrackerDeviceTokenReader.CandidatePaths(local, profile, config.DbPath);
+            if (TrackerDeviceTokenReader.TryPickNewest(paths, out var tok, out _, out var sourcePath, out _)
+                && !string.IsNullOrWhiteSpace(tok)
+                && !string.IsNullOrWhiteSpace(sourcePath))
+            {
+                token = tok!;
+                // Prefer device_token column when present.
+                try
+                {
+                    using var conn = new SqliteConnection($"Data Source={sourcePath};Mode=ReadOnly");
+                    conn.Open();
+                    using var cmd = conn.CreateCommand();
+                    cmd.CommandText =
+                        "SELECT COALESCE(device_token, token) FROM employee_info " +
+                        "WHERE length(COALESCE(device_token, token, '')) > 0 LIMIT 1";
+                    var v = cmd.ExecuteScalar() as string;
+                    if (!string.IsNullOrWhiteSpace(v)) token = v!;
+                }
+                catch { /* keep tok */ }
+            }
+
+            return !string.IsNullOrWhiteSpace(apiBase) && !string.IsNullOrWhiteSpace(token);
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary>
     /// Poll local biometric.db until tracker fulfills <see cref="FaceEmbeddingRequest"/> or timeout.

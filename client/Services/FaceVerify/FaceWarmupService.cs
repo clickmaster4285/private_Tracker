@@ -84,7 +84,8 @@ public sealed class FaceWarmupService
             try
             {
                 var downloader = new FaceModelDownloader();
-                await downloader.EnsureModelsAsync(session, api, new Progress<(string, double?)>(_ => { }), ct);
+                await FaceModelDownloadUiHost.RunWithUiAsync(
+                    progress => downloader.EnsureModelsAsync(session, api, progress, ct), ct);
             }
             catch (Exception ex)
             {
@@ -125,8 +126,8 @@ public sealed class FaceWarmupService
         try
         {
             var downloader = new FaceModelDownloader();
-            var progress = new Progress<(string step, double? fraction)>(_ => { });
-            await downloader.EnsureModelsAsync(session, api, progress, ct);
+            await FaceModelDownloadUiHost.RunWithUiAsync(
+                progress => downloader.EnsureModelsAsync(session, api, progress, ct), ct);
         }
         catch (Exception ex)
         {
