@@ -210,6 +210,18 @@ if (OperatingSystem.IsWindows())
 
 EnvLoader.Load();
 
+// Windows: require system VC++ 2015–2022 BEFORE any native CRT load (ORT / vpxmd).
+// If missing, stop startup and force-install from {app}\redist\vc_redist.*.exe (UAC).
+if (OperatingSystem.IsWindows())
+{
+    var allowVcUi = !isCliConsoleMode;
+    if (!client.Services.VcRedistBootstrap.EnsureInstalledOrExit(allowVcUi))
+    {
+        Environment.ExitCode = 40;
+        return;
+    }
+}
+
 // Live-stream VP8 (Windows): resolve vpxmd.dll from the install dir and preload
 // app-local VCRUNTIME140 before any encode path runs.
 if (OperatingSystem.IsWindows())
@@ -293,6 +305,8 @@ if (args.Contains("--face-verify") && !args.Contains("--background"))
     {
         EnvLoader.Load();
         client.Core.FaceVerifyYield.Set("soft_lock");
+        // Preload CPU onnxruntime.dll (+ CRT) before any ORT type touch.
+        client.Services.FaceVerify.OrtNativeBootstrap.EnsureWindows();
         client.Services.FaceVerify.FaceVerifyAppKiller.StartIfEnabled();
         try
         {

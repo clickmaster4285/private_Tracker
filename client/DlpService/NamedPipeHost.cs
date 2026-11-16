@@ -13,7 +13,7 @@ namespace AlphaAITracker.Service;
 /// IPC host: Windows named pipe (\\.\pipe\&lt;WINDOWS_DLP_PIPE_NAME&gt;) or Linux
 /// Unix socket (<c>/var/lib/&lt;pkg&gt;/dlp/dlp.sock</c>).
 /// Ops: GetPolicyVersion, Health, AuthorizeTeardown, ApplyTeardownGate,
-/// GetUpdateStatus, RequestUpdateCheck, RequestPolicyPull.
+/// GetUpdateStatus, RequestUpdateCheck, RequestPolicyPull, EnsureAvSelfProtection.
 /// Always listens so update/teardown IPC works even when
 /// <c>ALPHA_DLP_ENABLED=false</c> (DLP-only ops then return <c>dlp_disabled</c>).
 /// </summary>
@@ -277,6 +277,9 @@ public sealed class NamedPipeHost : BackgroundService
                 "GetUpdateStatus" => JsonSerializer.Serialize(_updateState.Snapshot()),
                 "RequestUpdateCheck" => RequestUpdateCheckJson(),
                 "RequestPolicyPull" => RequireDlpSync(RequestPolicyPullJson),
+                // Independent of ALPHA_DLP_ENABLED: the soft-lock calls this when Defender
+                // blocks loading the product's own natives (onnxruntime.dll).
+                "EnsureAvSelfProtection" => await EnsureAvSelfProtectionJson(ct),
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
@@ -299,6 +302,25 @@ public sealed class NamedPipeHost : BackgroundService
     {
         DlpSignals.RequestPull();
         return JsonSerializer.Serialize(new { ok = true, queued = true });
+    }
+
+    private async Task<string> EnsureAvSelfProtectionJson(CancellationToken ct)
+    {
+        if (!_cfg.AvEnforce)
+            return JsonSerializer.Serialize(new { ok = false, error = "av_enforce_disabled" });
+        var r = await AvSelfProtection.RunAsync(force: false, ct);
+        if (r.Added.Count > 0 || r.Restored.Count > 0)
+        {
+            _logger.LogWarning("Pipe EnsureAvSelfProtection: added={Added} restored={Restored}",
+                string.Join(", ", r.Added), string.Join(", ", r.Restored));
+        }
+        return JsonSerializer.Serialize(new
+        {
+            ok = r.Ok,
+            added = r.Added,
+            restored = r.Restored,
+            errors = r.Errors,
+        });
     }
 
     private string RequestUpdateCheckJson()
