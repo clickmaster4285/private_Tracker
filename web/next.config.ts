@@ -1,15 +1,11 @@
 import type { NextConfig } from "next";
 
 // Browser calls relative /api/v1 (same-site cookies). Next rewrites that to the Go API.
-// Prefer API_PROXY_TARGET (scheme://host:port, no /api/v1). Fall back to stripping
-// /api/v1 from NEXT_PUBLIC_API_URL when set for older labs.
+// NEXT_PUBLIC_API_URL may be scheme://host:port or …/api/v1 — strip the suffix for the proxy root.
 function resolveApiProxyTarget(): string {
-  const explicit = (process.env.API_PROXY_TARGET || "").trim().replace(/\/+$/, "");
-  if (explicit) return explicit;
-
-  const fromPublic = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
-  if (fromPublic) {
-    return fromPublic.replace(/\/api\/v1$/i, "") || fromPublic;
+  const raw = (process.env.NEXT_PUBLIC_API_URL || "").trim().replace(/\/+$/, "");
+  if (raw) {
+    return raw.replace(/\/api\/v1$/i, "") || raw;
   }
   return "http://localhost:8080";
 }

@@ -1,7 +1,6 @@
 // API client for communicating with the Go backend server.
 // Uses httpOnly cookies for JWT authentication (set by server).
 
-// Use relative URL through Next.js rewrites proxy. Set NEXT_PUBLIC_API_URL to override.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
 interface RequestOptions {
