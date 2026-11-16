@@ -1,9 +1,13 @@
 # Alpha AI Tracker — Build & Installers
 
+> **2026-11-16:** Windows Setup **always** bundles the full VC++ CRT app-local
+> (`vcruntime140` + `msvcp140` + siblings) and downloads `redist/vc_redist.x64.exe` for a
+> quiet Inno install (Programs and Features shows Microsoft Visual C++ 2015–2022 x64).
+> Bake fails if required CRT / redist is missing. Set `ALPHA_BUNDLE_VC_REDIST=0` only when
+> IT already mirrored `vc_redist.x64.exe`. Client **2.4.5+**.
+>
 > **2026-11-10:** Windows live-stream VP8 — `publish/ensure-vpx-native.ps1` runs after
-> `dotnet build`/`publish` and from `build-installer.sh`, copying `vcruntime140.dll` (+ `_1`)
-> next to `vpxmd.dll`. Optional `ALPHA_BUNDLE_VC_REDIST=1` downloads `vc_redist.x64.exe` into
-> `publish/windows/redist/` for a quiet Inno install. Client **1.0.8+**.
+> `dotnet build`/`publish` and from `build-installer.sh` (originally VCRUNTIME-only; now full CRT).
 
 ## Prerequisites
 

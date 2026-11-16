@@ -108,6 +108,14 @@ public sealed class FaceRecognitionEngine : IDisposable
         if (!File.Exists(FacePaths.RecPath))
             throw new FileNotFoundException("buffalo_l w600k_r50 missing", FacePaths.RecPath);
 
+        // Fleet-reliable CPU ORT (same as working f960fca). DirectML was dropped —
+        // its native hard-depends on DirectML.dll and fails type-init before any EP try/catch.
+        var probe = OrtNativeBootstrap.ProbeWindowsLoadError();
+        if (probe != null)
+            throw new InvalidOperationException(probe);
+
+        OrtNativeBootstrap.EnsureWindows();
+
         var threads = Math.Max(1, Environment.ProcessorCount);
         var opts = new SessionOptions
         {
@@ -115,28 +123,48 @@ public sealed class FaceRecognitionEngine : IDisposable
             IntraOpNumThreads = threads,
             InterOpNumThreads = threads,
         };
-#if FACE_WINFORMS_LOCKER
+        opts.AppendExecutionProvider_CPU();
+        Console.Error.WriteLine("[face] ORT EP=CPU, threads=" + threads);
+
         try
         {
-            opts.AppendExecutionProvider_DML(0);
-            Console.Error.WriteLine("[face] ORT EP=DirectML (+CPU fallback), threads=" + threads);
+            _det?.Dispose();
+            _rec?.Dispose();
+            _det = new InferenceSession(FacePaths.DetPath, opts);
+            _rec = new InferenceSession(FacePaths.RecPath, opts);
         }
-        catch (Exception ex)
+        catch (TypeInitializationException ex)
         {
-            Console.Error.WriteLine($"[face] DirectML unavailable ({ex.Message}); CPU only, threads={threads}");
+            var detail = OrtNativeBootstrap.ProbeWindowsLoadError()
+                         ?? UnwrapOrtInit(ex)
+                         ?? ex.Message;
+            throw new InvalidOperationException(detail, ex);
         }
-#endif
-        opts.AppendExecutionProvider_CPU();
-
-        _det?.Dispose();
-        _rec?.Dispose();
-        _det = new InferenceSession(FacePaths.DetPath, opts);
-        _rec = new InferenceSession(FacePaths.RecPath, opts);
-        _detInput = _det.InputMetadata.Keys.First();
-        _recInput = _rec.InputMetadata.Keys.First();
+        catch (DllNotFoundException ex)
+        {
+            throw new InvalidOperationException(
+                OrtNativeBootstrap.ProbeWindowsLoadError() ?? ex.Message, ex);
+        }
+        _detInput = _det!.InputMetadata.Keys.First();
+        _recInput = _rec!.InputMetadata.Keys.First();
         _detOutputs = _det.OutputMetadata.Keys.ToArray();
         _useKps = _detOutputs.Length == 9;
         _centerCache.Clear();
+    }
+
+    private static string? UnwrapOrtInit(TypeInitializationException ex)
+    {
+        var inner = ex.InnerException;
+        while (inner != null)
+        {
+            if (inner is DllNotFoundException or BadImageFormatException)
+                return inner.Message;
+            if (!string.IsNullOrWhiteSpace(inner.Message)
+                && inner.Message.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase))
+                return inner.Message;
+            inner = inner.InnerException;
+        }
+        return ex.InnerException?.Message;
     }
 
     /// <summary>Best-effort auto-exposure / gain for dim offices (DirectShow props vary by webcam).</summary>

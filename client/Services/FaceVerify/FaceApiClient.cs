@@ -124,11 +124,14 @@ public sealed class FaceApiClient : IDisposable
         string packageId,
         string destPath,
         string label,
-        IProgress<(string step, double? fraction)> progress,
-        CancellationToken ct)
+        IProgress<FaceDownloadProgress> progress,
+        CancellationToken ct,
+        int fileIndex = 0,
+        int fileCount = 2)
     {
         var url = $"{_apiBase}/api/v1/face-models/packages/{packageId}";
         var tmp = destPath + ".tmp";
+        var eta = new FaceDownloadEtaTracker(label, fileIndex, fileCount);
         try
         {
             using var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -139,14 +142,14 @@ public sealed class FaceApiClient : IDisposable
             var buffer = new byte[81920];
             long read = 0;
             int n;
+            if (eta.TryReport(0, total, force: true) is { } p0) progress.Report(p0);
             while ((n = await src.ReadAsync(buffer, ct)) > 0)
             {
                 await dst.WriteAsync(buffer.AsMemory(0, n), ct);
                 read += n;
-                if (total is > 0)
-                    progress.Report(($"Downloading {label}… {read / (1024 * 1024)} / {total.Value / (1024 * 1024)} MB",
-                        (double)read / total.Value));
+                if (eta.TryReport(read, total) is { } p) progress.Report(p);
             }
+            if (eta.TryReport(read, total, force: true) is { } p1) progress.Report(p1);
             await dst.FlushAsync(ct);
             dst.Close();
             Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
@@ -161,9 +164,9 @@ public sealed class FaceApiClient : IDisposable
     /// <summary>Downloads buffalo_l recognition ONNX from the API into LocalAppData.</summary>
     public Task DownloadRecPackageAsync(
         string destPath,
-        IProgress<(string step, double? fraction)> progress,
+        IProgress<FaceDownloadProgress> progress,
         CancellationToken ct) =>
-        DownloadModelPackageAsync(PackageBuffaloRec, destPath, "buffalo_l", progress, ct);
+        DownloadModelPackageAsync(PackageBuffaloRec, destPath, "buffalo_l", progress, ct, fileIndex: 1, fileCount: 2);
 
     public async Task<FaceEmbeddingsResponse> GetEmbeddingsAsync(CancellationToken ct)
     {

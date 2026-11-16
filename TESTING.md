@@ -46,14 +46,58 @@ migrations **071–074**. Use a **lab VM** — the guard removes Defender exclus
 4. **Exclusion bypass:** `Add-MpPreference -ExclusionPath C:\evil` → removed within ~30 s
    (`(Get-MpPreference).ExclusionPath`); the `av_tamper` alert lists `exclusion_path:C:\evil`.
    Paths listed in `ALPHA_AV_ALLOWED_EXCLUSIONS` stay.
-5. **GPO bypass:** create `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` DWORD
+5. **Product self-exclusion (2.3.9+):** after the DLP service starts, `(Get-MpPreference).ExclusionPath`
+   must include the install folder (`…\Alpha AI Tracker`), `%ProgramData%\AlphaAITracker`, and the
+   logged-in user’s `%LocalAppData%\AlphaAITracker`; `ExclusionProcess` must include `client.exe` /
+   `AlphaAITracker.Service.exe` (and full paths when present). Delete one product path exclusion →
+   it is restored within ~`ALPHA_AV_GUARD_SEC` (reported as hardened, not `av_tamper`).
+6. **GPO bypass:** create `HKLM\SOFTWARE\Policies\Microsoft\Windows Defender` DWORD
    `DisableAntiSpyware=1` → value deleted on the next pass.
-6. **Windows refused:** with Tamper Protection ON and real-time turned off in the Windows Security UI,
+7. **Windows refused:** with Tamper Protection ON and real-time turned off in the Windows Security UI,
    the guard cannot force it back → `av_tamper` *critical* / *Block failed* alert (≤ 1 per 30 min).
-7. **Third-party AV:** with another AV registered (Defender passive) the row shows *Third-party AV*;
+8. **Third-party AV:** with another AV registered (Defender passive) the row shows *Third-party AV*;
    the guard does not touch Defender.
-8. **Service logs:** `AntivirusGuardWorker running …`, `Antivirus guard reverted …`;
+9. **Service logs:** `AntivirusGuardWorker running …`, `Antivirus guard reverted …`;
    `%ProgramData%\<APP_MUTEX>\dlp\service.env` carries `ALPHA_AV_*`.
+
+### Face model download ETA (2.3.9+)
+
+1. Delete `%LocalAppData%\AlphaAITracker\face\models\det_10g.onnx` and `w600k_r50.onnx` (tracker online).
+2. Expect a tracker download window (Avalonia if GUI is open, else WinForms) with MB progress and
+   **~Ns left** ETA while warm-up pulls from `GET /face-models/packages/buffalo-l-*`.
+3. Soft-lock with models still missing: WinForms soft-lock shows a ProgressBar + ETA, then continues
+   into camera verify after the files land.
+
+### Face soft-lock ORT CPU (2.4.3+) / VC++ CRT (2.4.5+)
+
+1. Install dir should be **`C:\Program Files\Alpha AI Tracker\`** (64-bit Inno — not
+   `Program Files (x86)`). Must contain **both** `onnxruntime.dll` and
+   `onnxruntime_providers_shared.dll` (CPU package). **`DirectML.dll` must not remain**
+   (upgrade deletes it). Soft-lock must not show opaque `NativeMethods` type-init errors.
+2. **VC++ (2.4.6+):** `{app}` must contain at least `vcruntime140.dll` + `msvcp140.dll`
+   plus `{app}\redist\vc_redist.x64.exe` + `vc_redist.x86.exe`. Setup writes
+   `{app}\redist\vc_redist_install.log`; runtime gate writes `vc_redist_runtime_install.log`.
+   Programs and Features must list **Microsoft Visual C++ 2015–2022 (x64)** (+ x86).
+   **Runtime gate:** on a PC with VC++ uninstalled, launching `client.exe` must stop,
+   prompt/UAC-install VC++, then continue only when registry `VC\Runtimes\x64\Installed=1`;
+   otherwise exit code 40 and no soft-lock / tracker host.
+3. Soft-lock after login: camera preview + match UI (same reliability as working commit `f960fca`).
+4. If ORT fails to load: status text should name the missing DLL and/or a **Win32** code
+   (e.g. dependency / AV) — not a silent bitness-only hint. Missing CRT names
+   `VCRUNTIME140` / `MSVCP140` and points at 2.4.5+ Setup.
+5. After upgrading from 2.4.0 (DirectML): prefer full uninstall + 2.4.5+ install, or confirm
+   `DirectML.dll` is gone and both ORT natives sit next to `client.exe`.
+6. **AV self-protection (2.4.4+).** Elevated PowerShell after the DLP service starts:
+   `(Get-MpPreference).ExclusionPath`, `.ExclusionProcess` and
+   `.AttackSurfaceReductionOnlyExclusions` must list the install dir (both Program Files roots
+   when present), `%ProgramData%\AlphaAITracker`, per-user `%LocalAppData%\AlphaAITracker`, and
+   `client.exe` / `AlphaAITracker.Service.exe`. Service log: `Antivirus self-protection applied`.
+7. **Quarantine self-heal.** Simulate by renaming `onnxruntime.dll` away (or restore a real
+   Defender quarantine), lock / restart → soft-lock shows **"Repairing antivirus access…"**, the
+   service runs `MpCmdRun -Restore -FilePath` for product paths only, then verify continues. A
+   Defender 1116 / 1117 / 1121 event on a product path audits `av_self_block` (no malware alert).
+   Error text, when it still fails, names the Win32 cause (225 / 226 Defender, 5 access denied,
+   1260 policy, 4551 WDAC / Smart App Control, 193 bitness, 126 dependency).
 
 ---
 

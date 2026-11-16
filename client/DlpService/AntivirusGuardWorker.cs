@@ -81,6 +81,10 @@ public sealed class AntivirusGuardWorker : BackgroundService
         try { await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken); }
         catch (OperationCanceledException) { return; }
 
+        // Product self-protection first: exclusions + restore any of our own files Defender
+        // quarantined (e.g. after an upgrade) before the soft-lock needs them.
+        await RunSelfProtectionAsync("startup", force: true, stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -129,6 +133,7 @@ public sealed class AntivirusGuardWorker : BackgroundService
                 CfaAudit: _cfg.AvCfaAudit,
                 ScanCpuLimit: _cfg.AvScanCpuLimit,
                 QuarantinePurgeDays: _cfg.AvQuarantinePurgeDays);
+            // Product path/process exclusions are merged inside Enforce (ProductAvExclusions).
             var res = await Task.Run(() => DefenderGuard.Enforce(_cfg.AvAllowedExclusions, hardening), ct);
             _lastEnforceAt = now;
             await HandleEnforceResultAsync(res, ct);
@@ -355,6 +360,21 @@ public sealed class AntivirusGuardWorker : BackgroundService
         var id = StableGuid("defender:" + ev.RecordId + ":" + ev.EventId).ToString();
         string D(string k) => ev.Data.TryGetValue(k, out var v) ? v : "";
 
+        // Defender acted on one of our own files (detection, quarantine, ASR block) —
+        // heal immediately instead of raising a malware alert against the product itself.
+        if (ev.EventId is 1006 or 1007 or 1008 or 1116 or 1117 or 1118 or 1119 or 1121
+            && IsProductEvent(ev))
+        {
+            _logger.LogWarning(
+                "Defender event {EventId} hit the product itself ({Path}) — re-applying self-protection",
+                ev.EventId, D("Path"));
+            await _store.AuditAsync("av_self_block",
+                $"event={ev.EventId} threat={D("Threat Name")} rule={D("ID")} path={D("Path")} process={D("Process Name")}",
+                ct);
+            await RunSelfProtectionAsync("event_" + ev.EventId, force: true, ct);
+            return;
+        }
+
         switch (ev.EventId)
         {
             case 1006:
@@ -392,6 +412,10 @@ public sealed class AntivirusGuardWorker : BackgroundService
                 await _store.AuditAsync("av_threat_action",
                     $"threat={D("Threat Name")} action={D("Action Name")} path={D("Path")}", ct);
                 break;
+            case 1121:
+                await _store.AuditAsync("av_asr_block",
+                    $"rule={D("ID")} path={D("Path")} process={D("Process Name")}", ct);
+                break;
             case 5001:
             case 5010:
             case 5012:
@@ -414,6 +438,46 @@ public sealed class AntivirusGuardWorker : BackgroundService
             default:
                 await _store.AuditAsync("av_config_event", $"id={ev.EventId} {D("New Value")}", ct);
                 break;
+        }
+    }
+
+    private static bool IsProductEvent(DefenderGuard.DefenderEvent ev)
+    {
+        var set = ProductAvExclusions.Build();
+        foreach (var key in new[] { "Path", "Process Name" })
+        {
+            if (!ev.Data.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw)) continue;
+            // Path can hold several resources separated by ';'.
+            foreach (var part in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                if (ProductAvExclusions.IsProductPath(part, set))
+                    return true;
+        }
+        return false;
+    }
+
+    private async Task RunSelfProtectionAsync(string reason, bool force, CancellationToken ct)
+    {
+        try
+        {
+            var r = await AvSelfProtection.RunAsync(force, ct);
+            if (r.Added.Count > 0 || r.Restored.Count > 0)
+            {
+                var detail = $"reason={reason} added=[{string.Join(", ", r.Added.Take(20))}] " +
+                             $"restored=[{string.Join(", ", r.Restored.Take(20))}]";
+                _logger.LogWarning("Antivirus self-protection applied: {Detail}", detail);
+                await _store.AuditAsync("av_self_protect", detail, ct);
+            }
+            if (r.Errors.Count > 0)
+                _logger.LogWarning("Antivirus self-protection errors ({Reason}): {Errors}",
+                    reason, string.Join(" | ", r.Errors.Take(10)));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Antivirus self-protection failed ({Reason})", reason);
         }
     }
 
