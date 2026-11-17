@@ -58,6 +58,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<RemovableDriveMoni
 builder.Services.AddHostedService<PortGuardWorker>();
 builder.Services.AddHostedService<AntivirusGuardWorker>();
 builder.Services.AddHostedService<DnsBlockPinWorker>();
+builder.Services.AddHostedService<AppLaunchWatcher>();
 builder.Services.AddHostedService<NamedPipeHost>();
 builder.Services.AddHostedService<TrackerWatchdogWorker>();
 

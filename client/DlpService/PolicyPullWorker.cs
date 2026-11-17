@@ -91,6 +91,7 @@ public sealed class PolicyPullWorker : BackgroundService
                 if (_cfg.LoginReboot && OperatingSystem.IsWindows())
                 {
                     _pendingLoginReboot = true;
+                    EnforceStatus.Shared.SetRebootArmed(true);
                     _logger.LogWarning(
                         "Post-login hardening armed (ALPHA_DLP_LOGIN_REBOOT=true) — " +
                         "kill → sync allowset → apply blockers → reboot");
@@ -168,8 +169,6 @@ public sealed class PolicyPullWorker : BackgroundService
         try
         {
             await _enforce.ForceApplyOnceAsync(ct);
-            await _store.AuditAsync("login_force_apply", "ok", ct);
-            _logger.LogInformation("Post-login force-apply of DLP blockers completed");
         }
         catch (Exception ex)
         {
@@ -178,6 +177,17 @@ public sealed class PolicyPullWorker : BackgroundService
             return;
         }
 
+        if (!EnforceStatus.Shared.IsEnforcing)
+        {
+            _logger.LogWarning(
+                "Post-login force-apply is not enforcing — reboot held until every blocker verifies");
+            await _store.AuditAsync("login_force_apply_failed", "not_enforcing", ct);
+            return;
+        }
+
+        await _store.AuditAsync("login_force_apply", "ok", ct);
+        _logger.LogInformation("Post-login force-apply of DLP blockers completed");
+
         var reboot = LoginReboot.TrySchedule(delaySeconds: _cfg.LoginRebootDelaySec);
         await _store.AuditAsync(
             reboot.Ok ? "login_reboot_queued" : "login_reboot_failed",
@@ -185,7 +195,9 @@ public sealed class PolicyPullWorker : BackgroundService
             ct);
         if (reboot.Ok)
         {
+            EnforceStatus.Shared.MarkRebootQueued(reboot.Detail);
             _pendingLoginReboot = false;
+            EnforceStatus.Shared.SetRebootArmed(false);
             _logger.LogWarning(
                 "Post-login reboot queued ({Detail}). PC will restart; " +
                 "after boot blockers stay from policy (no second reboot).",
@@ -193,6 +205,7 @@ public sealed class PolicyPullWorker : BackgroundService
         }
         else
         {
+            EnforceStatus.Shared.MarkRebootFailed(reboot.Detail);
             _logger.LogWarning("Post-login reboot failed ({Detail}) — will retry", reboot.Detail);
         }
     }

@@ -418,6 +418,7 @@ public partial class MainViewModel : ViewModelBase
 
             _logCollector.SetEmployeeInfo(info.EmployeeId, info.Name, info.Token ?? string.Empty);
             _logCollector.StartTracking();
+            await PolicyGate.WaitAsync(ct);
             FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info, trigger: "login");
 
             // Session restored — wake sync after login jitter so reboot storms of 1000
@@ -906,6 +907,10 @@ public partial class MainViewModel : ViewModelBase
 
             _logCollector.SetEmployeeInfo(emp.EmployeeId, emp.Name, loginResp.Token ?? string.Empty);
             _logCollector.StartTracking();
+            // Desktop stays on the policy screen until lockdown and AppLocker verify.
+            // A post-login reboot keeps the screen up; this returns only when blocking is on
+            // and no reboot is armed.
+            await PolicyGate.WaitAsync();
             FaceVerifyLauncher.TryLaunchOnSessionStart(_config, employeeInfo, trigger: "login");
 
             // Login succeeded — drain after a random jitter so 1000 agents do not storm
