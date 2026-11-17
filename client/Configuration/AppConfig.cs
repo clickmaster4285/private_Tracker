@@ -111,6 +111,8 @@ public class AppConfig
     /// Milliseconds between soft-lock camera match attempts (default 500 ≈ 2/sec).
     /// </summary>
     public int FaceVerifyLoopMs { get; init; } = 500;
+    /// <summary>Soft-lock live preview FPS (default 15; independent of match loop).</summary>
+    public int FacePreviewFps { get; init; } = 15;
     /// <summary>
     /// Optional HTTP URL override for buffalo_l recognition ONNX. Default: DeviceAuth download
     /// of det_10g + w600k_r50 from GET /face-models/packages/{buffalo-l-det|buffalo-l-rec}.
@@ -238,6 +240,9 @@ public class AppConfig
             FaceVerifyLoopMs = Math.Clamp(
                 int.TryParse(GetEnv("ALPHA_FACE_VERIFY_LOOP_MS"), out var faceLoop) ? faceLoop : 500,
                 250, 2000),
+            FacePreviewFps = Math.Clamp(
+                int.TryParse(GetEnv("ALPHA_FACE_PREVIEW_FPS"), out var facePrevFps) ? facePrevFps : 15,
+                5, 30),
             FaceBuffaloRecUrl = FirstNonEmpty(
                 GetEnv("ALPHA_FACE_BUFFALO_REC_URL"),
                 GetEnv("ALPHA_FACE_ADAFACE_URL")),

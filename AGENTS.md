@@ -3,6 +3,12 @@
 > **Last audited:** 2026-11-17
 > **Changelog:**
 >
+> - 2026-11-17: **Face soft-lock smooth preview + CPU budget.** Preview loop ~15 fps
+> (`ALPHA_FACE_PREVIEW_FPS`) is independent of ORT match (`ALPHA_FACE_VERIFY_LOOP_MS=500`,
+> IntraOp `ALPHA_FACE_ORT_THREADS=2`, InterOp=1, process priority **Normal**). Web
+> `/face-verify` no longer crashes on Go `events: null`. Client **VERSION 2.5.2**.
+> Installer-Parity: re-bake `config.enc` + rebuild Windows installer.
+>
 > - 2026-11-17: **Face soft-lock CPU peg on weak office PCs.** Soft-lock no longer uses
 > all ORT cores + High priority + ~4 Hz match loop. Defaults: IntraOp
 > `ALPHA_FACE_ORT_THREADS=2` (InterOp=1), process priority **Normal**, match delay

@@ -65,6 +65,9 @@ public sealed class FaceRecognitionEngine : IDisposable
     private double _motionAccum;
     private Point2f? _prevCenter;
     private DateTime _lastStreakUtc = DateTime.MinValue;
+    /// <summary>Only the preview loop reads the webcam; match samples this clone.</summary>
+    private readonly object _frameGate = new();
+    private Mat? _latestBgr;
 
     public bool IsReady =>
         _cam != null && _cam.IsOpened() && _rec != null && _det != null && _templates.Count > 0;
@@ -211,18 +214,71 @@ public sealed class FaceRecognitionEngine : IDisposable
         _lastStreakUtc = DateTime.MinValue;
     }
 
+    /// <summary>
+    /// Fast path for smooth UI: read one webcam frame, stash a clone for matching,
+    /// return another clone for the PictureBox. Caller owns and must Dispose the Mat.
+    /// Only this method (preview loop) should call <see cref="VideoCapture.Read"/>.
+    /// </summary>
+    public bool TryGrabPreview(out Mat? previewBgr)
+    {
+        previewBgr = null;
+        if (_cam == null || !_cam.IsOpened())
+            return false;
+        try
+        {
+            using var frame = new Mat();
+            if (!_cam.Read(frame) || frame.Empty())
+                return false;
+            lock (_frameGate)
+            {
+                _latestBgr?.Dispose();
+                _latestBgr = frame.Clone();
+                previewBgr = _latestBgr.Clone();
+            }
+            return true;
+        }
+        catch
+        {
+            previewBgr?.Dispose();
+            previewBgr = null;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// ORT match on the latest frame stashed by <see cref="TryGrabPreview"/>.
+    /// Does not touch the webcam (keeps preview smooth / CPU match cadence independent).
+    /// </summary>
+    public FaceMatchResult CompareLatest(string? poseId = null)
+    {
+        Mat? work = null;
+        lock (_frameGate)
+        {
+            if (_latestBgr == null || _latestBgr.Empty())
+                return new FaceMatchResult { Detail = "camera_frame_empty" };
+            work = _latestBgr.Clone();
+        }
+        using (work)
+            return CompareFrame(work, poseId, attachPreview: false);
+    }
+
+    /// <summary>Legacy single-shot: grab + compare (tests / callers that need one API).</summary>
     public FaceMatchResult CaptureAndCompare(string? poseId = null)
+    {
+        if (!TryGrabPreview(out var preview) || preview == null)
+            return new FaceMatchResult { Detail = "camera_frame_empty" };
+        using (preview)
+            return CompareFrame(preview, poseId, attachPreview: true);
+    }
+
+    private FaceMatchResult CompareFrame(Mat frame, string? poseId, bool attachPreview)
     {
         try
         {
-            if (_cam == null || _rec == null || _det == null)
+            if (_rec == null || _det == null)
                 return new FaceMatchResult { Detail = "engine_not_ready" };
 
-            using var frame = new Mat();
-            if (!_cam.Read(frame) || frame.Empty())
-                return new FaceMatchResult { Detail = "camera_frame_empty" };
-
-            var preview = frame.Clone();
+            Mat? preview = attachPreview ? frame.Clone() : null;
             var dim = IsDimFrame(frame);
             // Detect on CLAHE-enhanced copy when dim; align/embed stay on raw for enrollment parity.
             var faces = DetectFaces(frame, dim);
@@ -242,9 +298,12 @@ public sealed class FaceRecognitionEngine : IDisposable
             if (dist != null)
             {
                 ResetMatchStreak();
-                Cv2.Rectangle(preview,
-                    new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
-                    Scalar.Orange, 2);
+                if (preview != null)
+                {
+                    Cv2.Rectangle(preview,
+                        new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
+                        Scalar.Orange, 2);
+                }
                 return new FaceMatchResult { PreviewBgr = preview, Detail = dist, Score = 0 };
             }
 
@@ -289,9 +348,12 @@ public sealed class FaceRecognitionEngine : IDisposable
                 if (!above)
                 {
                     ResetMatchStreak();
-                    Cv2.Rectangle(preview,
-                        new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
-                        Scalar.OrangeRed, 2);
+                    if (preview != null)
+                    {
+                        Cv2.Rectangle(preview,
+                            new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
+                            Scalar.OrangeRed, 2);
+                    }
                     return new FaceMatchResult
                     {
                         Matched = false,
@@ -306,9 +368,12 @@ public sealed class FaceRecognitionEngine : IDisposable
                 if (_lastStreakUtc != DateTime.MinValue
                     && (now - _lastStreakUtc).TotalMilliseconds < MinFrameSpacingMs)
                 {
-                    Cv2.Rectangle(preview,
-                        new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
-                        Scalar.Orange, 2);
+                    if (preview != null)
+                    {
+                        Cv2.Rectangle(preview,
+                            new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
+                            Scalar.Orange, 2);
+                    }
                     return new FaceMatchResult
                     {
                         Matched = false,
@@ -336,9 +401,12 @@ public sealed class FaceRecognitionEngine : IDisposable
                 if (_matchStreak >= RequiredMatchStreak && !padOk)
                 {
                     ResetMatchStreak();
-                    Cv2.Rectangle(preview,
-                        new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
-                        Scalar.OrangeRed, 2);
+                    if (preview != null)
+                    {
+                        Cv2.Rectangle(preview,
+                            new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
+                            Scalar.OrangeRed, 2);
+                    }
                     return new FaceMatchResult
                     {
                         Matched = false,
@@ -350,9 +418,12 @@ public sealed class FaceRecognitionEngine : IDisposable
                     };
                 }
 
-                Cv2.Rectangle(preview,
-                    new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
-                    matched ? Scalar.LimeGreen : Scalar.Orange, 2);
+                if (preview != null)
+                {
+                    Cv2.Rectangle(preview,
+                        new Rect((int)best.X, (int)best.Y, (int)best.W, (int)best.H),
+                        matched ? Scalar.LimeGreen : Scalar.Orange, 2);
+                }
 
                 return new FaceMatchResult
                 {
@@ -755,6 +826,11 @@ public sealed class FaceRecognitionEngine : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        lock (_frameGate)
+        {
+            _latestBgr?.Dispose();
+            _latestBgr = null;
+        }
         _cam?.Dispose();
         _det?.Dispose();
         _rec?.Dispose();

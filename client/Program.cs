@@ -73,6 +73,7 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"FaceVerifyKillApps={cfg.FaceVerifyKillApps}");
     Console.WriteLine($"FaceOrtThreads={cfg.FaceOrtThreads}");
     Console.WriteLine($"FaceVerifyLoopMs={cfg.FaceVerifyLoopMs}");
+    Console.WriteLine($"FacePreviewFps={cfg.FacePreviewFps}");
     Console.WriteLine($"LocationEnabled={cfg.LocationEnabled}");
     Console.WriteLine($"LocationIpFallback={cfg.LocationIpFallback}");
     Console.WriteLine($"LocationPollSec={cfg.LocationPollSec}");
