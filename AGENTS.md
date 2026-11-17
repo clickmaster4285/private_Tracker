@@ -3,6 +3,19 @@
 > **Last audited:** 2026-11-17
 > **Changelog:**
 >
+> - 2026-11-17: **Face enroll false `worker_error` after success.** Go `NotifyWorker`
+> waited only 5s while buffalo_l ran longer → socket abort → face_worker treated the
+> reply write as failure and marked the job `worker_error` even with profile active +
+> embeddings stored. Fix: notify HTTP timeout **10m**; worker never calls
+> `complete(failed)` on `ConnectionAborted`/`BrokenPipe` after a finished job. Restart
+> API + `python worker.py`.
+>
+> - 2026-11-17: **Client embeddings compare vs server before soft-lock.** Warm-up and
+> soft-lock always pull DeviceAuth embeddings: clear local `biometric.db` when server
+> has none / wrong model; rewrite only on mismatch; skip when already matching; prune
+> orphan sample images. Client **VERSION 2.5.3**. Installer-Parity: rebuild Windows
+> installer (no `config.enc` re-bake).
+>
 > - 2026-11-17: **Face soft-lock smooth preview + CPU budget.** Preview loop ~15 fps
 > (`ALPHA_FACE_PREVIEW_FPS`) is independent of ORT match (`ALPHA_FACE_VERIFY_LOOP_MS=500`,
 > IntraOp `ALPHA_FACE_ORT_THREADS=2`, InterOp=1, process priority **Normal**). Web

@@ -522,6 +522,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _try_send(self, code: int, payload: dict[str, Any]) -> bool:
+        """Write the HTTP reply; False if the API client already hung up (timeout/abort)."""
+        try:
+            self._send(code, payload)
+            return True
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError) as ex:
+            print(
+                f"[FaceWorker] reply dropped (client gone): {ex}",
+                flush=True,
+            )
+            return False
+
     def _authorized(self) -> bool:
         got = (self.headers.get("X-Face-Worker-Key") or "").strip()
         return bool(API_KEY) and got == API_KEY
@@ -529,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path in ("/healthz", "/v1/healthz", "/"):
-            self._send(
+            self._try_send(
                 200,
                 {
                     "ok": True,
@@ -541,36 +553,44 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        self._send(404, {"ok": False, "error": "not_found"})
+        self._try_send(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
         if path != "/v1/process":
-            self._send(404, {"ok": False, "error": "not_found"})
+            self._try_send(404, {"ok": False, "error": "not_found"})
             return
         if not self._authorized():
-            self._send(401, {"ok": False, "error": "unauthorized"})
+            self._try_send(401, {"ok": False, "error": "unauthorized"})
             return
         try:
             body = self._read_json()
         except json.JSONDecodeError:
-            self._send(400, {"ok": False, "error": "invalid_json"})
+            self._try_send(400, {"ok": False, "error": "invalid_json"})
             return
         job_id = str(body.get("jobId") or body.get("job_id") or "").strip()
         if not job_id:
-            self._send(400, {"ok": False, "error": "jobId_required"})
+            self._try_send(400, {"ok": False, "error": "jobId_required"})
             return
         try:
             result = process_job(job_id)
-            code = 200 if result.get("ok") else 409
-            self._send(code, result)
         except Exception as ex:  # noqa: BLE001
+            # Real processing failure only — never treat a reply-write abort as worker_error
+            # after embeddings were already stored (that caused "job failed + profile active").
             print(f"[FaceWorker] process error job={job_id}: {ex}", flush=True)
             try:
                 complete(job_id, "failed", "worker_error", str(ex)[:500])
             except Exception:  # noqa: BLE001
                 pass
-            self._send(500, {"ok": False, "error": str(ex), "jobId": job_id})
+            self._try_send(500, {"ok": False, "error": str(ex), "jobId": job_id})
+            return
+        code = 200 if result.get("ok") else 409
+        if not self._try_send(code, result):
+            print(
+                f"[FaceWorker] job={job_id} finished ok={result.get('ok')} "
+                "but API disconnected before reading the reply — job state left as stored",
+                flush=True,
+            )
 
 
 def main() -> int:

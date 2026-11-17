@@ -80,6 +80,7 @@ function UsersListInner() {
   const [showEdit, setShowEdit] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState<Employee | null>(null);
   const [showEnrollFace, setShowEnrollFace] = useState<Employee | null>(null);
+  const [showDeleteFace, setShowDeleteFace] = useState<Employee | null>(null);
   const [showRemove, setShowRemove] = useState<Employee | null>(null);
   const [secretValue, setSecretValue] = useState('');
   const [copied, setCopied] = useState(false);
@@ -241,6 +242,22 @@ function UsersListInner() {
     },
     onError: (err: Error) => {
       toast.error('Failed to delete employee', { description: err.message });
+    },
+  });
+
+  const deleteFaceMutation = useMutation({
+    mutationFn: (id: string) => employeesApi.revokeFaceProfile(id),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['employees'] });
+      queryClient.invalidateQueries({ queryKey: ['face-profile'] });
+      queryClient.invalidateQueries({ queryKey: ['face-profile-samples'] });
+      setShowDeleteFace(null);
+      toast.success('Face data deleted', {
+        description: `Removed ${res.deletedImages ?? 0} image${(res.deletedImages ?? 0) === 1 ? '' : 's'} and ${res.deletedEmbeddings ?? 0} embedding${(res.deletedEmbeddings ?? 0) === 1 ? '' : 's'}. Soft-lock clears after the PC syncs.`,
+      });
+    },
+    onError: (err: Error) => {
+      toast.error('Failed to delete face data', { description: err.message });
     },
   });
 
@@ -696,7 +713,7 @@ function UsersListInner() {
                           <Pencil className="w-4 h-4 text-muted-foreground" />
                           Edit Details
                         </DropdownMenuItem>
-                        {!emp.faceEnrolled && (
+                        {!emp.faceEnrolled ? (
                           <DropdownMenuItem
                             onSelect={() => setShowEnrollFace(emp)}
                             className="cursor-pointer gap-2.5 px-2.5 py-2"
@@ -704,6 +721,22 @@ function UsersListInner() {
                             <ScanFace className="w-4 h-4 text-muted-foreground" />
                             Enroll Face…
                           </DropdownMenuItem>
+                        ) : (
+                          <>
+                            <DropdownMenuItem asChild className="cursor-pointer gap-2.5 px-2.5 py-2">
+                              <Link href={`/employees/face?employeeId=${emp.id}`}>
+                                <ScanFace className="w-4 h-4 text-muted-foreground" />
+                                Face Enrollment
+                              </Link>
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={() => setShowDeleteFace(emp)}
+                              className="cursor-pointer gap-2.5 px-2.5 py-2 text-destructive focus:text-destructive focus:bg-destructive/10"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              Delete Face Images & Embeddings…
+                            </DropdownMenuItem>
+                          </>
                         )}
                         {!emp.hasUserLogin && (
                           <DropdownMenuItem asChild className="cursor-pointer gap-2.5 px-2.5 py-2">
@@ -1289,6 +1322,52 @@ function UsersListInner() {
         open={showEnrollFace !== null}
         onOpenChange={(open) => { if (!open) setShowEnrollFace(null); }}
       />
+
+      <Dialog
+        open={showDeleteFace !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleteFaceMutation.isPending) setShowDeleteFace(null);
+        }}
+      >
+        <DialogContent className="bg-card sm:max-w-[440px]">
+          <DialogHeader>
+            <DialogTitle className="font-display">Delete face images and embeddings?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <p className="text-sm text-muted-foreground">
+              This permanently removes enrollment photos and face templates for{' '}
+              <span className="font-medium text-foreground">{showDeleteFace?.name}</span>. Soft-lock
+              will not unlock until you enroll again.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={deleteFaceMutation.isPending}
+                onClick={() => setShowDeleteFace(null)}
+                className="flex-1 border border-border text-foreground py-2.5 rounded-lg text-sm font-medium hover:bg-muted disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!showDeleteFace || deleteFaceMutation.isPending}
+                onClick={() => {
+                  if (!showDeleteFace) return;
+                  deleteFaceMutation.mutate(showDeleteFace.id);
+                }}
+                className="flex-1 bg-destructive text-destructive-foreground py-2.5 rounded-lg text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {deleteFaceMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Trash2 className="w-4 h-4" />
+                )}
+                Delete images & embeddings
+              </button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showSecret !== null} onOpenChange={(open) => { if (!open) { setShowSecret(null); setSecretValue(''); setCopied(false); } }}>
         <DialogContent className="bg-card sm:max-w-[460px]">

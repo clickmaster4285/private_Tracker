@@ -49,19 +49,24 @@ public sealed class FaceVerifySupervisor
     {
         try
         {
-            var needRefresh = await LocalTemplatesNeedRefreshAsync(info.EmployeeId, ct);
-            if (needRefresh)
-            {
-                _logger?.LogInformation(
-                    "Face soft-lock: local templates missing/stale — refreshing from server before spawn");
-                using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                refreshCts.CancelAfter(TimeSpan.FromSeconds(45));
-                await FaceWarmupService.ForceRefreshEmbeddingsAsync(_config, info, _logger, refreshCts.Token);
-            }
+            // Always compare with the server before soft-lock: clear when admin deleted,
+            // replace when re-enrolled, skip rewrite when already matching.
+            _logger?.LogInformation(
+                "Face soft-lock: comparing local embeddings with server before spawn ({Trigger})",
+                trigger);
+            using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            refreshCts.CancelAfter(TimeSpan.FromSeconds(45));
+            await FaceWarmupService.ForceRefreshEmbeddingsAsync(_config, info, _logger, refreshCts.Token);
         }
         catch (Exception ex)
         {
             _logger?.LogWarning(ex, "Face soft-lock pre-spawn embedding refresh failed");
+            // Offline / refresh failed — still allow soft-lock if local templates remain.
+            if (await LocalTemplatesNeedRefreshAsync(info.EmployeeId, ct))
+            {
+                _logger?.LogWarning(
+                    "Face soft-lock: no usable local templates after failed server compare");
+            }
         }
 
         if (ct.IsCancellationRequested) return;

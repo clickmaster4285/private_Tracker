@@ -59,7 +59,9 @@ func NewFaceService(repo *repository.FaceRepo, empRepo *repository.EmployeeRepo,
 	}
 	return &FaceService{
 		repo: repo, empRepo: empRepo, rootDir: rootDir, maxBytes: maxBytes, maxFiles: maxFiles,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		// NotifyWorker waits for buffalo_l on up to 8 samples — 5s was aborting mid-job
+		// (WinError 10053) and the worker then falsely marked succeeded jobs as worker_error.
+		httpClient: &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
@@ -464,18 +466,65 @@ func (s *FaceService) GetProfileForAdmin(ctx context.Context, routeEmployeeID st
 	return s.repo.GetLatestProfile(ctx, emp.EmployeeID)
 }
 
-func (s *FaceService) RevokeProfile(ctx context.Context, routeEmployeeID, actorUserID string) error {
+// RevokeProfileResult is returned by admin DELETE /face-profile.
+type RevokeProfileResult struct {
+	Revoked           bool  `json:"revoked"`
+	DeletedEmbeddings int64 `json:"deletedEmbeddings"`
+	DeletedImages     int64 `json:"deletedImages"`
+	DeletedJobs       int64 `json:"deletedJobs"`
+	DeletedProfiles   int64 `json:"deletedProfiles"`
+}
+
+// RevokeProfile deletes enrollment images + embeddings + jobs/profiles for the employee
+// and removes image files under FACE_MEDIA_DIR. Soft-lock must re-enroll afterward.
+func (s *FaceService) RevokeProfile(ctx context.Context, routeEmployeeID, actorUserID string) (*RevokeProfileResult, error) {
 	emp, err := s.ResolveEmployeeID(ctx, routeEmployeeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if emp == nil {
-		return fmt.Errorf("employee not found")
+		return nil, fmt.Errorf("employee not found")
 	}
-	if err := s.repo.RevokeActiveProfiles(ctx, emp.EmployeeID, actorUserID); err != nil {
-		return err
+
+	counts, err := s.repo.PurgeEmployeeFaceData(ctx, emp.EmployeeID, actorUserID)
+	if err != nil {
+		return nil, err
 	}
-	return s.repo.InsertAudit(ctx, emp.EmployeeID, actorUserID, "revoked", map[string]any{})
+
+	removedFiles := 0
+	for _, rel := range counts.RelPaths {
+		abs, err := s.AbsolutePath(rel)
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(abs); err == nil {
+			removedFiles++
+		}
+	}
+	// Drop employee media folder tree (…/EMP-xxxx/jobId/).
+	if rootAbs, err := filepath.Abs(s.rootDir); err == nil {
+		empDir := filepath.Join(rootAbs, sanitizeSegment(emp.EmployeeID))
+		if absEmp, err := filepath.Abs(empDir); err == nil &&
+			(absEmp == rootAbs || strings.HasPrefix(absEmp, rootAbs+string(os.PathSeparator))) {
+			_ = os.RemoveAll(absEmp)
+		}
+	}
+
+	_ = s.repo.InsertAudit(ctx, emp.EmployeeID, actorUserID, "face_purged", map[string]any{
+		"deletedEmbeddings": counts.Embeddings,
+		"deletedImages":     counts.Samples,
+		"deletedJobs":       counts.Jobs,
+		"deletedProfiles":   counts.Profiles,
+		"removedFiles":      removedFiles,
+	})
+
+	return &RevokeProfileResult{
+		Revoked:           true,
+		DeletedEmbeddings: counts.Embeddings,
+		DeletedImages:     counts.Samples,
+		DeletedJobs:       counts.Jobs,
+		DeletedProfiles:   counts.Profiles,
+	}, nil
 }
 
 func (s *FaceService) GetMyProfile(ctx context.Context, deviceEmployeeID string) (*models.EmployeeFaceProfile, error) {

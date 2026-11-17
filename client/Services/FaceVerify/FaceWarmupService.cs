@@ -205,21 +205,36 @@ public sealed class FaceWarmupService
         {
             // Drop AdaFace / corrupt local rows when model_id is wrong so soft-lock cannot
             // compare against incompatible vectors.
-            var profile = await store.GetProfileAsync(info.EmployeeId, ct);
-            if (profile != null
-                && !string.IsNullOrWhiteSpace(profile.ModelId)
-                && !string.Equals(profile.ModelId, FaceModelIds.BuffaloL, StringComparison.OrdinalIgnoreCase))
+            var localProfile = await store.GetProfileAsync(info.EmployeeId, ct);
+            if (localProfile != null
+                && !string.IsNullOrWhiteSpace(localProfile.ModelId)
+                && !string.Equals(localProfile.ModelId, FaceModelIds.BuffaloL, StringComparison.OrdinalIgnoreCase))
             {
                 logger?.LogInformation(
                     "Clearing stale face templates model_id={ModelId} → {Expected}",
-                    profile.ModelId, FaceModelIds.BuffaloL);
+                    localProfile.ModelId, FaceModelIds.BuffaloL);
                 await store.ClearEmployeeAsync(info.EmployeeId, ct);
+                localProfile = null;
             }
 
             var emb = await api.GetEmbeddingsAsync(ct);
             if (emb.Profile == null || emb.Embeddings is not { Count: > 0 })
             {
-                logger?.LogDebug("No face embeddings on server for {EmployeeId}", info.EmployeeId);
+                // Admin purged face data on the server — drop local biometric.db so soft-lock
+                // cannot keep matching stale templates offline.
+                var hadLocal = localProfile != null
+                               || (await store.GetTemplatesAsync(info.EmployeeId, ct)).Count > 0;
+                if (hadLocal)
+                {
+                    logger?.LogInformation(
+                        "Clearing local face templates — server has no active embeddings for {EmployeeId}",
+                        info.EmployeeId);
+                    await store.ClearEmployeeAsync(info.EmployeeId, ct);
+                }
+                else
+                {
+                    logger?.LogDebug("No face embeddings on server for {EmployeeId}", info.EmployeeId);
+                }
                 return false;
             }
 
@@ -251,12 +266,37 @@ public sealed class FaceWarmupService
             if (templates.Count == 0)
             {
                 logger?.LogWarning(
-                    "Server face profile model_id={ModelId} is not buffalo_l — reprocess enrollments",
+                    "Server face profile model_id={ModelId} is not buffalo_l — clearing local and waiting for re-enroll",
                     emb.Profile.ModelId);
+                await store.ClearEmployeeAsync(info.EmployeeId, ct);
                 return false;
             }
 
-            var localProfile = new LocalFaceProfile
+            var localTemplates = await store.GetTemplatesAsync(info.EmployeeId, ct);
+            if (EmbeddingsMatchServer(localProfile, localTemplates, emb.Profile, templates))
+            {
+                logger?.LogDebug(
+                    "Face embeddings already match server for {EmployeeId} (profile={ProfileId} v{Version} count={Count})",
+                    info.EmployeeId, emb.Profile.Id, emb.Profile.ProfileVersion, templates.Count);
+                await store.MarkSyncAckAsync(info.EmployeeId, emb.Profile.ProfileVersion, emb.Profile.ModelVersion, ct);
+                try
+                {
+                    await api.SyncAckAsync(emb.Profile.ProfileVersion, emb.Profile.ModelVersion, config.ClientId, ct);
+                }
+                catch { /* best-effort */ }
+                return true;
+            }
+
+            logger?.LogInformation(
+                "Updating local face embeddings from server for {EmployeeId}: local(v{LocalVer},n={LocalN}) → server(v{ServerVer},n={ServerN},profile={ProfileId})",
+                info.EmployeeId,
+                localProfile?.ProfileVersion ?? 0,
+                localTemplates.Count,
+                emb.Profile.ProfileVersion,
+                templates.Count,
+                emb.Profile.Id);
+
+            var nextProfile = new LocalFaceProfile
             {
                 EmployeeId = info.EmployeeId,
                 ProfileId = emb.Profile.Id,
@@ -269,11 +309,11 @@ public sealed class FaceWarmupService
                 EmbeddingDims = emb.Profile.EmbeddingDims,
                 EmbeddingCount = templates.Count,
             };
-            await store.ReplaceProfileAsync(localProfile, templates, ct);
-            await store.MarkSyncAckAsync(info.EmployeeId, localProfile.ProfileVersion, localProfile.ModelVersion, ct);
+            await store.ReplaceProfileAsync(nextProfile, templates, ct);
+            await store.MarkSyncAckAsync(info.EmployeeId, nextProfile.ProfileVersion, nextProfile.ModelVersion, ct);
             try
             {
-                await api.SyncAckAsync(localProfile.ProfileVersion, localProfile.ModelVersion, config.ClientId, ct);
+                await api.SyncAckAsync(nextProfile.ProfileVersion, nextProfile.ModelVersion, config.ClientId, ct);
             }
             catch { /* best-effort */ }
             return true;
@@ -283,6 +323,38 @@ public sealed class FaceWarmupService
             logger?.LogWarning(ex, "Face embedding warm-up failed");
             return false;
         }
+    }
+
+    /// <summary>
+    /// True when local biometric cache matches the active server profile + template ids.
+    /// </summary>
+    internal static bool EmbeddingsMatchServer(
+        LocalFaceProfile? localProfile,
+        IReadOnlyList<LocalFaceTemplate> localTemplates,
+        FaceProfileDto serverProfile,
+        IReadOnlyList<LocalFaceTemplate> serverTemplates)
+    {
+        if (localProfile == null) return false;
+        if (!string.Equals(localProfile.ProfileId, serverProfile.Id, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (localProfile.ProfileVersion != serverProfile.ProfileVersion) return false;
+        if (localProfile.EnrollmentVersion != serverProfile.EnrollmentVersion) return false;
+        if (!string.Equals(localProfile.ModelId, serverProfile.ModelId, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!string.Equals(localProfile.ModelVersion, serverProfile.ModelVersion, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (!string.Equals(localProfile.PreprocessVersion, serverProfile.PreprocessVersion, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (localTemplates.Count != serverTemplates.Count) return false;
+
+        var localIds = localTemplates.Select(t => t.Id).OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray();
+        var serverIds = serverTemplates.Select(t => t.Id).OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToArray();
+        for (var i = 0; i < localIds.Length; i++)
+        {
+            if (!string.Equals(localIds[i], serverIds[i], StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        return true;
     }
 
     public static async Task SyncSampleImagesAsync(
@@ -295,6 +367,22 @@ public sealed class FaceWarmupService
         var samples = pack.Samples ?? new();
         var existing = (await store.GetSamplesAsync(employeeId, ct))
             .ToDictionary(s => s.SampleId, StringComparer.OrdinalIgnoreCase);
+        var serverIds = new HashSet<string>(
+            samples.Select(s => s.SampleId).Where(id => !string.IsNullOrWhiteSpace(id)),
+            StringComparer.OrdinalIgnoreCase);
+
+        // Drop local sample rows/files that no longer exist on the server (admin purge / re-enroll).
+        foreach (var local in existing.Values)
+        {
+            if (serverIds.Contains(local.SampleId)) continue;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(local.LocalPath) && File.Exists(local.LocalPath))
+                    File.Delete(local.LocalPath);
+            }
+            catch { /* best-effort */ }
+            await store.DeleteSampleAsync(local.SampleId, ct);
+        }
 
         foreach (var item in samples)
         {

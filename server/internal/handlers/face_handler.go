@@ -221,15 +221,17 @@ func (h *FaceHandler) GetFaceProfile(c echo.Context) error {
 }
 
 // DeleteFaceProfile handles JWT DELETE /employees/:id/face-profile
+// Removes enrollment images (DB + disk), embeddings, jobs, and profiles.
 func (h *FaceHandler) DeleteFaceProfile(c echo.Context) error {
 	actor, _ := c.Get("user_id").(string)
-	if err := h.svc.RevokeProfile(c.Request().Context(), c.Param("id"), actor); err != nil {
+	result, err := h.svc.RevokeProfile(c.Request().Context(), c.Param("id"), actor)
+	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return echo.NewHTTPError(http.StatusNotFound, err.Error())
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(http.StatusOK, map[string]any{"revoked": true})
+	return c.JSON(http.StatusOK, result)
 }
 
 // GetEnrollmentSampleImage handles JWT GET /employees/:id/face-enrollment/samples/:sampleId/image

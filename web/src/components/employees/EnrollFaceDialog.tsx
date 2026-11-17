@@ -18,6 +18,8 @@ import {
   type CapturedFaceSample,
   type FacePoseId,
   assessFrame,
+  looksLikeNoSignalFrame,
+  openPreferredCamera,
 } from '@/lib/face-enrollment';
 
 type Props = {
@@ -61,6 +63,8 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
   const [samples, setSamples] = useState<CapturedFaceSample[]>([]);
   const [liveHint, setLiveHint] = useState('Starting camera…');
   const [qualityOk, setQualityOk] = useState(true);
+  /** True when the selected device is a dead virtual cam (e.g. Iriun not started). */
+  const [needsWebcam, setNeedsWebcam] = useState(false);
   const [busy, setBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [job, setJob] = useState<FaceEnrollmentJob | null>(null);
@@ -97,20 +101,26 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
 
   const startCamera = useCallback(async () => {
     stopCamera();
+    setNeedsWebcam(false);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      // Prefer a real webcam over Iriun/OBS virtual devices when both exist.
+      const { stream, virtual } = await openPreferredCamera('user');
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      setLiveHint(pose.label);
-      setQualityOk(true);
+      if (virtual) {
+        setNeedsWebcam(true);
+        setLiveHint('Please connect webcam');
+        setQualityOk(false);
+      } else {
+        setLiveHint(pose.label);
+        setQualityOk(true);
+      }
     } catch {
-      setLiveHint('Camera unavailable — allow webcam access');
+      setNeedsWebcam(true);
+      setLiveHint('Please connect webcam');
       setQualityOk(false);
       toast.error('Could not open webcam');
     }
@@ -130,6 +140,7 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
     setRetryMode(false);
     setProcessing(false);
     setQualityOk(true);
+    setNeedsWebcam(false);
   }, [samples]);
 
   useEffect(() => {
@@ -157,7 +168,16 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) return;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const q = assessFrame(ctx.getImageData(0, 0, canvas.width, canvas.height));
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      // Cover Iriun's dual mirrored "Please start…" frame with one clear message.
+      if (looksLikeNoSignalFrame(imageData)) {
+        setNeedsWebcam(true);
+        setQualityOk(false);
+        setLiveHint('Please connect webcam');
+        return;
+      }
+      setNeedsWebcam(false);
+      const q = assessFrame(imageData);
       setQualityOk(q.ok);
       if (!q.ok) setLiveHint(q.reason ?? 'Adjust lighting or hold still');
       else setLiveHint(pose.label);
@@ -224,6 +244,10 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
 
   const capture = async () => {
     if (!videoRef.current || busy) return;
+    if (needsWebcam) {
+      toast.error('Please connect webcam');
+      return;
+    }
     if (retryMode && !rejectedPoseIds.has(pose.id)) {
       toast.message('Only retake rejected angles');
       return;
@@ -527,7 +551,12 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
                   <button
                     type="button"
                     onClick={() => void capture()}
-                    disabled={busy || submitting || (retryMode && !rejectedPoseIds.has(pose.id))}
+                    disabled={
+                      busy ||
+                      submitting ||
+                      needsWebcam ||
+                      (retryMode && !rejectedPoseIds.has(pose.id))
+                    }
                     className="inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium disabled:opacity-50"
                   >
                     {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
@@ -558,22 +587,36 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
             <section className="relative min-h-[42vh] lg:min-h-0 bg-black overflow-hidden">
               <video
                 ref={videoRef}
-                className="absolute inset-0 h-full w-full object-cover scale-x-[-1]"
+                className={`absolute inset-0 h-full w-full object-cover ${needsWebcam ? 'opacity-0' : ''}`}
                 playsInline
                 muted
               />
-              <div
-                className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_42%,rgba(0,0,0,0.55)_100%)]"
-                aria-hidden
-              />
-              <div
-                className={`pointer-events-none absolute left-1/2 top-[46%] -translate-x-1/2 -translate-y-1/2
-                  w-[min(42%,280px)] aspect-[3/4] rounded-[50%] border-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.28)]
-                  transition-colors duration-300
-                  ${qualityOk ? 'border-primary/80' : 'border-warning/90'}`}
-                aria-hidden
-              />
-              <div className="absolute inset-x-0 bottom-0 p-4 sm:p-5 bg-gradient-to-t from-black/85 via-black/45 to-transparent">
+              {needsWebcam ? (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black px-6 text-center">
+                  <Camera className="h-10 w-10 text-white/70" aria-hidden />
+                  <p className="text-lg sm:text-xl font-semibold text-white tracking-tight">
+                    Please connect webcam
+                  </p>
+                  <p className="text-sm text-white/70 max-w-sm">
+                    Start your camera app or plug in a webcam, then tap Restart camera.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div
+                    className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_55%,rgba(0,0,0,0.55)_100%)]"
+                    aria-hidden
+                  />
+                  <div
+                    className={`pointer-events-none absolute left-1/2 top-[46%] -translate-x-1/2 -translate-y-1/2
+                      w-[min(58%,380px)] aspect-[3/4] rounded-[50%] border-2 shadow-[0_0_0_9999px_rgba(0,0,0,0.28)]
+                      transition-colors duration-300
+                      ${qualityOk ? 'border-primary/80' : 'border-warning/90'}`}
+                    aria-hidden
+                  />
+                </>
+              )}
+              <div className="absolute inset-x-0 bottom-0 z-20 p-4 sm:p-5 bg-gradient-to-t from-black/85 via-black/45 to-transparent">
                 <div className="flex items-end justify-between gap-3">
                   <div className="min-w-0 space-y-1.5">
                     <p className="text-[11px] uppercase tracking-[0.14em] text-white/65">
@@ -581,19 +624,21 @@ export function EnrollFaceDialog({ employee, open, onOpenChange, onCompleted }: 
                       {retryMode ? ' · retake' : ''}
                     </p>
                     <p className="text-lg sm:text-xl font-semibold text-white tracking-tight truncate">
-                      {pose.shortLabel}
+                      {needsWebcam ? 'Webcam' : pose.shortLabel}
                     </p>
                     <p className="text-sm text-white/85 max-w-xl truncate">{liveHint}</p>
                   </div>
                   <div className="shrink-0 text-right space-y-1">
                     <span
                       className={`inline-flex text-[11px] font-medium px-2 py-1 rounded-md border ${
-                        qualityOk
-                          ? 'border-emerald-400/40 bg-emerald-500/20 text-emerald-100'
-                          : 'border-amber-400/40 bg-amber-500/20 text-amber-100'
+                        needsWebcam
+                          ? 'border-amber-400/40 bg-amber-500/20 text-amber-100'
+                          : qualityOk
+                            ? 'border-emerald-400/40 bg-emerald-500/20 text-emerald-100'
+                            : 'border-amber-400/40 bg-amber-500/20 text-amber-100'
                       }`}
                     >
-                      {qualityOk ? 'Framing OK' : 'Adjust'}
+                      {needsWebcam ? 'No camera' : qualityOk ? 'Framing OK' : 'Adjust'}
                     </span>
                     <p className="text-xs text-white/80 tabular-nums">{progressLabel}</p>
                   </div>

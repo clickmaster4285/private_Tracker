@@ -460,7 +460,13 @@ export const employeesApi = {
     request<FaceProfile>('/employees/' + id + '/face-profile'),
 
   revokeFaceProfile: (id: string) =>
-    request<{ revoked: boolean }>('/employees/' + id + '/face-profile', { method: 'DELETE' }),
+    request<{
+      revoked: boolean;
+      deletedEmbeddings: number;
+      deletedImages: number;
+      deletedJobs?: number;
+      deletedProfiles?: number;
+    }>('/employees/' + id + '/face-profile', { method: 'DELETE' }),
 
   /** Same-origin image path for an enrollment sample (cookies via rewrite). */
   faceSampleImagePath: (employeeId: string, sampleId: string) =>

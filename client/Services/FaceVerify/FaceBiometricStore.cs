@@ -267,6 +267,15 @@ public sealed class FaceBiometricStore : IDisposable
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
+    public async Task DeleteSampleAsync(string sampleId, CancellationToken ct)
+    {
+        if (_conn == null || string.IsNullOrWhiteSpace(sampleId)) return;
+        await using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM local_face_samples WHERE sample_id = $id";
+        cmd.Parameters.AddWithValue("$id", sampleId);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
     public async Task<IReadOnlyList<LocalFaceSample>> GetSamplesAsync(string employeeId, CancellationToken ct)
     {
         if (_conn == null) return Array.Empty<LocalFaceSample>();

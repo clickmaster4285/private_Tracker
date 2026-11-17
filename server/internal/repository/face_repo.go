@@ -241,6 +241,92 @@ func (r *FaceRepo) RevokeActiveProfiles(ctx context.Context, employeeID, actor s
 	return err
 }
 
+// FacePurgeCounts reports how many face rows were removed for an employee.
+type FacePurgeCounts struct {
+	Embeddings int64
+	Samples    int64
+	Jobs       int64
+	Profiles   int64
+	RelPaths   []string
+}
+
+// ListSampleRelPaths returns on-disk relative paths for every enrollment image.
+func (r *FaceRepo) ListSampleRelPaths(ctx context.Context, employeeID string) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT rel_path FROM face_enrollment_samples
+		WHERE employee_id = $1 AND rel_path <> ''
+	`, employeeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// PurgeEmployeeFaceData deletes embeddings, enrollment samples, jobs, and profiles
+// for one employee. Callers should remove media files using RelPaths afterward.
+func (r *FaceRepo) PurgeEmployeeFaceData(ctx context.Context, employeeID, actor string) (*FacePurgeCounts, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	paths, err := r.ListSampleRelPaths(ctx, employeeID)
+	if err != nil {
+		return nil, err
+	}
+
+	embTag, err := tx.Exec(ctx, `
+		DELETE FROM employee_face_embeddings WHERE employee_id = $1
+	`, employeeID)
+	if err != nil {
+		return nil, err
+	}
+
+	sampleTag, err := tx.Exec(ctx, `
+		DELETE FROM face_enrollment_samples WHERE employee_id = $1
+	`, employeeID)
+	if err != nil {
+		return nil, err
+	}
+
+	jobTag, err := tx.Exec(ctx, `
+		DELETE FROM face_enrollment_jobs WHERE employee_id = $1
+	`, employeeID)
+	if err != nil {
+		return nil, err
+	}
+
+	profileTag, err := tx.Exec(ctx, `
+		DELETE FROM employee_face_profiles WHERE employee_id = $1
+	`, employeeID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	_ = actor // audit is written by the service after media cleanup
+	return &FacePurgeCounts{
+		Embeddings: embTag.RowsAffected(),
+		Samples:    sampleTag.RowsAffected(),
+		Jobs:       jobTag.RowsAffected(),
+		Profiles:   profileTag.RowsAffected(),
+		RelPaths:   paths,
+	}, nil
+}
+
 func (r *FaceRepo) InsertAudit(ctx context.Context, employeeID, actor, action string, meta map[string]any) error {
 	if meta == nil {
 		meta = map[string]any{}
