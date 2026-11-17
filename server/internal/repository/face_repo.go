@@ -681,7 +681,9 @@ func (r *FaceRepo) ListVerifyEvents(ctx context.Context, f FaceVerifyListFilter)
 		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []models.FaceVerifyEvent
+	// Non-nil empty slice so JSON encodes [] not null (web flatMap would otherwise
+	// put a null row and crash on ev.employeeName).
+	out := make([]models.FaceVerifyEvent, 0)
 	for rows.Next() {
 		var ev models.FaceVerifyEvent
 		if err := rows.Scan(

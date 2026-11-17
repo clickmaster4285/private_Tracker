@@ -68,6 +68,12 @@ if (args.Contains("--print-config"))
     Console.WriteLine($"TimeDateCheckHours={cfg.TimeDateCheckHours}");
     Console.WriteLine($"TimeDateSkewSec={cfg.TimeDateSkewSec}");
     Console.WriteLine($"TimeDateCooldownHours={cfg.TimeDateCooldownHours}");
+    Console.WriteLine($"FaceVerifyEnabled={cfg.FaceVerifyEnabled}");
+    Console.WriteLine($"FaceMatchThreshold={cfg.FaceMatchThreshold}");
+    Console.WriteLine($"FaceVerifyKillApps={cfg.FaceVerifyKillApps}");
+    Console.WriteLine($"FaceOrtThreads={cfg.FaceOrtThreads}");
+    Console.WriteLine($"FaceVerifyLoopMs={cfg.FaceVerifyLoopMs}");
+    Console.WriteLine($"FacePreviewFps={cfg.FacePreviewFps}");
     Console.WriteLine($"LocationEnabled={cfg.LocationEnabled}");
     Console.WriteLine($"LocationIpFallback={cfg.LocationIpFallback}");
     Console.WriteLine($"LocationPollSec={cfg.LocationPollSec}");
@@ -308,12 +314,7 @@ if (args.Contains("--face-verify") && !args.Contains("--background"))
         // Preload CPU onnxruntime.dll (+ CRT) before any ORT type touch.
         client.Services.FaceVerify.OrtNativeBootstrap.EnsureWindows();
         client.Services.FaceVerify.FaceVerifyAppKiller.StartIfEnabled();
-        try
-        {
-            System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
-                System.Diagnostics.ProcessPriorityClass.High;
-        }
-        catch { /* ignore */ }
+        // Soft-lock stays at Normal priority (High pegged weak office CPUs).
 #if FACE_WINFORMS_LOCKER
         client.Services.FaceVerify.WinForms.FaceVerifyLockerHost.Run();
 #else

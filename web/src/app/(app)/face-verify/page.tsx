@@ -95,7 +95,10 @@ function FaceVerifyInner() {
     return () => obs.disconnect();
   }, [query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
-  const events = query.data?.pages.flatMap((p) => p.events) ?? [];
+  // Guard null/undefined events (Go nil slice used to JSON as null).
+  const events =
+    query.data?.pages.flatMap((p) => p.events ?? []).filter((ev): ev is FaceVerifyEvent => !!ev) ??
+    [];
   const total = query.data?.pages[0]?.total ?? 0;
 
   return (

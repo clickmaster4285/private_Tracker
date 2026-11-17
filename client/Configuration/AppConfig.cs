@@ -103,6 +103,17 @@ public class AppConfig
     /// </summary>
     public bool FaceVerifyKillApps { get; init; } = true;
     /// <summary>
+    /// ONNX IntraOp threads for soft-lock (default 2). InterOp is always 1.
+    /// Caps CPU peg on weak dual/quad-core office PCs.
+    /// </summary>
+    public int FaceOrtThreads { get; init; } = 2;
+    /// <summary>
+    /// Milliseconds between soft-lock camera match attempts (default 500 ≈ 2/sec).
+    /// </summary>
+    public int FaceVerifyLoopMs { get; init; } = 500;
+    /// <summary>Soft-lock live preview FPS (default 15; independent of match loop).</summary>
+    public int FacePreviewFps { get; init; } = 15;
+    /// <summary>
     /// Optional HTTP URL override for buffalo_l recognition ONNX. Default: DeviceAuth download
     /// of det_10g + w600k_r50 from GET /face-models/packages/{buffalo-l-det|buffalo-l-rec}.
     /// </summary>
@@ -223,6 +234,15 @@ public class AppConfig
                     System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.8,
                 0.05, 0.99)),
             FaceVerifyKillApps = GetEnv("ALPHA_FACE_VERIFY_KILL_APPS") is not ("0" or "false" or "False"),
+            FaceOrtThreads = Math.Clamp(
+                int.TryParse(GetEnv("ALPHA_FACE_ORT_THREADS"), out var faceOrtTh) ? faceOrtTh : 2,
+                1, Math.Max(1, Environment.ProcessorCount)),
+            FaceVerifyLoopMs = Math.Clamp(
+                int.TryParse(GetEnv("ALPHA_FACE_VERIFY_LOOP_MS"), out var faceLoop) ? faceLoop : 500,
+                250, 2000),
+            FacePreviewFps = Math.Clamp(
+                int.TryParse(GetEnv("ALPHA_FACE_PREVIEW_FPS"), out var facePrevFps) ? facePrevFps : 15,
+                5, 30),
             FaceBuffaloRecUrl = FirstNonEmpty(
                 GetEnv("ALPHA_FACE_BUFFALO_REC_URL"),
                 GetEnv("ALPHA_FACE_ADAFACE_URL")),

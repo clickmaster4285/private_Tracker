@@ -193,16 +193,29 @@ internal sealed class FaceVerifyLockerForm : Form
                 LayoutOverlay();
             });
         };
-        _controller.FrameProcessed += result =>
+        // Smooth ~15 fps preview (independent of ORT match cadence).
+        _controller.PreviewFrame += mat =>
         {
-            if (IsDisposed) return;
-            var mat = result.PreviewBgr;
-            if (mat == null || mat.Empty()) return;
+            if (IsDisposed)
+            {
+                mat.Dispose();
+                return;
+            }
             try
             {
+                if (mat.Empty())
+                {
+                    mat.Dispose();
+                    return;
+                }
                 var bmp = MatToBitmap(mat);
                 BeginInvoke(() =>
                 {
+                    if (IsDisposed)
+                    {
+                        bmp.Dispose();
+                        return;
+                    }
                     _previewBitmap?.Dispose();
                     _previewBitmap = bmp;
                     _preview.Image = _previewBitmap;
@@ -216,6 +229,11 @@ internal sealed class FaceVerifyLockerForm : Form
             {
                 mat.Dispose();
             }
+        };
+        // Match results no longer drive the PictureBox (PreviewBgr is usually null).
+        _controller.FrameProcessed += result =>
+        {
+            result.PreviewBgr?.Dispose();
         };
         _controller.Completed += () =>
         {

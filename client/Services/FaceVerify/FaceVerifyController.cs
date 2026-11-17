@@ -1,6 +1,7 @@
 using client.Configuration;
 using client.Core;
 using Microsoft.Data.Sqlite;
+using OpenCvSharp;
 
 namespace client.Services.FaceVerify;
 
@@ -42,7 +43,10 @@ public sealed class FaceVerifyController : IDisposable
 
     public event Action? Changed;
     public event Action? Completed;
+    /// <summary>Match-cycle result (status / streak). Preview UI should use <see cref="PreviewFrame"/>.</summary>
     public event Action<FaceMatchResult>? FrameProcessed;
+    /// <summary>Smooth camera frames (~15 fps). Subscriber owns and must Dispose the Mat.</summary>
+    public event Action<Mat>? PreviewFrame;
 
     public async Task StartAsync()
     {
@@ -139,7 +143,7 @@ public sealed class FaceVerifyController : IDisposable
                 : "Keep looking at the camera.";
             RaiseChanged();
 
-            await LoopAsync(_cts.Token);
+            await RunPreviewAndMatchAsync(_cts.Token);
         }
         catch (OperationCanceledException) { /* shutdown */ }
         catch (Exception ex)
@@ -152,6 +156,69 @@ public sealed class FaceVerifyController : IDisposable
         {
             _running = false;
         }
+    }
+
+    /// <summary>
+    /// Smooth webcam UI (~15 fps) independent of ORT match cadence (~2/sec by default).
+    /// </summary>
+    private async Task RunPreviewAndMatchAsync(CancellationToken ct)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var previewTask = PreviewLoopAsync(linked.Token);
+        try
+        {
+            await MatchLoopAsync(linked.Token);
+        }
+        finally
+        {
+            linked.Cancel();
+            try { await previewTask; }
+            catch (OperationCanceledException) { /* expected */ }
+            catch { /* ignore preview teardown */ }
+        }
+    }
+
+    private async Task PreviewLoopAsync(CancellationToken ct)
+    {
+        var delayMs = ResolvePreviewDelayMs();
+        while (!ct.IsCancellationRequested && !_allowClose)
+        {
+            try
+            {
+                if (_engine != null && _engine.TryGrabPreview(out var mat) && mat != null)
+                {
+                    var handlers = PreviewFrame;
+                    if (handlers == null)
+                    {
+                        mat.Dispose();
+                    }
+                    else
+                    {
+                        try { handlers.Invoke(mat); }
+                        catch { mat.Dispose(); }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch { /* drop bad frames */ }
+
+            try { await Task.Delay(delayMs, ct); }
+            catch (OperationCanceledException) { return; }
+        }
+    }
+
+    /// <summary>Default 15 fps preview. <c>ALPHA_FACE_PREVIEW_FPS</c> (5–30).</summary>
+    internal static int ResolvePreviewDelayMs()
+    {
+        var fps = 15;
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("ALPHA_FACE_PREVIEW_FPS");
+            if (int.TryParse(env, out var n) && n > 0)
+                fps = Math.Clamp(n, 5, 30);
+        }
+        catch { /* defaults */ }
+        return Math.Max(33, 1000 / fps);
     }
 
     /// <summary>
@@ -216,18 +283,21 @@ public sealed class FaceVerifyController : IDisposable
         return ex.InnerException?.Message ?? ex.Message;
     }
 
-    private async Task LoopAsync(CancellationToken ct)
+    private async Task MatchLoopAsync(CancellationToken ct)
     {
         if (_engine == null || _session == null || _store == null) return;
         _poseFailStreak = 0;
         _frontVerifiedThisRun = false;
+
+        // Let the preview loop stash at least one frame before first ORT pass.
+        await Task.Delay(120, ct);
 
         while (!ct.IsCancellationRequested)
         {
             var poseFilter = _mode == "first" && _poseIndex < _poseQueue.Count
                 ? _poseQueue[_poseIndex]
                 : null;
-            var result = await Task.Run(() => _engine.CaptureAndCompare(poseFilter), ct);
+            var result = await Task.Run(() => _engine.CompareLatest(poseFilter), ct);
             FrameProcessed?.Invoke(result);
 
             if (result.Matched)
@@ -307,8 +377,25 @@ public sealed class FaceVerifyController : IDisposable
                 RaiseChanged();
             }
 
-            await Task.Delay(250, ct);
+            await Task.Delay(ResolveLoopDelayMs(), ct);
         }
+    }
+
+    /// <summary>
+    /// Pause between camera match attempts. Default 500 ms (~2/sec) so weak
+    /// CPUs are not pinned; was 250 ms (~4/sec). <c>ALPHA_FACE_VERIFY_LOOP_MS</c>.
+    /// </summary>
+    internal static int ResolveLoopDelayMs()
+    {
+        const int fallback = 500;
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("ALPHA_FACE_VERIFY_LOOP_MS");
+            if (int.TryParse(env, out var ms) && ms > 0)
+                return Math.Clamp(ms, 250, 2000);
+        }
+        catch { /* defaults */ }
+        return fallback;
     }
 
     private async Task<bool> AdvanceFirstOrFinishAsync(CancellationToken ct)

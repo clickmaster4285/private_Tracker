@@ -438,6 +438,9 @@ func (h *FaceHandler) ListVerifyEvents(c echo.Context) error {
 	if perPage < 1 {
 		perPage = 30
 	}
+	if events == nil {
+		events = []models.FaceVerifyEvent{}
+	}
 	return c.JSON(http.StatusOK, map[string]any{
 		"events":  events,
 		"total":   total,
