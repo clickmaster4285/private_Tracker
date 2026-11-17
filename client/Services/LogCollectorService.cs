@@ -187,6 +187,29 @@ public class LogCollectorService : BackgroundService
         _attendanceAggregator = attendanceAggregator;
     }
 
+    /// <summary>
+    /// Hold the policy screen, then open face verify. Tracking is already started;
+    /// this does not block the collector loop.
+    /// </summary>
+    private async Task ShowPolicyGateThenFaceAsync(CancellationToken ct)
+    {
+        try
+        {
+            await PolicyGate.WaitAsync(ct);
+            var info = await _store.GetEmployeeInfoAsync(ct);
+            if (info != null)
+                FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info);
+        }
+        catch (OperationCanceledException)
+        {
+            /* shutdown */
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Policy gate or face verify after session start failed");
+        }
+    }
+
     public void StartTracking()
     {
         // Separate --gui process: the --background tracker already collects.
@@ -352,16 +375,7 @@ public class LogCollectorService : BackgroundService
         {
             StartTracking();
             _logger.LogInformation("Session restored from SQLite — tracking started in background mode");
-            try
-            {
-                var info = await _store.GetEmployeeInfoAsync(stoppingToken);
-                if (info != null)
-                    FaceVerifyLauncher.TryLaunchOnSessionStart(_config, info);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Face verify launch after headless restore failed");
-            }
+            _ = ShowPolicyGateThenFaceAsync(stoppingToken);
         }
 
         // ─── Reconcile stale sessions from previous crashes ───
@@ -436,10 +450,12 @@ public class LogCollectorService : BackgroundService
                                 pending.Name,
                                 pending.Token ?? string.Empty);
                             StartTracking();
-                            // Every session start must open face-verify (GUI login race may lose).
-                            FaceVerifyLauncher.TryLaunchOnSessionStart(_config, pending);
+                            // Policy screen first. Face-verify starts after it closes so the
+                            // two topmost windows do not cover each other. GUI login may also
+                            // launch face; the face mutex keeps a single soft-lock.
+                            _ = ShowPolicyGateThenFaceAsync(stoppingToken);
                             _logger.LogInformation(
-                                "Session appeared in SQLite while waiting — tracking started + face-verify launch");
+                                "Session appeared in SQLite while waiting — tracking started + policy gate");
                             continue;
                         }
                     }

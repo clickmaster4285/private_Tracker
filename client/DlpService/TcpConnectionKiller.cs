@@ -61,6 +61,76 @@ internal static class TcpConnectionKiller
         }
     }
 
+    /// <summary>
+    /// Close established IPv4 TCP to remote port 80 or 443 whose address is not in
+    /// <paramref name="allow"/> and is not LAN/loopback/link-local. Used when lockdown
+    /// turns on so an already-open browser dies. The tracker API IP stays in the allow set.
+    /// </summary>
+    public static int KillWebExcept(IEnumerable<IPAddress> allow)
+    {
+        if (!OperatingSystem.IsWindows())
+            return 0;
+
+        var allowed = new HashSet<uint>();
+        foreach (var addr in allow)
+        {
+            if (addr.AddressFamily != AddressFamily.InterNetwork)
+                continue;
+            if (IPAddress.IsLoopback(addr) || addr.Equals(IPAddress.Any))
+                continue;
+            allowed.Add(IpToUInt(addr));
+        }
+
+        try
+        {
+            var rows = GetTcpRows();
+            var killed = 0;
+            foreach (var row in rows)
+            {
+                if (row.dwState is 2 or 11) // LISTEN, TIME_WAIT
+                    continue;
+                var port = HostPort(row.dwRemotePort);
+                if (port is not (80 or 443))
+                    continue;
+                if (row.dwRemoteAddr == 0 || allowed.Contains(row.dwRemoteAddr))
+                    continue;
+                if (IsPrivateOrLocal(row.dwRemoteAddr))
+                    continue;
+                var del = row;
+                del.dwState = MibTcpStateDeleteTcb;
+                if (SetTcpEntry(ref del) == 0)
+                    killed++;
+            }
+            return killed;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static int HostPort(uint raw)
+    {
+        var net = (ushort)(raw & 0xFFFF);
+        return (ushort)IPAddress.NetworkToHostOrder((short)net);
+    }
+
+    private static bool IsPrivateOrLocal(uint addr)
+    {
+        var b = BitConverter.GetBytes(addr);
+        if (b[0] is 0 or 10 or 127)
+            return true;
+        if (b[0] == 169 && b[1] == 254)
+            return true;
+        if (b[0] == 172 && b[1] >= 16 && b[1] <= 31)
+            return true;
+        if (b[0] == 192 && b[1] == 168)
+            return true;
+        if (b[0] >= 224)
+            return true;
+        return false;
+    }
+
     private static uint IpToUInt(IPAddress addr)
     {
         // Match MIB_TCPROW layout returned by GetExtendedTcpTable on Windows.

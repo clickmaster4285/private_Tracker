@@ -21,8 +21,11 @@ namespace AlphaAITracker.Service;
 ///
 /// Allowed set = bootstrap host (ALPHA_SERVER_URL) + platformAllow.hosts + allow.hosts, resolved
 /// with the system resolver (NOT DoH — DoH is port 443 and would be blocked). Wildcard entries
-/// resolve the apex only. Not applied unless the bootstrap host resolves, so the service can
-/// never cut itself off from the API.
+/// resolve the apex only. The same complement also denies public DNS (UDP/TCP 53) and
+/// DNS-over-TLS (TCP 853). Allowlisted names are pinned in the hosts file
+/// (<c># AlphaAI-DLP-ALLOW</c>) so they still resolve. If the server name does not resolve,
+/// the last saved server IPs are used and the apply stays not-ready (<c>bootstrap_unresolved</c>)
+/// — public 80/443/53/853 are still denied.
 ///
 /// Generation lock: <see cref="Apply"/> and <see cref="Clear"/> bump <c>_generation</c>; an
 /// in-flight apply whose generation went stale (Clear ran during DNS) no-ops.
@@ -33,6 +36,9 @@ internal static class LockdownNetworkEnforcer
     public const string RulePrefix = DomainBlockEnforcer.FirewallRulePrefix + "LOCK-";
     private const string DenyTcpBase = RulePrefix + "DENY-TCP";
     private const string DenyUdpBase = RulePrefix + "DENY-UDP";
+    private const string DenyDnsUdpBase = RulePrefix + "DENY-DNS-UDP";
+    private const string DenyDnsTcpBase = RulePrefix + "DENY-DNS-TCP";
+    private const string DenyDotBase = RulePrefix + "DENY-DOT";
 
     /// <summary>Max resolved allow IPs kept live. Bootstrap IPs are kept first.</summary>
     public const int MaxAllowIps = 4096;
@@ -60,8 +66,16 @@ internal static class LockdownNetworkEnforcer
     private static DateTimeOffset _lastVerifyUtc = DateTimeOffset.MinValue;
     private static bool _rulesMaybePresent = true; // unknown at boot → verify once
     private static DateTimeOffset _cleanVerifiedUtc = DateTimeOffset.MinValue;
+    private static DateTimeOffset _lastTcpKillUtc = DateTimeOffset.MinValue;
 
-    public sealed record Result(bool Changed, bool Applied, int AllowIps, bool Overflow, string Detail);
+    public sealed record Result(
+        bool Changed,
+        bool Applied,
+        int AllowIps,
+        bool Overflow,
+        string Detail,
+        bool RulesPresent = false,
+        string HostsDetail = "");
 
     public static long CurrentGeneration => Interlocked.Read(ref _generation);
 
@@ -76,13 +90,28 @@ internal static class LockdownNetworkEnforcer
 
         var gen = Interlocked.Increment(ref _generation);
 
-        // Bootstrap first so it survives the overflow cap.
+        // Bootstrap first so it survives the overflow cap. A failed resolve still
+        // applies deny-all (or the last saved server IPs) and stays not-ready.
         var bootstrapHost = ExtractHost(serverUrl);
-        var bootstrapIps = bootstrapHost is null
+        var freshBootstrap = bootstrapHost is null
             ? new List<IPAddress>()
             : Resolve(bootstrapHost).ToList();
-        if (bootstrapIps.Count == 0)
-            return new Result(false, false, 0, false, "bootstrap_unresolved");
+        var bootstrapUnresolved = freshBootstrap.Count == 0;
+        List<IPAddress> bootstrapIps;
+        if (!bootstrapUnresolved)
+        {
+            bootstrapIps = freshBootstrap;
+            if (bootstrapHost is not null)
+                SaveBootstrapIps(bootstrapHost, freshBootstrap);
+        }
+        else
+        {
+            bootstrapIps = LoadBootstrapIps(bootstrapHost);
+        }
+
+        var hostIps = new List<(string Host, IReadOnlyList<IPAddress> Ips)>();
+        if (bootstrapHost is not null && bootstrapIps.Count > 0)
+            hostIps.Add((bootstrapHost, bootstrapIps));
 
         var hostSet = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var raw in policyHosts)
@@ -97,7 +126,10 @@ internal static class LockdownNetworkEnforcer
         var otherIps = new List<IPAddress>();
         foreach (var h in hostSet)
         {
-            foreach (var ip in Resolve(h))
+            var ips = Resolve(h);
+            if (ips.Count > 0)
+                hostIps.Add((h, ips));
+            foreach (var ip in ips)
             {
                 if (seen.Add(ip))
                     otherIps.Add(ip);
@@ -124,7 +156,8 @@ internal static class LockdownNetworkEnforcer
 
             var now = DateTimeOffset.UtcNow;
             if (fp == _lastFingerprint && now - _lastVerifyUtc < VerifyEvery)
-                return new Result(false, true, ordered.Count, overflow, "lock_fresh");
+                return Finish(false, ordered.Count, overflow, "lock_fresh",
+                    bootstrapUnresolved, hostIps, ordered);
 
             try
             {
@@ -135,14 +168,15 @@ internal static class LockdownNetworkEnforcer
                     && existingSet.All(desired.ContainsKey))
                 {
                     _lastVerifyUtc = now;
-                    return new Result(false, true, ordered.Count, overflow, "lock_verified");
+                    return Finish(false, ordered.Count, overflow, "lock_verified",
+                        bootstrapUnresolved, hostIps, ordered);
                 }
 
                 var added = 0;
                 var updated = 0;
                 foreach (var (name, remoteIp) in desired)
                 {
-                    var proto = name.StartsWith(DenyUdpBase, StringComparison.OrdinalIgnoreCase) ? "udp" : "tcp";
+                    var (proto, port) = SpecFor(name);
                     var exists = existingSet.Contains(name);
                     if (exists && _lastRules.TryGetValue(name, out var prev) && prev == remoteIp)
                         continue;
@@ -152,14 +186,14 @@ internal static class LockdownNetworkEnforcer
                     {
                         r = DomainBlockEnforcer.RunNetsh(
                             $"advfirewall firewall set rule name=\"{name}\" new " +
-                            $"remoteip={remoteIp} enable=yes");
+                            $"remoteip={remoteIp} remoteport={port} protocol={proto} enable=yes");
                         updated++;
                     }
                     else
                     {
                         r = DomainBlockEnforcer.RunNetsh(
                             $"advfirewall firewall add rule name=\"{name}\" dir=out action=block " +
-                            $"protocol={proto} remoteport=80,443 remoteip={remoteIp} enable=yes profile=any");
+                            $"protocol={proto} remoteport={port} remoteip={remoteIp} enable=yes profile=any");
                         added++;
                     }
                     if (!r.Ok)
@@ -182,8 +216,9 @@ internal static class LockdownNetworkEnforcer
                 _lastVerifyUtc = now;
                 _rulesMaybePresent = true;
                 var changed = added > 0 || updated > 0 || removed > 0;
-                return new Result(changed, true, ordered.Count, overflow,
-                    $"lock_add={added} upd={updated} rm={removed} rules={desired.Count} ips={ordered.Count}");
+                return Finish(changed, ordered.Count, overflow,
+                    $"lock_add={added} upd={updated} rm={removed} rules={desired.Count} ips={ordered.Count}",
+                    bootstrapUnresolved, hostIps, ordered);
             }
             catch (Exception ex)
             {
@@ -203,9 +238,10 @@ internal static class LockdownNetworkEnforcer
             Interlocked.Increment(ref _generation); // invalidate in-flight Apply
             _lastFingerprint = "";
             _lastRules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var hostsCleared = RemoveAllowHosts();
 
             var now = DateTimeOffset.UtcNow;
-            if (!_rulesMaybePresent && now - _cleanVerifiedUtc < CleanVerifyEvery)
+            if (!_rulesMaybePresent && !hostsCleared && now - _cleanVerifiedUtc < CleanVerifyEvery)
                 return new Result(false, false, 0, false, "lock_absent");
 
             try
@@ -287,13 +323,62 @@ internal static class LockdownNetworkEnforcer
         if (sb.Length > 0) chunks.Add(sb.ToString());
 
         var rules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        for (var i = 0; i < chunks.Count; i++)
+        void Add(string baseName)
         {
-            var suffix = i == 0 ? "" : "-" + i;
-            rules[DenyTcpBase + suffix] = chunks[i];
-            rules[DenyUdpBase + suffix] = chunks[i];
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                var suffix = i == 0 ? "" : "-" + i;
+                rules[baseName + suffix] = chunks[i];
+            }
         }
+        // Web + QUIC, then public DNS and DNS-over-TLS. Same complement, so a CDN
+        // name can resolve only when its host is pinned below for the allowlist.
+        Add(DenyTcpBase);
+        Add(DenyUdpBase);
+        Add(DenyDnsUdpBase);
+        Add(DenyDnsTcpBase);
+        Add(DenyDotBase);
         return rules;
+    }
+
+    private static (string Proto, string Port) SpecFor(string name)
+    {
+        if (name.StartsWith(DenyDnsUdpBase, StringComparison.OrdinalIgnoreCase))
+            return ("udp", "53");
+        if (name.StartsWith(DenyDnsTcpBase, StringComparison.OrdinalIgnoreCase))
+            return ("tcp", "53");
+        if (name.StartsWith(DenyDotBase, StringComparison.OrdinalIgnoreCase))
+            return ("tcp", "853");
+        if (name.StartsWith(DenyUdpBase, StringComparison.OrdinalIgnoreCase))
+            return ("udp", "80,443");
+        return ("tcp", "80,443");
+    }
+
+    /// <summary>
+    /// Rules are in place. Ready only when the server name resolved this pass and the
+    /// allowlist hosts block was written. <paramref name="bootstrapUnresolved"/> keeps
+    /// the gate on the error until a later tick resolves the name.
+    /// </summary>
+    private static Result Finish(
+        bool changed,
+        int allowIps,
+        bool overflow,
+        string detail,
+        bool bootstrapUnresolved,
+        IReadOnlyList<(string Host, IReadOnlyList<IPAddress> Ips)> hostIps,
+        IReadOnlyList<IPAddress> allowList)
+    {
+        var hosts = ApplyAllowHosts(hostIps);
+        MaybeKillWeb(allowList, changed);
+        var hostsOk = hosts is "hosts_allow_updated" or "hosts_allow_cleared"
+            or "hosts_allow_fresh" or "hosts_allow_absent";
+        var ready = !bootstrapUnresolved && hostsOk;
+        var finalDetail = detail;
+        if (bootstrapUnresolved)
+            finalDetail = "bootstrap_unresolved";
+        else if (!hostsOk)
+            finalDetail = hosts;
+        return new Result(changed, ready, allowIps, overflow, finalDetail, RulesPresent: true, HostsDetail: hosts);
     }
 
     private static IEnumerable<(uint Lo, uint Hi)> Complement4(List<(uint Lo, uint Hi)> allowed)
@@ -432,6 +517,165 @@ internal static class LockdownNetworkEnforcer
         if (s.StartsWith("*.", StringComparison.Ordinal)) s = s[2..];
         s = s.Trim('.');
         return s.Length > 0 && HostLike.IsMatch(s) ? s : null;
+    }
+
+    // ---------------------------------------------------------------- allow hosts + bootstrap cache + TCP kill
+
+    private static string BootstrapCachePath =>
+        Path.Combine(DlpDataPaths.DlpRoot, "bootstrap-ips.txt");
+
+    private static void SaveBootstrapIps(string host, IReadOnlyList<IPAddress> ips)
+    {
+        try
+        {
+            Directory.CreateDirectory(DlpDataPaths.DlpRoot);
+            var sb = new StringBuilder();
+            sb.AppendLine(host.Trim().ToLowerInvariant());
+            foreach (var ip in ips)
+                sb.AppendLine(ip.ToString());
+            File.WriteAllText(BootstrapCachePath, sb.ToString());
+        }
+        catch
+        {
+            /* cache is best-effort; the live resolve already succeeded */
+        }
+    }
+
+    private static List<IPAddress> LoadBootstrapIps(string? host)
+    {
+        var list = new List<IPAddress>();
+        if (string.IsNullOrWhiteSpace(host) || !File.Exists(BootstrapCachePath))
+            return list;
+        try
+        {
+            var lines = File.ReadAllLines(BootstrapCachePath);
+            if (lines.Length == 0 ||
+                !lines[0].Trim().Equals(host.Trim(), StringComparison.OrdinalIgnoreCase))
+                return list;
+            for (var i = 1; i < lines.Length; i++)
+            {
+                if (IPAddress.TryParse(lines[i].Trim(), out var ip) && IsUsable(ip) && !list.Contains(ip))
+                    list.Add(ip);
+            }
+        }
+        catch
+        {
+            list.Clear();
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Pin allowlisted names at the addresses just resolved. Marker is separate from the
+    /// web-blocker <c># AlphaAI-DLP-BEGIN</c> block so a hosts rewrite does not drop it.
+    /// </summary>
+    private static string ApplyAllowHosts(
+        IReadOnlyList<(string Host, IReadOnlyList<IPAddress> Ips)> hostIps)
+    {
+        var lines = new List<string>();
+        foreach (var (host, ips) in hostIps)
+        {
+            if (string.IsNullOrWhiteSpace(host) || IPAddress.TryParse(host, out _))
+                continue;
+            foreach (var ip in ips)
+            {
+                if (!IsUsable(ip))
+                    continue;
+                lines.Add(ip + " " + host.Trim().ToLowerInvariant() + " " + DomainBlockEnforcer.AllowLineMarker);
+            }
+        }
+
+        string original;
+        try
+        {
+            original = File.Exists(DomainBlockEnforcer.HostsPath)
+                ? File.ReadAllText(DomainBlockEnforcer.HostsPath, Encoding.UTF8)
+                : "";
+        }
+        catch (Exception ex)
+        {
+            return "error_read:" + ex.Message;
+        }
+
+        var stripped = StripAllowBlock(original);
+        var next = stripped.TrimEnd() + "\r\n";
+        if (lines.Count > 0)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine();
+            sb.AppendLine(DomainBlockEnforcer.AllowBeginMarker);
+            foreach (var line in lines.Distinct(StringComparer.OrdinalIgnoreCase))
+                sb.AppendLine(line);
+            sb.AppendLine(DomainBlockEnforcer.AllowEndMarker);
+            next += sb.ToString();
+        }
+
+        if (NormalizeNewlines(next) == NormalizeNewlines(original))
+            return lines.Count == 0 ? "hosts_allow_absent" : "hosts_allow_fresh";
+
+        try
+        {
+            var tmp = DomainBlockEnforcer.HostsPath + ".alpha-dlp-allow.tmp";
+            File.WriteAllText(tmp, next, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.Copy(tmp, DomainBlockEnforcer.HostsPath, overwrite: true);
+            try { File.Delete(tmp); } catch { /* ignore */ }
+            return lines.Count == 0 ? "hosts_allow_cleared" : "hosts_allow_updated";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return "access_denied_need_admin";
+        }
+        catch (Exception ex)
+        {
+            return "error_write:" + ex.Message;
+        }
+    }
+
+    /// <returns>True when an allow block was removed.</returns>
+    private static bool RemoveAllowHosts()
+    {
+        var detail = ApplyAllowHosts(Array.Empty<(string, IReadOnlyList<IPAddress>)>());
+        return detail == "hosts_allow_cleared";
+    }
+
+    private static string StripAllowBlock(string content)
+    {
+        var lines = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var kept = new List<string>(lines.Length);
+        var inAllow = false;
+        foreach (var line in lines)
+        {
+            var t = line.Trim();
+            if (t.Equals(DomainBlockEnforcer.AllowBeginMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                inAllow = true;
+                continue;
+            }
+            if (t.Equals(DomainBlockEnforcer.AllowEndMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                inAllow = false;
+                continue;
+            }
+            if (inAllow)
+                continue;
+            kept.Add(line);
+        }
+        while (kept.Count > 0 && string.IsNullOrWhiteSpace(kept[^1]))
+            kept.RemoveAt(kept.Count - 1);
+        return string.Join("\r\n", kept);
+    }
+
+    private static string NormalizeNewlines(string s) =>
+        s.Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+
+    private static void MaybeKillWeb(IReadOnlyList<IPAddress> allow, bool force)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!force && now - _lastTcpKillUtc < TimeSpan.FromSeconds(10))
+            return;
+        _lastTcpKillUtc = now;
+        try { TcpConnectionKiller.KillWebExcept(allow); }
+        catch { /* firewall still drops new flows */ }
     }
 
     // ---------------------------------------------------------------- netsh helpers

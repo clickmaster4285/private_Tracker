@@ -24,6 +24,7 @@ internal static class AppAllowEnforcer
     private static long _generation;
     private static string _lastFingerprint = "";
     private static bool _policyMaybePresent = true;
+    private static bool _lastVerifyEnforcing;
 
     /// <summary>LOCAL SYSTEM — service Set-AppLockerPolicy / AppID helpers.</summary>
     private const string LocalSystemSid = "S-1-5-18";
@@ -99,7 +100,20 @@ internal static class AppAllowEnforcer
                 return new Result(false, false, "stale_generation");
 
             if (fp == _lastFingerprint)
-                return new Result(false, true, "unchanged");
+            {
+                if (_lastVerifyEnforcing)
+                    return new Result(false, true, "unchanged;verify=enforcing");
+                // Policy is on disk but Task Manager is still allowed. Restart AppID
+                // and probe again — do not report ready until the probe is Denied.
+                EnsureAppIdService(restart: true);
+                var again = VerifyEnforced();
+                if (again.Contains("verify=enforcing", StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastVerifyEnforcing = true;
+                    return new Result(true, true, "recheck;" + again);
+                }
+                return new Result(false, false, "recheck;" + again);
+            }
 
             EnsureAppIdService(restart: false);
 
@@ -118,8 +132,10 @@ internal static class AppAllowEnforcer
             var changed = fp != _lastFingerprint || _policyMaybePresent;
             _lastFingerprint = fp;
             _policyMaybePresent = true;
+            _lastVerifyEnforcing = verify.Contains("verify=enforcing", StringComparison.OrdinalIgnoreCase);
             var detail = apply.Detail + ";" + verify;
-            return new Result(changed, true, detail);
+            // Applied means the OS is actually denying a non-allowlisted exe.
+            return new Result(changed, _lastVerifyEnforcing, detail);
         }
     }
 
@@ -149,6 +165,7 @@ internal static class AppAllowEnforcer
             var changed = _policyMaybePresent || _lastFingerprint != "";
             _lastFingerprint = "";
             _policyMaybePresent = false;
+            _lastVerifyEnforcing = false;
             return new Result(changed, true, "cleared");
         }
     }

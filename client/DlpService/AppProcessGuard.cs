@@ -25,7 +25,7 @@ internal static class AppProcessGuard
     /// Kill interactive / user EXEs that are not allowed. Never touches kernel/critical
     /// system process names (even when path is unreadable).
     /// </summary>
-    public static Result Sweep(IReadOnlyList<AllowAppEntry> allowApps)
+    public static Result Sweep(IReadOnlyList<AllowAppEntry> allowApps, Action<string, string>? onKilled = null)
     {
         if (!OperatingSystem.IsWindows())
             return new Result(0, 0, "unsupported_os");
@@ -75,6 +75,7 @@ internal static class AppProcessGuard
                     {
                         proc.Kill(entireProcessTree: true);
                         killed++;
+                        onKilled?.Invoke(name, path ?? name);
                         if (examples.Count < 8)
                             examples.Add($"{name}:{path ?? "?"}");
                     }

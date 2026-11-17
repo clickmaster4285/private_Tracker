@@ -15,6 +15,19 @@
 > `ALPHA_FACE_VERIFY_LOOP_MS=500` (~2/sec). Client **VERSION 2.5.1**. Installer-Parity:
 > re-bake `config.enc` + rebuild Windows installer.
 >
+> - 2026-11-16: **Login holds the desktop until blockers are verified.** The tracker
+> shows a topmost policy screen after login and on session restore and does not
+> leave it until network lockdown (80/443 plus public DNS 53/853), the allowlist
+> hosts pin, and AppLocker `verify=enforcing` all succeed. A failed layer stays on
+> that screen with a short fix and Retry; the post-login reboot is queued only
+> after that, and the screen stays up through the restart. If the server name
+> does not resolve, deny-all still applies from the last saved server IPs and the
+> screen keeps the DNS error. When AppLocker cannot enforce, a fast process watch
+> kills the new app and the tracker shows one allowlist dialog. Pipe op
+> `GetEnforceStatus`. Client **VERSION 2.5.2**. Installer-Parity: rebuild Windows
+> Setup (no `config.enc` re-bake).
+>
+
 > - 2026-11-16: **Client startup forces VC++ before anything loads.** New
 > `VcRedistBootstrap`: on every Windows launch (tracker / soft-lock / background) checks
 > `HKLM\…\VC\Runtimes\x64\Installed=1`; if missing, **stops** and runs

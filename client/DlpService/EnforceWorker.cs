@@ -128,6 +128,7 @@ public sealed class EnforceWorker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "EnforceWorker tick failed");
+                EnforceStatus.Shared.NoteTickFailed(ex.Message);
             }
 
             try
@@ -149,9 +150,28 @@ public sealed class EnforceWorker : BackgroundService
     /// </summary>
     public Task ForceApplyOnceAsync(CancellationToken ct) => ApplyAsync(ct);
 
+    private static void Report(string id, string code, string detail) =>
+        EnforceStatus.Shared.SetLayer(id, code, detail ?? "");
+
     private async Task ApplyAsync(CancellationToken ct)
     {
         var (version, hash, bundleJson) = await _store.GetAppliedAsync(ct);
+        _cfg.RefreshCredentials();
+        var hasCredsForStatus = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                                !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
+        EnforceStatus.Shared.BeginApply(hasCredsForStatus);
+        try
+        {
+            await ApplyCoreAsync(version, hash, bundleJson, ct);
+        }
+        finally
+        {
+            EnforceStatus.Shared.FinishApply();
+        }
+    }
+
+    private async Task ApplyCoreAsync(long version, string hash, string bundleJson, CancellationToken ct)
+    {
         var bundle = PolicyBundleParser.Parse(bundleJson);
         var now = DateTimeOffset.UtcNow;
         var wantUsbBlock = _cfg.UsbBlock && PolicyBundleParser.WantsUsbStorageBlock(bundle);
@@ -215,7 +235,10 @@ public sealed class EnforceWorker : BackgroundService
         {
             // Only clear once per empty desired set (fingerprint short-circuit for clear path).
             if (fp == _lastPortFingerprint)
+            {
+                Report("ports", "off", _cfg.PortBlock ? "no_port_rules" : "disabled_local");
                 return;
+            }
             var clear = await Task.Run(PortDeviceEnforcer.Clear, ct);
             if (clear.Changed || clear.Detail.StartsWith("error", StringComparison.Ordinal))
             {
@@ -227,6 +250,11 @@ public sealed class EnforceWorker : BackgroundService
             {
                 _lastPortFingerprint = fp;
                 _portApplyStable = true;
+                Report("ports", "off", clear.Detail ?? "");
+            }
+            else
+            {
+                Report("ports", "failed", clear.Detail ?? "port_clear_failed");
             }
             return;
         }
@@ -235,7 +263,10 @@ public sealed class EnforceWorker : BackgroundService
         // PortGuard has not reported a reblock. Guard still catches re-enables between ticks.
         var needsReconcile = PortDeviceEnforcer.ConsumeNeedsFullReconcile();
         if (fp == _lastPortFingerprint && _portApplyStable && !needsReconcile)
+        {
+            Report("ports", "ok", "stable");
             return;
+        }
 
         var result = await Task.Run(() => PortDeviceEnforcer.Apply(instances, classes, allows), ct);
         await _store.AuditAsync("port_control_apply",
@@ -247,6 +278,7 @@ public sealed class EnforceWorker : BackgroundService
             _logger.LogWarning("Port control needs Administrator / LocalSystem — not applied");
             _lastPortFingerprint = "\0"; // force retry awareness
             _portApplyStable = false;
+            Report("ports", "failed", result.Detail);
             return;
         }
         if (!result.Applied)
@@ -257,10 +289,12 @@ public sealed class EnforceWorker : BackgroundService
             {
                 _logger.LogDebug(
                     "Port control PENDING (waiting for device plug-in): {Detail}", result.Detail);
+                Report("ports", "pending", result.Detail ?? "");
             }
             else
             {
                 _logger.LogWarning("Port control not applied: {Detail}", result.Detail);
+                Report("ports", "failed", result.Detail ?? "");
             }
             return;
         }
@@ -289,6 +323,7 @@ public sealed class EnforceWorker : BackgroundService
         _lastPortFingerprint = fp;
         // Stable only when nothing pending — Guard covers re-enable fights until next wake.
         _portApplyStable = !result.Pending;
+        Report("ports", "ok", result.Detail ?? "");
     }
 
     /// <summary>
@@ -324,6 +359,7 @@ public sealed class EnforceWorker : BackgroundService
         {
             await _store.AuditAsync("file_transfer_apply_failed", result.Detail, ct);
             _logger.LogWarning("File-transfer policy apply failed: {Detail}", result.Detail);
+            Report("filetransfer", "failed", result.Detail ?? "");
             return;
         }
 
@@ -355,6 +391,7 @@ public sealed class EnforceWorker : BackgroundService
             }
         }
         _lastFileTransferState = state;
+        Report("filetransfer", "ok", state);
     }
 
     /// <summary>
@@ -383,13 +420,17 @@ public sealed class EnforceWorker : BackgroundService
             }
             if (clear.Applied)
                 _lastDeleteBlockState = state;
+            Report("delete", "off", state);
             return;
         }
 
         var result = await Task.Run(
             () => DeleteBlockAclEnforcer.Apply(TimeSpan.FromSeconds(_cfg.DeleteRecheckSec)), ct);
         if (result.Detail.StartsWith("skipped", StringComparison.Ordinal))
+        {
+            Report("delete", "ok", result.Detail);
             return;
+        }
         if (result.Applied)
         {
             if (result.Changed || _lastDeleteBlockState != "on")
@@ -400,11 +441,13 @@ public sealed class EnforceWorker : BackgroundService
                     result.Detail);
             }
             _lastDeleteBlockState = "on";
+            Report("delete", "ok", result.Detail);
         }
         else
         {
             await _store.AuditAsync("delete_block_apply_failed", result.Detail, ct);
             _logger.LogWarning("Delete-block ACL apply failed: {Detail}", result.Detail);
+            Report("delete", "failed", result.Detail);
         }
     }
 
@@ -435,39 +478,48 @@ public sealed class EnforceWorker : BackgroundService
             }
             if (clear.Applied)
                 _lastAppLockdownState = state;
+            EnforceStatus.Shared.SetWatch(false, Array.Empty<AllowAppEntry>());
+            Report("applocker", !hasCreds ? "off" : "failed", !hasCreds ? "no_device" : state);
             return;
         }
 
         var apps = bundle.AllowApps;
         var result = await Task.Run(() => AppAllowEnforcer.Apply(apps), ct);
-        if (result.Applied)
+        var enforcing = result.Applied &&
+                        result.Detail.Contains("verify=enforcing", StringComparison.OrdinalIgnoreCase);
+        if (result.Detail != "stale_generation")
         {
-            if (result.Changed || _lastAppLockdownState != "on")
+            if (enforcing)
             {
-                await _store.AuditAsync(
-                    "app_lockdown_apply",
-                    $"apps={apps.Count} detail={result.Detail}",
-                    ct);
-                _logger.LogInformation(
-                    "AppLocker ENFORCED (allowApps={Count}, detail={Detail}) — blocked apps show Windows dialog; kill sweeper is backup only",
-                    apps.Count, result.Detail);
-                if (result.Detail.Contains("NOT_ENFORCING", StringComparison.OrdinalIgnoreCase)
-                    || result.Detail.Contains("verify_failed", StringComparison.OrdinalIgnoreCase))
+                Report("applocker", "ok", result.Detail);
+                EnforceStatus.Shared.SetWatch(false, apps);
+                if (result.Changed || _lastAppLockdownState != "on")
                 {
-                    _logger.LogWarning(
-                        "AppLocker policy set but verify says not enforcing — check AppIDSvc and Windows edition/updates");
+                    await _store.AuditAsync(
+                        "app_lockdown_apply",
+                        $"apps={apps.Count} detail={result.Detail}",
+                        ct);
+                    _logger.LogInformation(
+                        "AppLocker ENFORCED (allowApps={Count}, detail={Detail}) — blocked apps show Windows dialog",
+                        apps.Count, result.Detail);
                 }
+                _lastAppLockdownState = "on";
             }
-            _lastAppLockdownState = "on";
-        }
-        else if (result.Detail != "stale_generation" &&
-                 DateTimeOffset.UtcNow - _lastAppLockdownWarn > TimeSpan.FromMinutes(2))
-        {
-            _lastAppLockdownWarn = DateTimeOffset.UtcNow;
-            _logger.LogWarning("AppLocker not applied: {Detail}", result.Detail);
-            await _store.AuditAsync("app_lockdown_apply_failed", result.Detail, ct);
-            // Still mark "on" for process-guard path — fail-closed via kill even if AppLocker fails.
-            _lastAppLockdownState = "on";
+            else
+            {
+                Report("applocker", "failed", result.Detail);
+                // Windows will not show the block dialog. Kill new processes and let the
+                // tracker show one allowlist dialog until verify passes.
+                EnforceStatus.Shared.SetWatch(true, apps);
+                if (DateTimeOffset.UtcNow - _lastAppLockdownWarn > TimeSpan.FromMinutes(2))
+                {
+                    _lastAppLockdownWarn = DateTimeOffset.UtcNow;
+                    _logger.LogWarning("AppLocker not enforcing: {Detail}", result.Detail);
+                    await _store.AuditAsync("app_lockdown_apply_failed", result.Detail, ct);
+                }
+                _lastAppLockdownState = "failed";
+                _nextAppSweepDue = DateTimeOffset.MinValue;
+            }
         }
 
         // AppLocker does not kill already-running apps. Adaptive sweep: within 5s after a kill
@@ -519,6 +571,12 @@ public sealed class EnforceWorker : BackgroundService
             if (!clear.Detail.StartsWith("lock_clear_failed", StringComparison.Ordinal))
                 _lastLockdownState = state;
             _lockdownOverflowAudited = false;
+            // No credentials yet: the login screen is still waiting, not failed.
+            // A local switch off or a pause is a real gap and stays on the policy screen.
+            var code = !hasCreds ? "off" : "failed";
+            var detail = !hasCreds ? "no_device" : state;
+            Report("network", code, detail);
+            Report("dns", code, detail);
             return;
         }
 
@@ -542,8 +600,13 @@ public sealed class EnforceWorker : BackgroundService
             _lockdownOverflowAudited = false;
         }
 
+        if (result.Detail == "stale_generation")
+            return;
+
         if (result.Applied)
         {
+            Report("network", "ok", result.Detail);
+            Report("dns", "ok", string.IsNullOrEmpty(result.HostsDetail) ? result.Detail : result.HostsDetail);
             if (result.Changed || _lastLockdownState != "on")
             {
                 await _store.AuditAsync(
@@ -558,8 +621,15 @@ public sealed class EnforceWorker : BackgroundService
             return;
         }
 
-        // Not applied (bootstrap unresolved / access denied / netsh error / stale gen): never
-        // strand the PC — existing rules are left as-is, retry next tick; log at most every 2 min.
+        var networkReady = result.RulesPresent &&
+                           !result.Detail.Contains("bootstrap_unresolved", StringComparison.OrdinalIgnoreCase) &&
+                           !result.Detail.Contains("access_denied", StringComparison.OrdinalIgnoreCase) &&
+                           !result.Detail.StartsWith("lock_error", StringComparison.OrdinalIgnoreCase);
+        Report("network", networkReady ? "ok" : "failed", result.Detail);
+        Report("dns", "failed", string.IsNullOrEmpty(result.HostsDetail) ? result.Detail : result.HostsDetail);
+
+        // Not applied (bootstrap unresolved / access denied / netsh error): rules from a
+        // cached server IP may still be up. Retry next tick; log at most every 2 min.
         if (result.Detail != "stale_generation" &&
             DateTimeOffset.UtcNow - _lastLockdownWarn > TimeSpan.FromMinutes(2))
         {
@@ -578,11 +648,15 @@ public sealed class EnforceWorker : BackgroundService
         if (!wantUsbBlock && _lastUsbBlock != true && (_cfg.UsbBlock || _lastUsbBlock == false))
         {
             _lastUsbBlock = false;
+            Report("usb", "off", _cfg.UsbBlock ? "no_usb_rule" : "disabled_local");
             return;
         }
 
         if (_lastUsbBlock == wantUsbBlock)
+        {
+            Report("usb", wantUsbBlock ? "ok" : "off", wantUsbBlock ? "usbstor_block" : "usbstor_allow");
             return;
+        }
 
         var result = UsbStorEnforcer.Apply(wantUsbBlock);
         await _store.AuditAsync(
@@ -600,6 +674,7 @@ public sealed class EnforceWorker : BackgroundService
                     $"Right-click {ServiceIdentity.ServiceName}.exe → Run as administrator, or install as a Windows Service.");
             }
 
+            Report("usb", "failed", result.Detail ?? "access_denied_need_admin");
             if (!_accessDeniedAlertQueued && wantUsbBlock)
             {
                 _accessDeniedAlertQueued = true;
@@ -624,6 +699,7 @@ public sealed class EnforceWorker : BackgroundService
 
         _lastUsbBlock = wantUsbBlock;
         _accessDeniedAlertQueued = false;
+        Report("usb", "ok", result.Detail ?? "");
         _logger.LogInformation(
             "USBSTOR {State} (changed={Changed}, detail={Detail})",
             wantUsbBlock ? "BLOCK" : "ALLOW", result.Changed, result.Detail);
@@ -678,6 +754,7 @@ public sealed class EnforceWorker : BackgroundService
         {
             _lastWebFingerprint = "";
             _webBlock.Set(version, Array.Empty<string>(), DomainBlockEnforcer.CurrentGeneration);
+            Report("web", "ok", "no_domains");
             return;
         }
 
@@ -696,6 +773,7 @@ public sealed class EnforceWorker : BackgroundService
                 }
             }
             _webBlock.Set(version, wantDomains, DomainBlockEnforcer.CurrentGeneration);
+            Report("web", "ok", wantDomains.Count == 0 ? "clear" : "block");
             return;
         }
 
@@ -752,6 +830,7 @@ public sealed class EnforceWorker : BackgroundService
                     ct);
             }
             // Do NOT advance fingerprint — retry next tick (PIN leftovers / URLBlocklist).
+            Report("web", "failed", result.Detail ?? "");
             return;
         }
 
@@ -765,12 +844,14 @@ public sealed class EnforceWorker : BackgroundService
                 wantDomains.Count == 0 ? "web_domain_clear_incomplete" : "web_domain_reconcile_incomplete",
                 result.Detail ?? "",
                 ct);
+            Report("web", "failed", result.Detail ?? "incomplete");
             return;
         }
 
         _lastWebFingerprint = combinedFp;
         _webAccessDeniedAlertQueued = false;
         _webBlock.Set(version, wantDomains, DomainBlockEnforcer.CurrentGeneration);
+        Report("web", "ok", result.Detail ?? "");
         _logger.LogInformation(
             "Web domains {State} (count={Count}, lockdownAllow={Allow}, changed={Changed}, gen={Gen}, detail={Detail})",
             wantDomains.Count > 0 ? "BLOCK" : (lockdownOn ? "LOCKDOWN" : "CLEAR"),

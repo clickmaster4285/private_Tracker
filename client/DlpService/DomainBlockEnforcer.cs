@@ -26,6 +26,10 @@ internal static class DomainBlockEnforcer
     public const string FirewallRulePrefix = "AlphaAI-DLP-";
     private const string BeginMarker = "# AlphaAI-DLP-BEGIN";
     private const string EndMarker = "# AlphaAI-DLP-END";
+    /// <summary>Allowlist pin block. Must survive <see cref="StripOwnedBlock"/>.</summary>
+    public const string AllowBeginMarker = "# AlphaAI-DLP-ALLOW-BEGIN";
+    public const string AllowEndMarker = "# AlphaAI-DLP-ALLOW-END";
+    public const string AllowLineMarker = "# AlphaAI-DLP-ALLOW";
 
     // Historical HKLM roots we once wrote (URLBlocklist / DoH / Quic). Cleanup only — not detection.
     private static readonly (string Policy, string UrlBlock, string UrlAllow)[] LegacyChromiumPolicyRoots =
@@ -1087,9 +1091,29 @@ internal static class DomainBlockEnforcer
         var lines = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
         var kept = new List<string>(lines.Length);
         var inBlock = false;
+        var inAllow = false;
         foreach (var line in lines)
         {
             var t = line.Trim();
+            // Keep the lockdown allow pin. Its marker contains "# AlphaAI-DLP", so it
+            // must be recognized before the deny-block strip below.
+            if (t.Equals(AllowBeginMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                inAllow = true;
+                kept.Add(line);
+                continue;
+            }
+            if (t.Equals(AllowEndMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                inAllow = false;
+                kept.Add(line);
+                continue;
+            }
+            if (inAllow)
+            {
+                kept.Add(line);
+                continue;
+            }
             if (t.Equals(BeginMarker, StringComparison.OrdinalIgnoreCase))
             {
                 inBlock = true;
@@ -1102,7 +1126,8 @@ internal static class DomainBlockEnforcer
             }
             if (inBlock)
                 continue;
-            if (t.Contains(MarkerPrefix, StringComparison.OrdinalIgnoreCase))
+            if (t.Contains(MarkerPrefix, StringComparison.OrdinalIgnoreCase)
+                && !t.Contains("AlphaAI-DLP-ALLOW", StringComparison.OrdinalIgnoreCase))
                 continue;
             kept.Add(line);
         }

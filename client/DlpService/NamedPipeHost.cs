@@ -12,7 +12,7 @@ namespace AlphaAITracker.Service;
 /// <summary>
 /// IPC host: Windows named pipe (\\.\pipe\&lt;WINDOWS_DLP_PIPE_NAME&gt;) or Linux
 /// Unix socket (<c>/var/lib/&lt;pkg&gt;/dlp/dlp.sock</c>).
-/// Ops: GetPolicyVersion, Health, AuthorizeTeardown, ApplyTeardownGate,
+/// Ops: GetPolicyVersion, GetEnforceStatus, Health, AuthorizeTeardown, ApplyTeardownGate,
 /// GetUpdateStatus, RequestUpdateCheck, RequestPolicyPull, EnsureAvSelfProtection.
 /// Always listens so update/teardown IPC works even when
 /// <c>ALPHA_DLP_ENABLED=false</c> (DLP-only ops then return <c>dlp_disabled</c>).
@@ -281,6 +281,7 @@ public sealed class NamedPipeHost : BackgroundService
                 // blocks loading the product's own natives (onnxruntime.dll).
                 "EnsureAvSelfProtection" => await EnsureAvSelfProtectionJson(ct),
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
+                "GetEnforceStatus" => RequireDlpSync(GetEnforceStatusJson),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
                 // Teardown unlock must work even when ALPHA_DLP_ENABLED=false (pipe still
@@ -344,6 +345,8 @@ public sealed class NamedPipeHost : BackgroundService
             return JsonSerializer.Serialize(new { ok = false, error = "dlp_disabled" });
         return action();
     }
+
+    private static string GetEnforceStatusJson() => EnforceStatus.Shared.ToJson();
 
     private async Task<string> GetPolicyVersionJson(CancellationToken ct)
     {
