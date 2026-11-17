@@ -1,7 +1,13 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-16
+> **Last audited:** 2026-11-17
 > **Changelog:**
+>
+> - 2026-11-17: **Face soft-lock CPU peg on weak office PCs.** Soft-lock no longer uses
+> all ORT cores + High priority + ~4 Hz match loop. Defaults: IntraOp
+> `ALPHA_FACE_ORT_THREADS=2` (InterOp=1), process priority **Normal**, match delay
+> `ALPHA_FACE_VERIFY_LOOP_MS=500` (~2/sec). Client **VERSION 2.5.1**. Installer-Parity:
+> re-bake `config.enc` + rebuild Windows installer.
 >
 > - 2026-11-16: **Client startup forces VC++ before anything loads.** New
 > `VcRedistBootstrap`: on every Windows launch (tracker / soft-lock / background) checks

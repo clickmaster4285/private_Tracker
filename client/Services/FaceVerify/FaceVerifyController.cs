@@ -307,8 +307,25 @@ public sealed class FaceVerifyController : IDisposable
                 RaiseChanged();
             }
 
-            await Task.Delay(250, ct);
+            await Task.Delay(ResolveLoopDelayMs(), ct);
         }
+    }
+
+    /// <summary>
+    /// Pause between camera match attempts. Default 500 ms (~2/sec) so weak
+    /// CPUs are not pinned; was 250 ms (~4/sec). <c>ALPHA_FACE_VERIFY_LOOP_MS</c>.
+    /// </summary>
+    internal static int ResolveLoopDelayMs()
+    {
+        const int fallback = 500;
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("ALPHA_FACE_VERIFY_LOOP_MS");
+            if (int.TryParse(env, out var ms) && ms > 0)
+                return Math.Clamp(ms, 250, 2000);
+        }
+        catch { /* defaults */ }
+        return fallback;
     }
 
     private async Task<bool> AdvanceFirstOrFinishAsync(CancellationToken ct)

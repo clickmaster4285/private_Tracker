@@ -80,12 +80,7 @@ public static class FaceVerifyLauncher
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
-            try
-            {
-                if (proc != null)
-                    proc.PriorityClass = ProcessPriorityClass.High;
-            }
-            catch { /* ignore */ }
+            // Keep Normal priority — High stole cores from the rest of the desktop on weak PCs.
         }
         catch (Exception ex)
         {

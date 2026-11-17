@@ -116,15 +116,17 @@ public sealed class FaceRecognitionEngine : IDisposable
 
         OrtNativeBootstrap.EnsureWindows();
 
-        var threads = Math.Max(1, Environment.ProcessorCount);
+        // Cap ORT threads so soft-lock does not pin every core on weak office PCs.
+        // ALPHA_FACE_ORT_THREADS (default 2) = IntraOp; InterOp stays 1.
+        var threads = ResolveOrtIntraOpThreads();
         var opts = new SessionOptions
         {
             GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
             IntraOpNumThreads = threads,
-            InterOpNumThreads = threads,
+            InterOpNumThreads = 1,
         };
         opts.AppendExecutionProvider_CPU();
-        Console.Error.WriteLine("[face] ORT EP=CPU, threads=" + threads);
+        Console.Error.WriteLine("[face] ORT EP=CPU, intraOp=" + threads + ", interOp=1");
 
         try
         {
@@ -372,6 +374,24 @@ public sealed class FaceRecognitionEngine : IDisposable
                 Score = 0,
             };
         }
+    }
+
+    /// <summary>
+    /// Soft-lock CPU budget: default 2 IntraOp threads (was ProcessorCount).
+    /// Override with <c>ALPHA_FACE_ORT_THREADS</c> (1..ProcessorCount).
+    /// </summary>
+    internal static int ResolveOrtIntraOpThreads()
+    {
+        var cores = Math.Max(1, Environment.ProcessorCount);
+        var fallback = Math.Min(2, cores);
+        try
+        {
+            var env = Environment.GetEnvironmentVariable("ALPHA_FACE_ORT_THREADS");
+            if (int.TryParse(env, out var n) && n > 0)
+                return Math.Clamp(n, 1, cores);
+        }
+        catch { /* defaults */ }
+        return fallback;
     }
 
     /// <summary>
