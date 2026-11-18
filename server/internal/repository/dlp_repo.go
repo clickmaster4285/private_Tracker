@@ -576,7 +576,16 @@ func (r *DlpRepo) PublishSnapshot(
 	platformHosts []string,
 	allowApps []LockdownAllowAppRow,
 ) error {
-	tx, err := r.pool.Begin(ctx)
+	// Inside Publish's InTransaction the version row is not committed yet, so a
+	// separate pool transaction cannot see it (FK 23503 on dlp_policy_*). Join the
+	// outer transaction as a savepoint; standalone callers still get their own tx.
+	var tx pgx.Tx
+	var err error
+	if r.tx != nil {
+		tx, err = r.tx.Begin(ctx)
+	} else {
+		tx, err = r.pool.Begin(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -2526,6 +2535,23 @@ func (r *DlpRepo) UpsertPolicyDeviceAck(
 	hash, stage, detail string,
 ) error {
 	stage = strings.ToLower(strings.TrimSpace(stage))
+	// "failed" records why a device's policy gate is stuck (which layer + fix hint) without
+	// setting a progress timestamp. Reuses verify_detail so no schema change is needed; the
+	// dashboard can read verify_detail with no verified_at to flag a stuck PC.
+	if stage == "failed" {
+		const fq = `
+			INSERT INTO dlp_policy_device_ack
+				(machine_id, employee_id, policy_version, policy_hash, verify_detail, updated_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (machine_id, policy_version) DO UPDATE SET
+				employee_id = EXCLUDED.employee_id,
+				policy_hash = CASE WHEN EXCLUDED.policy_hash <> '' THEN EXCLUDED.policy_hash
+				                   ELSE dlp_policy_device_ack.policy_hash END,
+				verify_detail = EXCLUDED.verify_detail,
+				updated_at = NOW()`
+		_, err := r.db().Exec(ctx, fq, machineID, employeeID, version, hash, detail)
+		return err
+	}
 	var col string
 	switch stage {
 	case "downloaded":

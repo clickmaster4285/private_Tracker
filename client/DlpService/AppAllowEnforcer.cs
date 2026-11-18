@@ -136,6 +136,13 @@ internal static class AppAllowEnforcer
             if (!apply.Ok)
                 return new Result(false, false, apply.Detail);
 
+            // Set-AppLockerPolicy writes the LOCAL policy; a Group Policy refresh is what
+            // copies it into the enforced (effective) SrpV2 store. Without this the stored
+            // policy shows the rules but the effective set stays empty (0 rules enforced),
+            // so nothing is actually blocked. Proven on Win10 22H2: gpupdate took effective
+            // Exe rules 0 -> 54. Bounded + best-effort; verify below reads -Effective.
+            RefreshGroupPolicy();
+
             // Restart AppID once so rules bind, then heal DWORD and assert Enabled
             // *after* restart (restart can leave a stale NotConfigured view).
             EnsureAppIdService(restart: true);
@@ -367,6 +374,10 @@ internal static class AppAllowEnforcer
         yield return @"%SYSTEM32%\schtasks.exe";
         yield return @"%SYSTEM32%\ipconfig.exe";
         yield return @"%SYSTEM32%\netsh.exe";
+        // gpupdate materializes the just-Set local AppLocker policy into the enforced
+        // (effective) SrpV2 store. Must be SYSTEM-allowed or the service's own refresh
+        // is default-denied once Exe enforce is active.
+        yield return @"%SYSTEM32%\gpupdate.exe";
         // msiexec is a classic LOLBin — LocalSystem only (installer / silent update).
         yield return @"%SYSTEM32%\msiexec.exe";
         // Silent updater stages Inno under ProgramData\<mutex>\updates\; without this
@@ -787,19 +798,22 @@ internal static class AppAllowEnforcer
     /// </summary>
     private static (bool Ok, string Detail) AssertPolicyEnabled()
     {
+        // Read -Effective (what AppLocker actually enforces), NOT -Local (the stored copy).
+        // The stored policy can show rules while the enforced set is empty (0 rules) — that
+        // was reporting the gate green while nothing was blocked.
         const string ps =
             "$ErrorActionPreference='Stop'; " +
-            "$p = Get-AppLockerPolicy -Local; " +
+            "$p = Get-AppLockerPolicy -Effective; " +
             "$exe = @($p.RuleCollections | Where-Object { $_.RuleCollectionType.ToString() -eq 'Exe' })[0]; " +
             "$appx = @($p.RuleCollections | Where-Object { $_.RuleCollectionType.ToString() -eq 'Appx' })[0]; " +
             "if ($null -eq $exe) { 'still_notconfigured no_exe'; exit 0 }; " +
             "if ([string]$exe.EnforcementMode -ne 'Enabled') { 'still_notconfigured mode=' + $exe.EnforcementMode; exit 0 }; " +
             "$exeRules = 0; try { $exeRules = [int]$exe.Count } catch { $exeRules = 0 }; " +
-            "if ($exeRules -lt 1) { 'still_notconfigured exe_rules=0'; exit 0 }; " +
+            "if ($exeRules -lt 1) { 'still_notconfigured effective_exe_rules=0'; exit 0 }; " +
             "if ($null -eq $appx -or [string]$appx.EnforcementMode -ne 'Enabled') { " +
             "  $am = if ($null -eq $appx) { 'missing' } else { [string]$appx.EnforcementMode }; " +
             "  'still_notconfigured appx_mode=' + $am; exit 0 }; " +
-            "'assert_ok exe_rules=' + $exeRules";
+            "'assert_ok effective_exe_rules=' + $exeRules";
         var (exit, stdout, stderr) = RunPowerShell(ps);
         var outp = (stdout + " " + stderr).Trim();
         if (exit != 0)
@@ -875,11 +889,16 @@ internal static class AppAllowEnforcer
         // Get-AppLockerPolicy already reported Exe Enabled.
         var ps =
             "$ErrorActionPreference='Continue'; " +
-            "try { $p = Get-AppLockerPolicy -Local } catch { 'verify_failed get_policy ' + $_.Exception.Message; exit 0 }; " +
+            // -Effective = the enforced policy. -Local showed rules while 0 were enforced.
+            "try { $p = Get-AppLockerPolicy -Effective } catch { 'verify_failed get_policy ' + $_.Exception.Message; exit 0 }; " +
             "$col = @($p.RuleCollections | Where-Object { $_.RuleCollectionType.ToString() -eq 'Exe' }); " +
             "if ($col.Count -eq 0) { 'verify=NOT_ENFORCING no_exe_collection'; exit 0 }; " +
             "$mode = [string]$col[0].EnforcementMode; " +
             "if ($mode -ne 'Enabled') { 'verify=NOT_ENFORCING mode=' + $mode; exit 0 }; " +
+            // An Enabled Exe collection with zero enforced rules blocks nothing on some
+            // builds — require at least one effective rule before trusting the canary.
+            "$exeRules = 0; try { $exeRules = [int]$col[0].Count } catch { $exeRules = 0 }; " +
+            "if ($exeRules -lt 1) { 'verify=NOT_ENFORCING effective_exe_rules=0'; exit 0 }; " +
             "$dec = ''; " +
             "try { " +
             $"  $r = @(Test-AppLockerPolicy -PolicyObject $p -Path '{canary}' -User Everyone -ErrorAction Stop); " +
@@ -911,6 +930,12 @@ internal static class AppAllowEnforcer
     private static void WriteEnforcementModeViaPowerShell(bool enforcing)
     {
         var value = enforcing ? 1 : 0;
+        // CRITICAL: never `New-Item -Force` on an existing SrpV2\<collection> key — in
+        // PowerShell that DELETES the key's child rule GUIDs that Set-AppLockerPolicy just
+        // wrote, leaving an Enabled-but-empty collection (effective rules = 0 while the
+        // stored/local policy still shows them). Create the key only when missing, then set
+        // just the EnforcementMode value with New-ItemProperty (that replaces one value, not
+        // the whole key).
         var ps =
             "$ErrorActionPreference='SilentlyContinue'; " +
             @"$paths = @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Exe'," +
@@ -918,8 +943,8 @@ internal static class AppAllowEnforcer
             @"'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Msi'," +
             @"'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Script'); " +
             "foreach ($p in $paths) { " +
-            "  New-Item -Path $p -Force | Out-Null; " +
-            $"  New-ItemProperty -Path $p -Name EnforcementMode -PropertyType DWord -Value {value} -Force | Out-Null; " +
+            "  if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force | Out-Null }; " +
+            $"  New-ItemProperty -LiteralPath $p -Name EnforcementMode -PropertyType DWord -Value {value} -Force | Out-Null; " +
             "}; 'ok'";
         try { RunPowerShell(ps); }
         catch { /* best-effort */ }
@@ -997,6 +1022,39 @@ internal static class AppAllowEnforcer
               "Start-Service -Name AppIDSvc -ErrorAction SilentlyContinue; 'ok'";
         try { RunPowerShell(ps); }
         catch { /* sc.exe already attempted the start */ }
+    }
+
+    /// <summary>
+    /// Force a computer Group Policy refresh so a just-Set local AppLocker policy becomes
+    /// the enforced (effective) policy. Bounded and best-effort — verify reads -Effective.
+    /// </summary>
+    private static void RefreshGroupPolicy()
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = Path.Combine(Environment.SystemDirectory, "gpupdate.exe"),
+                Arguments = "/target:computer /force",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            });
+            if (proc is null)
+                return;
+            // Drain so a chatty gpupdate cannot fill its pipe and hang.
+            _ = proc.StandardOutput.ReadToEndAsync();
+            _ = proc.StandardError.ReadToEndAsync();
+            if (!proc.WaitForExit(60_000))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            }
+        }
+        catch
+        {
+            // Best-effort — a refresh failure surfaces as verify=NOT_ENFORCING below.
+        }
     }
 
     private static void TrySc(string arguments)

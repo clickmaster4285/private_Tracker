@@ -1007,8 +1007,8 @@ func (s *DlpService) AckPolicy(ctx context.Context, machineID, employeeID string
 		return nil, fmt.Errorf("policyVersion must be positive")
 	}
 	stage := strings.ToLower(strings.TrimSpace(req.Stage))
-	if stage != "downloaded" && stage != "installed" && stage != "verified" {
-		return nil, fmt.Errorf("stage must be downloaded, installed, or verified")
+	if stage != "downloaded" && stage != "installed" && stage != "verified" && stage != "failed" {
+		return nil, fmt.Errorf("stage must be downloaded, installed, verified, or failed")
 	}
 	if err := s.repo.UpsertPolicyDeviceAck(ctx, machineID, employeeID, req.PolicyVersion, strings.TrimSpace(req.Hash), stage, strings.TrimSpace(req.Detail)); err != nil {
 		return nil, err

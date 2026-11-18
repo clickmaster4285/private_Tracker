@@ -214,6 +214,16 @@ internal sealed class EnforceStatus
         }
     }
 
+    /// <summary>
+    /// Current stuck-gate reason for server telemetry: the failing layer code and a short
+    /// fix hint. Empty when enforcing or not yet armed.
+    /// </summary>
+    public (string FailureCode, string Solution) FailureSnapshot()
+    {
+        lock (_gate)
+            return (_failureCode ?? "", _solution ?? "");
+    }
+
     public string ToJson()
     {
         lock (_gate)

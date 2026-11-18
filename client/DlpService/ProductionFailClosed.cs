@@ -19,6 +19,21 @@ internal static class ProductionFailClosed
             StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Accept a genuinely-enforcing AppLocker as the enforcement level that closes the
+    /// policy gate, instead of hard-requiring a signed WDAC policy + Secure Boot. Needed to
+    /// run on Windows Home and on Pro machines without Secure Boot / code-signing (incl.
+    /// VMs), where a signed WDAC CIP is not achievable and the gate would otherwise never
+    /// close. WDAC stays best-effort when the hardware supports it.
+    /// <c>ALPHA_DLP_APPLOCKER_INTERIM_OK</c> — ship default ON (works across all Windows);
+    /// set <c>false</c> to require signed WDAC + Secure Boot before the gate closes.
+    /// </summary>
+    public static bool AcceptAppLockerInterim =>
+        !string.Equals(
+            Environment.GetEnvironmentVariable("ALPHA_DLP_APPLOCKER_INTERIM_OK") ?? "true",
+            "false",
+            StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// True when a valid recovery authorization is present and not expired.
     /// Shared secret: <c>ALPHA_DLP_RECOVERY_SECRET</c> (or JWT-style HMAC key in env).
     /// File: <c>%ProgramData%\&lt;mutex&gt;\dlp\recovery.auth.json</c>.

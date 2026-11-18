@@ -234,6 +234,50 @@ public class DefaultDenyV291Tests
     }
 
     [Fact]
+    public void ProWithoutCip_AcceptAppLockerInterim_ClosesGate()
+    {
+        // Windows Pro, production, no signed WDAC, AppLocker genuinely enforcing (canary
+        // denied). With ALPHA_DLP_APPLOCKER_INTERIM_OK the gate must close: AppLocker is the
+        // accepted enforcement level and WDAC drops to best-effort (off), never a hard fail.
+        var decision = AppControlCapability.Decide(
+            production: true,
+            isPro: true,
+            hasOrgCip: false,
+            secureBoot: false,
+            cipFingerprintMatch: false,
+            canaryDenied: true,
+            canaryThrew: false,
+            assessment: new AppControlAssessment(true, "kb_exact"),
+            channel: AppLockerChannel.Local,
+            blockRulesAttested: false,
+            acceptAppLockerInterim: true);
+        Assert.True(decision.OverallEnforcing);
+        Assert.Equal("ok", decision.AppLockerCode);
+        Assert.Equal("off", decision.WdacCode);
+        Assert.Contains("wdac_best_effort_applocker_accepted", decision.WdacDetail);
+    }
+
+    [Fact]
+    public void AcceptAppLockerInterim_WithoutEnforcingAppLocker_StillFails()
+    {
+        // The accept flag must NOT close the gate when AppLocker is not actually enforcing
+        // (canary not denied) — it only accepts a genuine block, never a missing one.
+        var decision = AppControlCapability.Decide(
+            production: true,
+            isPro: true,
+            hasOrgCip: false,
+            secureBoot: false,
+            cipFingerprintMatch: false,
+            canaryDenied: false,
+            canaryThrew: false,
+            assessment: new AppControlAssessment(true, "kb_exact"),
+            channel: AppLockerChannel.Local,
+            blockRulesAttested: false,
+            acceptAppLockerInterim: true);
+        Assert.False(decision.OverallEnforcing);
+    }
+
+    [Fact]
     public void SecureBoot_OffOrThrow_IsNotTamperResistant()
     {
         Assert.False(WdacEnforcer.IsOrgCipEnforcing("abcdefabcdef", null));

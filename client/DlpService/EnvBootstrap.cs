@@ -42,6 +42,7 @@ internal static class EnvBootstrap
         ("ALPHA_UPDATE_CHECK_INTERVAL_SEC", "60"),
         ("ALPHA_UPDATE_DOWNLOAD_JITTER_SEC", "3600"),
         ("ALPHA_DLP_PRODUCTION_PROFILE", "true"),
+        ("ALPHA_DLP_APPLOCKER_INTERIM_OK", "true"),
     ];
 
     public static void Apply()

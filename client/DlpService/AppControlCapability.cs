@@ -151,7 +151,8 @@ internal static class AppControlCapability
         bool canaryThrew,
         AppControlAssessment assessment,
         AppLockerChannel channel,
-        bool blockRulesAttested)
+        bool blockRulesAttested,
+        bool acceptAppLockerInterim = false)
     {
         var tamperResistant = cipFingerprintMatch && secureBoot == true;
         var secureBootRecovery = production && hasOrgCip && secureBoot != true;
@@ -200,9 +201,15 @@ internal static class AppControlCapability
                 appDetail += ";gp_deployment_unsupported";
         }
 
+        // Deployments that accept AppLocker as the enforcement level (machines that cannot
+        // run a signed WDAC policy — Windows Home, or Pro without Secure Boot / code-signing,
+        // e.g. VMs) let a genuinely-enforcing AppLocker satisfy the gate. WDAC stays a
+        // best-effort hardening (reported "off"), never a hard requirement that can never be met.
+        var appLockerSatisfies = acceptAppLockerInterim && applockerEnforcing;
+
         string wdacCode;
         string wdacDetail;
-        if (secureBootRecovery)
+        if (secureBootRecovery && !appLockerSatisfies)
         {
             wdacCode = "recovery_required";
             wdacDetail = "wdac_secure_boot_off;" + blocks;
@@ -211,6 +218,13 @@ internal static class AppControlCapability
         {
             wdacCode = "ok";
             wdacDetail = "wdac_enforcing;" + blocks;
+        }
+        else if (appLockerSatisfies)
+        {
+            // AppLocker accepted as the enforcement level — WDAC not available on this
+            // machine, so it is best-effort, not a gate failure.
+            wdacCode = "off";
+            wdacDetail = "wdac_best_effort_applocker_accepted;" + blocks;
         }
         else if (proNeedsCip)
         {
@@ -228,7 +242,8 @@ internal static class AppControlCapability
             wdacDetail = "wdac_unsigned_pending;" + blocks;
         }
 
-        var overall = (applockerEnforcing || tamperResistant) && !proNeedsCip && !secureBootRecovery;
+        var overall = (applockerEnforcing || tamperResistant)
+            && (appLockerSatisfies || (!proNeedsCip && !secureBootRecovery));
         if (overall)
         {
             appCode = "ok";

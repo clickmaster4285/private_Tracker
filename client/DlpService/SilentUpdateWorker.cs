@@ -573,6 +573,20 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine($"$serviceName = '{PsQuote(serviceName)}'");
         sb.AppendLine($"$serviceProcName = '{PsQuote(serviceProcName)}'");
         sb.AppendLine($"$serviceExeName = '{PsQuote(serviceExeName)}'");
+        // Recovery used by every failure branch after the service was pre-stopped: bring the
+        // still-installed service back so the PC is never left without enforcement/tracking.
+        sb.AppendLine("function Restore-ServiceAfterFailedApply {");
+        sb.AppendLine("  Write-UpdateLog 'Install failed — restarting existing service so DLP is not left stopped'");
+        sb.AppendLine("  try {");
+        sb.AppendLine("    & sc.exe start $serviceName 2>$null | Out-Null");
+        sb.AppendLine("    for ($i = 0; $i -lt 30; $i++) {");
+        sb.AppendLine("      $q = & sc.exe query $serviceName 2>$null | Out-String");
+        sb.AppendLine("      if ($q -match 'RUNNING') { Write-UpdateLog 'Existing service RUNNING again after failed apply'; return }");
+        sb.AppendLine("      Start-Sleep -Seconds 1");
+        sb.AppendLine("    }");
+        sb.AppendLine("    Write-UpdateLog 'Service did not report RUNNING after failed-apply restart'");
+        sb.AppendLine("  } catch { Write-UpdateLog (\"Failed-apply service restart error: {0}\" -f $_.Exception.Message) }");
+        sb.AppendLine("}");
         sb.AppendLine("if (-not (Test-Path -LiteralPath $installer)) {");
         sb.AppendLine("  Write-UpdateLog 'Installer file missing before launch'");
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
@@ -624,6 +638,10 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
+        // The pre-stop stopped (and killed) the still-installed old service. A failed install
+        // left no new binary, so restart the existing service — never leave the PC with DLP
+        // stopped (no enforcement, no tracking) until the next reboot.
+        sb.AppendLine("  Restore-ServiceAfterFailedApply");
         sb.AppendLine("  exit 1");
         sb.AppendLine("}");
         sb.AppendLine("if ($exitCode -ne 0) {");
@@ -631,6 +649,7 @@ public sealed class SilentUpdateWorker : BackgroundService
         sb.AppendLine("  Set-Content -LiteralPath $failedFlag -Value $newVersion -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $inProgress -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("  Remove-Item -LiteralPath $priorityFlag -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("  Restore-ServiceAfterFailedApply");
         sb.AppendLine("  exit $exitCode");
         sb.AppendLine("}");
         sb.AppendLine("Start-Sleep -Seconds 3");

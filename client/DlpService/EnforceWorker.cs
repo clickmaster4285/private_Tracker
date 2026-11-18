@@ -181,7 +181,21 @@ public sealed class EnforceWorker : BackgroundService
         {
             EnforceStatus.Shared.FinishApply();
             if (version > 0 && EnforceStatus.Shared.IsEnforcing)
+            {
                 _ = PolicyAckClient.TryAckAsync(_cfg, version, hash, "verified", "enforcing", ct);
+            }
+            else if (version > 0 && armed)
+            {
+                // Gate is stuck — tell the server which layer failed + the fix hint so the
+                // dashboard shows why, instead of leaving verified_at blank with no reason.
+                var (failCode, solution) = EnforceStatus.Shared.FailureSnapshot();
+                var detail = string.IsNullOrWhiteSpace(failCode)
+                    ? "verifying"
+                    : (string.IsNullOrWhiteSpace(solution) ? failCode : failCode + ": " + solution);
+                if (detail.Length > 480)
+                    detail = detail[..480];
+                _ = PolicyAckClient.TryAckAsync(_cfg, version, hash, "failed", detail, ct);
+            }
         }
     }
 
@@ -554,7 +568,8 @@ public sealed class EnforceWorker : BackgroundService
             canaryThrew,
             AppControlCapability.Assess(facts),
             facts.Channel,
-            WdacEnforcer.BlockRulesDetail.Contains("verified", StringComparison.Ordinal));
+            WdacEnforcer.BlockRulesDetail.Contains("verified", StringComparison.Ordinal),
+            ProductionFailClosed.AcceptAppLockerInterim);
         var appDetail = decision.AppLockerDetail + ";" + result.Detail + ";" + wdac.Detail;
         var wdacDetail = decision.WdacDetail + ";" + wdac.Detail;
         if (result.Detail != "stale_generation")
