@@ -22,6 +22,16 @@ import { useUrlQueryState } from '@/hooks/use-url-query-state';
 
 const PER_PAGE = 30;
 
+/** A 404 means the host row was already removed (stale list) — refresh instead of erroring. */
+function isNotFound(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'status' in err &&
+    (err as { status?: number }).status === 404
+  );
+}
+
 function WebAllowListsInner() {
   const qc = useQueryClient();
   const [filters, setFilters] = useUrlQueryState(
@@ -135,7 +145,17 @@ function WebAllowListsInner() {
         { description: 'Employee PCs will refresh on the next policy poll.' },
       );
     },
-    onError: (err: Error) => toast.error('Save failed', { description: err.message }),
+    onError: (err: Error) => {
+      if (isNotFound(err)) {
+        qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
+        setDialogOpen(false);
+        toast.info('That host was already removed', {
+          description: 'The list has been refreshed.',
+        });
+        return;
+      }
+      toast.error('Save failed', { description: err.message });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -148,7 +168,16 @@ function WebAllowListsInner() {
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
       toast.success(`Host removed · policy v${pub.policyVersion}`);
     },
-    onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
+    onError: (err: Error) => {
+      if (isNotFound(err)) {
+        qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
+        toast.info('That host was already removed', {
+          description: 'The list has been refreshed.',
+        });
+        return;
+      }
+      toast.error('Delete failed', { description: err.message });
+    },
   });
 
   // Same as Web Blocker: draft update then auto-publish so agents pick it up.
@@ -168,7 +197,17 @@ function WebAllowListsInner() {
         { description: 'Employee PCs will refresh on the next policy poll.' },
       );
     },
-    onError: (err: Error) => toast.error('Failed to update status', { description: err.message }),
+    onError: (err: Error) => {
+      if (isNotFound(err)) {
+        // The row was deleted elsewhere — drop the stale toggle and refresh the list.
+        qc.invalidateQueries({ queryKey: ['dlp-allow-hosts'] });
+        toast.info('That host was already removed', {
+          description: 'The list has been refreshed.',
+        });
+        return;
+      }
+      toast.error('Failed to update status', { description: err.message });
+    },
   });
 
   return (

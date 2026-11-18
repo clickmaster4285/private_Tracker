@@ -26,6 +26,16 @@ import { formatDateTime } from '@/lib/format';
 import { useUrlQueryState } from '@/hooks/use-url-query-state';
 
 const PER_PAGE = 30;
+
+/** A 404 means the app row was already removed (stale list) — refresh instead of erroring. */
+function isNotFound(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'status' in err &&
+    (err as { status?: number }).status === 404
+  );
+}
 const CATALOG_PER_PAGE = 20;
 
 function identitySummary(row: AllowAppRow): string {
@@ -246,7 +256,15 @@ function AppAllowListInner() {
         { description: 'Employee PCs will refresh on the next policy poll.' },
       );
     },
-    onError: (err: Error) => toast.error('Save failed', { description: err.message }),
+    onError: (err: Error) => {
+      if (isNotFound(err)) {
+        qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
+        setDialogOpen(false);
+        toast.info('That app was already removed', { description: 'The list has been refreshed.' });
+        return;
+      }
+      toast.error('Save failed', { description: err.message });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -259,7 +277,14 @@ function AppAllowListInner() {
       qc.invalidateQueries({ queryKey: ['dlp-lockdown'] });
       toast.success(`App removed · policy v${pub.policyVersion}`);
     },
-    onError: (err: Error) => toast.error('Delete failed', { description: err.message }),
+    onError: (err: Error) => {
+      if (isNotFound(err)) {
+        qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
+        toast.info('That app was already removed', { description: 'The list has been refreshed.' });
+        return;
+      }
+      toast.error('Delete failed', { description: err.message });
+    },
   });
 
   const toggleMutation = useMutation({
@@ -277,7 +302,14 @@ function AppAllowListInner() {
           : `App inactive · policy v${pub.policyVersion}`,
       );
     },
-    onError: (err: Error) => toast.error('Failed to update status', { description: err.message }),
+    onError: (err: Error) => {
+      if (isNotFound(err)) {
+        qc.invalidateQueries({ queryKey: ['dlp-allow-apps'] });
+        toast.info('That app was already removed', { description: 'The list has been refreshed.' });
+        return;
+      }
+      toast.error('Failed to update status', { description: err.message });
+    },
   });
 
   return (
