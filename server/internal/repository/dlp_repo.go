@@ -12,21 +12,57 @@ import (
 
 	"github.com/alpha-ai-tracker/server/internal/models"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type DlpRepo struct {
 	pool *pgxpool.Pool
+	tx   pgx.Tx
 }
 
 func NewDlpRepo(pool *pgxpool.Pool) *DlpRepo {
 	return &DlpRepo{pool: pool}
 }
 
+type dlpDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func (r *DlpRepo) db() dlpDB {
+	if r.tx != nil {
+		return r.tx
+	}
+	return r.pool
+}
+
+// InTransaction runs fn against a transaction-bound repository. The advisory
+// lock serializes policy compiles so a committed draft mutation can never race
+// another publication or become visible without its matching policy version.
+func (r *DlpRepo) InTransaction(ctx context.Context, fn func(*DlpRepo) error) error {
+	if r.tx != nil {
+		return fn(r)
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('alpha_dlp_policy_publish'))`); err != nil {
+		return err
+	}
+	if err := fn(&DlpRepo{pool: r.pool, tx: tx}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // ── Rules ───────────────────────────────────────────────────────────────────
 
 func (r *DlpRepo) ListRules(ctx context.Context) ([]models.DlpRule, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT r.id::text, r.name, r.enabled, r.trigger, r.action, r.severity, r.scope_all,
 		       COALESCE((SELECT array_agg(e.extension ORDER BY e.extension)
 		                 FROM dlp_rule_extensions e WHERE e.rule_id=r.id), ARRAY[]::text[]),
@@ -43,7 +79,7 @@ func (r *DlpRepo) ListRules(ctx context.Context) ([]models.DlpRule, error) {
 }
 
 func (r *DlpRepo) ListEnabledRules(ctx context.Context) ([]models.DlpRule, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT r.id::text, r.name, r.enabled, r.trigger, r.action, r.severity, r.scope_all,
 		       COALESCE((SELECT array_agg(e.extension ORDER BY e.extension)
 		                 FROM dlp_rule_extensions e WHERE e.rule_id=r.id), ARRAY[]::text[]),
@@ -157,7 +193,7 @@ func (r *DlpRepo) UpdateRule(ctx context.Context, id string, name *string, enabl
 }
 
 func (r *DlpRepo) ListDlpRuleRevisions(ctx context.Context, ruleID string) ([]models.DlpRuleRevision, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT rev.id, rev.rule_id::text, rev.revision, rev.name, rev.enabled, rev.trigger, rev.action, rev.severity,
 		       rev.scope_all,
 		       COALESCE((SELECT array_agg(e.extension ORDER BY e.extension)
@@ -256,7 +292,7 @@ func replaceDlpRevisionValues(ctx context.Context, tx pgx.Tx, revisionID int64, 
 }
 
 func (r *DlpRepo) SoftDeleteRule(ctx context.Context, id string) error {
-	tag, err := r.pool.Exec(ctx, `
+	tag, err := r.db().Exec(ctx, `
 		UPDATE dlp_rules SET deleted_at = NOW() WHERE id = $1::uuid AND deleted_at IS NULL`, id)
 	if err != nil {
 		return err
@@ -279,7 +315,7 @@ const webBlockerSelect = `
 	FROM web_blocker_rules r`
 
 func (r *DlpRepo) ListWebBlockerRules(ctx context.Context) ([]models.WebBlockerRule, error) {
-	rows, err := r.pool.Query(ctx, webBlockerSelect+` WHERE r.deleted_at IS NULL ORDER BY r.created_at DESC`)
+	rows, err := r.db().Query(ctx, webBlockerSelect+` WHERE r.deleted_at IS NULL ORDER BY r.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +324,7 @@ func (r *DlpRepo) ListWebBlockerRules(ctx context.Context) ([]models.WebBlockerR
 }
 
 func (r *DlpRepo) ListEnabledWebBlockerRules(ctx context.Context) ([]models.WebBlockerRule, error) {
-	rows, err := r.pool.Query(ctx, webBlockerSelect+` WHERE r.deleted_at IS NULL AND r.enabled=TRUE ORDER BY r.created_at ASC`)
+	rows, err := r.db().Query(ctx, webBlockerSelect+` WHERE r.deleted_at IS NULL AND r.enabled=TRUE ORDER BY r.created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -376,7 +412,7 @@ func (r *DlpRepo) UpdateWebBlockerRule(ctx context.Context, id string, rule mode
 }
 
 func (r *DlpRepo) ListWebBlockerRevisions(ctx context.Context, ruleID string) ([]models.WebBlockerRuleRevision, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT rev.id, rev.rule_id::text, rev.revision, rev.name, rev.enabled, rev.action, rev.severity,
 		       rev.scope_all,
 		       COALESCE((SELECT array_agg(d.domain ORDER BY d.domain)
@@ -497,7 +533,7 @@ func replaceWebBlockerRevisionValues(ctx context.Context, tx pgx.Tx, revisionID 
 }
 
 func (r *DlpRepo) SoftDeleteWebBlockerRule(ctx context.Context, id string) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE web_blocker_rules SET deleted_at=NOW() WHERE id=$1::uuid AND deleted_at IS NULL`, id)
+	tag, err := r.db().Exec(ctx, `UPDATE web_blocker_rules SET deleted_at=NOW() WHERE id=$1::uuid AND deleted_at IS NULL`, id)
 	if err != nil {
 		return err
 	}
@@ -512,12 +548,12 @@ func (r *DlpRepo) SoftDeleteWebBlockerRule(ctx context.Context, id string) error
 func (r *DlpRepo) InsertPolicyVersion(ctx context.Context, hash string, publishedBy *string) (*models.DlpPolicyVersion, error) {
 	var row pgx.Row
 	if publishedBy != nil && *publishedBy != "" {
-		row = r.pool.QueryRow(ctx, `
+		row = r.db().QueryRow(ctx, `
 			INSERT INTO dlp_policy_versions (bundle_hash,published_by)
 			VALUES ($1,$2::uuid)
 			RETURNING version,bundle_hash,published_at,published_by`, hash, *publishedBy)
 	} else {
-		row = r.pool.QueryRow(ctx, `
+		row = r.db().QueryRow(ctx, `
 			INSERT INTO dlp_policy_versions (bundle_hash)
 			VALUES ($1)
 			RETURNING version,bundle_hash,published_at,published_by`, hash)
@@ -625,7 +661,7 @@ func (r *DlpRepo) PublishSnapshot(
 }
 
 func (r *DlpRepo) LatestPolicyVersion(ctx context.Context) (*models.DlpPolicyVersion, error) {
-	row := r.pool.QueryRow(ctx, `
+	row := r.db().QueryRow(ctx, `
 		SELECT version,bundle_hash,published_at,published_by
 		FROM dlp_policy_versions
 		ORDER BY version DESC LIMIT 1`)
@@ -641,7 +677,7 @@ func (r *DlpRepo) LatestPolicyVersion(ctx context.Context) (*models.DlpPolicyVer
 }
 
 func (r *DlpRepo) GetPolicyVersion(ctx context.Context, version int64) (*models.DlpPolicyVersion, error) {
-	row := r.pool.QueryRow(ctx, `
+	row := r.db().QueryRow(ctx, `
 		SELECT version,bundle_hash,published_at,published_by
 		FROM dlp_policy_versions WHERE version = $1`, version)
 	var v models.DlpPolicyVersion
@@ -656,7 +692,7 @@ func (r *DlpRepo) GetPolicyVersion(ctx context.Context, version int64) (*models.
 }
 
 func (r *DlpRepo) UpdatePolicyHash(ctx context.Context, version int64, hash string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE dlp_policy_versions SET bundle_hash=$2 WHERE version=$1`, version, hash)
+	_, err := r.db().Exec(ctx, `UPDATE dlp_policy_versions SET bundle_hash=$2 WHERE version=$1`, version, hash)
 	return err
 }
 
@@ -668,7 +704,7 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	if header == nil {
 		return nil, fmt.Errorf("dlp policy version not found")
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT pr.rule_id::text,pr.name,pr.enabled,pr.trigger,pr.action,pr.severity,pr.alert,
 		       pr.schedule_enabled,pr.schedule_start,pr.schedule_end,pr.schedule_timezone,
 		       COALESCE((SELECT array_agg(d.domain ORDER BY d.domain) FROM dlp_policy_domains d
@@ -724,7 +760,7 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 		return nil, err
 	}
 	shadowDomains := make([]string, 0)
-	shadowRows, err := r.pool.Query(ctx, `
+	shadowRows, err := r.db().Query(ctx, `
 		SELECT domain FROM dlp_policy_domains
 		WHERE policy_version=$1 AND source='shadow' ORDER BY domain`, version)
 	if err != nil {
@@ -743,7 +779,7 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 	}
 
 	lockdown := false
-	if err := r.pool.QueryRow(ctx, `
+	if err := r.db().QueryRow(ctx, `
 		SELECT lockdown FROM dlp_policy_lockdown WHERE policy_version=$1`, version).Scan(&lockdown); err != nil && err != pgx.ErrNoRows {
 		return nil, err
 	}
@@ -803,7 +839,7 @@ func (r *DlpRepo) AssembleBundleJSON(ctx context.Context, version int64) (json.R
 // SnapshotDeviceControl folds enabled draft device-control rules into the
 // immutable bundle snapshot for a published version. Called from Publish.
 func (r *DlpRepo) SnapshotDeviceControl(ctx context.Context, version int64) error {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT target_kind, target_value, pnp_class, action
 		FROM device_control_rules
 		WHERE enabled=TRUE AND scope='global' ORDER BY id LIMIT $1`, MaxDeviceControlRules)
@@ -828,7 +864,7 @@ func (r *DlpRepo) SnapshotDeviceControl(ctx context.Context, version int64) erro
 		return err
 	}
 	for i, x := range list {
-		if _, err := r.pool.Exec(ctx, `
+		if _, err := r.db().Exec(ctx, `
 			INSERT INTO dlp_policy_device_control
 			    (policy_version, seq, target_kind, target_value, pnp_class, action)
 			VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -847,7 +883,7 @@ func (r *DlpRepo) ResolveScopedDeviceControl(ctx context.Context, employeeID, ma
 	if employeeID == "" {
 		return nil, nil
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT dcr.target_kind, dcr.target_value, dcr.pnp_class, dcr.action
 		FROM device_control_rules dcr
 		WHERE dcr.enabled = TRUE AND dcr.scope <> 'global' AND (
@@ -892,7 +928,7 @@ func isNetAdapterDeviceControl(pnpClass, value, action string) bool {
 }
 
 func (r *DlpRepo) listPolicyDeviceControl(ctx context.Context, version int64) ([]map[string]any, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT target_kind, target_value, pnp_class, action
 		FROM dlp_policy_device_control WHERE policy_version=$1 ORDER BY seq`, version)
 	if err != nil {
@@ -913,7 +949,7 @@ func (r *DlpRepo) listPolicyDeviceControl(ctx context.Context, version int64) ([
 }
 
 func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int64) ([]string, error) {
-	rows, err := r.pool.Query(ctx, query, version)
+	rows, err := r.db().Query(ctx, query, version)
 	if err != nil {
 		return nil, err
 	}
@@ -930,7 +966,7 @@ func (r *DlpRepo) listPolicyHosts(ctx context.Context, query string, version int
 }
 
 func (r *DlpRepo) listPolicyAllowApps(ctx context.Context, version int64) ([]map[string]any, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT publisher, product, sha256, COALESCE(install_path, '')
 		FROM dlp_policy_allow_apps
 		WHERE policy_version=$1
@@ -979,7 +1015,7 @@ type LockdownAllowAppRow struct {
 }
 
 func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []string, apps []LockdownAllowAppRow, err error) {
-	err = r.pool.QueryRow(ctx, `SELECT lockdown FROM dlp_lockdown_settings WHERE id = 1`).Scan(&lockdown)
+	err = r.db().QueryRow(ctx, `SELECT lockdown FROM dlp_lockdown_settings WHERE id = 1`).Scan(&lockdown)
 	if err == pgx.ErrNoRows {
 		return false, []string{}, []LockdownAllowAppRow{}, nil
 	}
@@ -987,7 +1023,7 @@ func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []
 		return false, nil, nil, err
 	}
 	// Publish only includes Active rows.
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT host FROM dlp_lockdown_allow_hosts
 		WHERE enabled = TRUE
 		ORDER BY host`)
@@ -1007,7 +1043,7 @@ func (r *DlpRepo) GetLockdownDraft(ctx context.Context) (lockdown bool, hosts []
 		return false, nil, nil, err
 	}
 	// Draft cached identities (not catalog-expanded). Publish uses ExpandEnabledAllowApps.
-	appRows, err := r.pool.Query(ctx, `
+	appRows, err := r.db().Query(ctx, `
 		SELECT publisher, product, sha256, install_path
 		FROM dlp_lockdown_allow_apps
 		WHERE enabled = TRUE
@@ -1042,7 +1078,7 @@ func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) 
 		return nil, fmt.Errorf("installedApplicationId is required")
 	}
 	var out CatalogAppResolve
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		SELECT id, COALESCE(app_name, ''), COALESCE(binary_name, '')
 		FROM installed_applications
 		WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&out.ID, &out.AppName, &out.BinaryName)
@@ -1050,7 +1086,7 @@ func (r *DlpRepo) ResolveCatalogApp(ctx context.Context, installedAppID string) 
 		return nil, err
 	}
 	// Prefer active inventory; fall back to inactive so a retired PC's path still unlocks allow.
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT DISTINCT COALESCE(publisher, ''), COALESCE(install_path, ''), COALESCE(is_active, FALSE)
 		FROM employee_installed_applications
 		WHERE installed_application_id = $1
@@ -1195,7 +1231,7 @@ func isUsableAllowPath(p string) bool {
 // ExpandEnabledAllowApps flattens enabled draft rows into concrete agent identities.
 // Catalog-backed rows re-resolve from live inventory so new machine paths are included.
 func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAppRow, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT id, COALESCE(installed_application_id, ''), COALESCE(app_name, ''),
 		       publisher, product, sha256, install_path
 		FROM dlp_lockdown_allow_apps
@@ -1204,7 +1240,28 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+
+	// Materialize first — ResolveCatalogApp queries the same tx/conn; nesting
+	// QueryRow inside rows.Next() returns pgx "conn busy" during Publish.
+	type draftApp struct {
+		catalogID, publisher, product, sha, path string
+	}
+	drafts := make([]draftApp, 0)
+	for rows.Next() {
+		var id int64
+		var catalogID, appName, publisher, product, sha, path string
+		if err := rows.Scan(&id, &catalogID, &appName, &publisher, &product, &sha, &path); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		_ = appName
+		drafts = append(drafts, draftApp{catalogID, publisher, product, sha, path})
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
 
 	out := make([]LockdownAllowAppRow, 0)
 	seen := map[string]struct{}{}
@@ -1225,14 +1282,9 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 		out = append(out, a)
 	}
 
-	for rows.Next() {
-		var id int64
-		var catalogID, appName, publisher, product, sha, path string
-		if err := rows.Scan(&id, &catalogID, &appName, &publisher, &product, &sha, &path); err != nil {
-			return nil, err
-		}
-		if catalogID != "" {
-			resolved, err := r.ResolveCatalogApp(ctx, catalogID)
+	for _, d := range drafts {
+		if d.catalogID != "" {
+			resolved, err := r.ResolveCatalogApp(ctx, d.catalogID)
 			if err != nil && err != pgx.ErrNoRows {
 				return nil, err
 			}
@@ -1248,10 +1300,7 @@ func (r *DlpRepo) ExpandEnabledAllowApps(ctx context.Context) ([]LockdownAllowAp
 				}
 			}
 		}
-		add(LockdownAllowAppRow{Publisher: publisher, Product: product, Sha256: sha, Path: WidenBrowserAllowPath(path)})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		add(LockdownAllowAppRow{Publisher: d.publisher, Product: d.product, Sha256: d.sha, Path: WidenBrowserAllowPath(d.path)})
 	}
 	return out, nil
 }
@@ -1371,7 +1420,7 @@ func clampAllowListPage(page, perPage int) (int, int, int) {
 func (r *DlpRepo) CountAllowHosts(ctx context.Context, q, createdBy, enabled string) (int, error) {
 	enClause := allowEnabledClause(enabled)
 	var total int
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		SELECT COUNT(*) FROM dlp_lockdown_allow_hosts h
 		WHERE ($1 = '' OR h.host ILIKE '%' || $1 || '%' OR h.note ILIKE '%' || $1 || '%')
 		  AND ($2 = '' OR h.created_by::text = $2)
@@ -1383,7 +1432,7 @@ func (r *DlpRepo) CountAllowHosts(ctx context.Context, q, createdBy, enabled str
 func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy, enabled string, page, perPage int) ([]AllowHostListRow, error) {
 	page, perPage, offset := clampAllowListPage(page, perPage)
 	enClause := allowEnabledClause(enabled)
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT h.id, h.host, h.note, h.enabled,
 		       h.created_by::text, COALESCE(cu.name, ''),
 		       h.updated_by::text, COALESCE(uu.name, ''),
@@ -1423,7 +1472,7 @@ func (r *DlpRepo) ListAllowHosts(ctx context.Context, q, createdBy, enabled stri
 func (r *DlpRepo) InsertAllowHost(ctx context.Context, host, note string, enabled bool, userID *string) (*AllowHostListRow, error) {
 	var row AllowHostListRow
 	var createdByNS, updatedByNS *string
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		INSERT INTO dlp_lockdown_allow_hosts (host, note, enabled, created_by, updated_by)
 		VALUES ($1, $2, $3, NULLIF($4, '')::uuid, NULLIF($4, '')::uuid)
 		RETURNING id, host, note, enabled, created_by::text, updated_by::text, created_at, updated_at`,
@@ -1472,7 +1521,7 @@ func (r *DlpRepo) scanAllowAppRow(ctx context.Context, query string, arg any) (*
 	var row AllowAppListRow
 	var createdByNS, updatedByNS *string
 	var catalogNS *string
-	err := r.pool.QueryRow(ctx, query, arg).Scan(
+	err := r.db().QueryRow(ctx, query, arg).Scan(
 		&row.ID, &catalogNS, &row.AppName,
 		&row.Publisher, &row.Product, &row.Sha256, &row.InstallPath, &row.Note, &row.Enabled,
 		&createdByNS, &row.CreatedByName,
@@ -1493,7 +1542,7 @@ func (r *DlpRepo) scanAllowAppRow(ctx context.Context, query string, arg any) (*
 func (r *DlpRepo) UpdateAllowHost(ctx context.Context, id int64, host, note *string, enabled *bool, userID *string) (*AllowHostListRow, error) {
 	var row AllowHostListRow
 	var createdByNS, updatedByNS *string
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		UPDATE dlp_lockdown_allow_hosts h
 		SET host = COALESCE($2, h.host),
 		    note = COALESCE($3, h.note),
@@ -1509,7 +1558,7 @@ func (r *DlpRepo) UpdateAllowHost(ctx context.Context, id int64, host, note *str
 	}
 	row.CreatedBy = createdByNS
 	row.UpdatedBy = updatedByNS
-	_ = r.pool.QueryRow(ctx, `
+	_ = r.db().QueryRow(ctx, `
 		SELECT COALESCE(cu.name, ''), COALESCE(uu.name, '')
 		FROM dlp_lockdown_allow_hosts h
 		LEFT JOIN users cu ON cu.id = h.created_by AND cu.deleted_at IS NULL
@@ -1519,7 +1568,7 @@ func (r *DlpRepo) UpdateAllowHost(ctx context.Context, id int64, host, note *str
 }
 
 func (r *DlpRepo) DeleteAllowHost(ctx context.Context, id int64) error {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM dlp_lockdown_allow_hosts WHERE id = $1`, id)
+	tag, err := r.db().Exec(ctx, `DELETE FROM dlp_lockdown_allow_hosts WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1532,7 +1581,7 @@ func (r *DlpRepo) DeleteAllowHost(ctx context.Context, id int64) error {
 func (r *DlpRepo) CountAllowApps(ctx context.Context, q, createdBy, enabled string) (int, error) {
 	enClause := allowAppEnabledClause(enabled)
 	var total int
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		SELECT COUNT(*) FROM dlp_lockdown_allow_apps a
 		WHERE ($1 = '' OR a.publisher ILIKE '%' || $1 || '%' OR a.product ILIKE '%' || $1 || '%'
 		       OR a.app_name ILIKE '%' || $1 || '%' OR a.install_path ILIKE '%' || $1 || '%'
@@ -1546,7 +1595,7 @@ func (r *DlpRepo) CountAllowApps(ctx context.Context, q, createdBy, enabled stri
 func (r *DlpRepo) ListAllowApps(ctx context.Context, q, createdBy, enabled string, page, perPage int) ([]AllowAppListRow, error) {
 	page, perPage, offset := clampAllowListPage(page, perPage)
 	enClause := allowAppEnabledClause(enabled)
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT a.id, a.installed_application_id::text, COALESCE(a.app_name, ''),
 		       a.publisher, a.product, a.sha256, COALESCE(a.install_path, ''), a.note, a.enabled,
 		       a.created_by::text, COALESCE(cu.name, ''),
@@ -1598,7 +1647,7 @@ func (r *DlpRepo) InsertAllowApp(
 ) (*AllowAppListRow, error) {
 	var row AllowAppListRow
 	var createdByNS, updatedByNS, catalogNS *string
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		INSERT INTO dlp_lockdown_allow_apps
 			(installed_application_id, app_name, publisher, product, sha256, install_path, note, enabled, created_by, updated_by)
 		VALUES (NULLIF($1, ''), $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, NULLIF($9, '')::uuid)
@@ -1629,7 +1678,7 @@ func (r *DlpRepo) UpdateAllowApp(
 ) (*AllowAppListRow, error) {
 	var row AllowAppListRow
 	var createdByNS, updatedByNS, catalogNS *string
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		UPDATE dlp_lockdown_allow_apps a
 		SET publisher = COALESCE($2, a.publisher),
 		    product = COALESCE($3, a.product),
@@ -1655,7 +1704,7 @@ func (r *DlpRepo) UpdateAllowApp(
 	}
 	row.CreatedBy = createdByNS
 	row.UpdatedBy = updatedByNS
-	_ = r.pool.QueryRow(ctx, `
+	_ = r.db().QueryRow(ctx, `
 		SELECT COALESCE(cu.name, ''), COALESCE(uu.name, '')
 		FROM dlp_lockdown_allow_apps a
 		LEFT JOIN users cu ON cu.id = a.created_by AND cu.deleted_at IS NULL
@@ -1665,7 +1714,7 @@ func (r *DlpRepo) UpdateAllowApp(
 }
 
 func (r *DlpRepo) DeleteAllowApp(ctx context.Context, id int64) error {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM dlp_lockdown_allow_apps WHERE id = $1`, id)
+	tag, err := r.db().Exec(ctx, `DELETE FROM dlp_lockdown_allow_apps WHERE id = $1`, id)
 	if err != nil {
 		return err
 	}
@@ -1855,7 +1904,7 @@ func (r *DlpRepo) ListAlerts(ctx context.Context, f DlpAlertListFilter) ([]model
 
 	var total int
 	countSQL := `SELECT COUNT(*) FROM dlp_alerts a LEFT JOIN employees e ON e.employee_id = a.employee_id AND e.deleted_at IS NULL WHERE ` + wsql
-	if err := r.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
+	if err := r.db().QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -1874,7 +1923,7 @@ func (r *DlpRepo) ListAlerts(ctx context.Context, f DlpAlertListFilter) ([]model
 		ORDER BY a.occurred_at DESC
 		LIMIT $%d OFFSET $%d`, wsql, limitArg, offsetArg)
 
-	rows, err := r.pool.Query(ctx, listSQL, args...)
+	rows, err := r.db().Query(ctx, listSQL, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1918,7 +1967,7 @@ func (r *DlpRepo) AlertStatusCounts(ctx context.Context, f DlpAlertListFilter) (
 		FROM dlp_alerts a
 		LEFT JOIN employees e ON e.employee_id = a.employee_id AND e.deleted_at IS NULL
 		WHERE ` + wsql
-	if err = r.pool.QueryRow(ctx, countSQL, args...).Scan(&open, &investigating, &resolved, &falsePositive); err != nil {
+	if err = r.db().QueryRow(ctx, countSQL, args...).Scan(&open, &investigating, &resolved, &falsePositive); err != nil {
 		return 0, 0, 0, 0, err
 	}
 	return
@@ -1929,7 +1978,7 @@ func (r *DlpRepo) AlertStatusCounts(ctx context.Context, f DlpAlertListFilter) (
 // dropdown keeps offering every available type even while one is selected.
 func (r *DlpRepo) AlertTypeCounts(ctx context.Context, f DlpAlertListFilter) ([]string, error) {
 	wsql, args := buildAlertWhere(f, alertWhereOpts{ExcludeStatus: true, ExcludeType: true})
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT DISTINCT a.type
 		FROM dlp_alerts a
 		LEFT JOIN employees e ON e.employee_id = a.employee_id AND e.deleted_at IS NULL
@@ -2066,7 +2115,7 @@ func (r *DlpRepo) UpdateAlert(ctx context.Context, id string, patch UpdateAlertP
 
 // ListAlertEvents returns the triage audit trail newest-first.
 func (r *DlpRepo) ListAlertEvents(ctx context.Context, alertID string) ([]models.DlpAlertEvent, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT id, alert_id::text, changed_by::text, changed_by_name,
 		       field, old_value, new_value, created_at
 		FROM dlp_alert_events
@@ -2099,7 +2148,7 @@ func (r *DlpRepo) UserDisplayName(ctx context.Context, userID string) string {
 		return ""
 	}
 	var name string
-	err := r.pool.QueryRow(ctx,
+	err := r.db().QueryRow(ctx,
 		`SELECT COALESCE(name, '') FROM users WHERE id = $1::uuid AND deleted_at IS NULL`,
 		userID,
 	).Scan(&name)
@@ -2140,12 +2189,12 @@ func (r *DlpRepo) ListShadowItApps(ctx context.Context, f ShadowItListFilter) ([
 	}
 	wsql := strings.Join(where, " AND ")
 	var total int
-	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM shadow_it_apps WHERE `+wsql, args...).Scan(&total); err != nil {
+	if err := r.db().QueryRow(ctx, `SELECT COUNT(*) FROM shadow_it_apps WHERE `+wsql, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	offset := (f.Page - 1) * f.PerPage
 	args = append(args, f.PerPage, offset)
-	rows, err := r.pool.Query(ctx, fmt.Sprintf(`
+	rows, err := r.db().Query(ctx, fmt.Sprintf(`
 		SELECT id, name, name_normalized, kind, auth_status, risk,
 		       first_detected_at, user_count, last_seen_at, created_at, updated_at
 		FROM shadow_it_apps WHERE %s
@@ -2170,7 +2219,7 @@ func (r *DlpRepo) ListShadowItApps(ctx context.Context, f ShadowItListFilter) ([
 }
 
 func (r *DlpRepo) ShadowItStatusCounts(ctx context.Context) (approved, unauthorized, underReview int, err error) {
-	err = r.pool.QueryRow(ctx, `
+	err = r.db().QueryRow(ctx, `
 		SELECT
 			COUNT(*) FILTER (WHERE auth_status = 'approved'),
 			COUNT(*) FILTER (WHERE auth_status = 'unauthorized'),
@@ -2180,7 +2229,7 @@ func (r *DlpRepo) ShadowItStatusCounts(ctx context.Context) (approved, unauthori
 }
 
 func (r *DlpRepo) UpdateShadowItApp(ctx context.Context, id int64, authStatus, risk *string) (*models.ShadowItApp, error) {
-	row := r.pool.QueryRow(ctx, `
+	row := r.db().QueryRow(ctx, `
 		UPDATE shadow_it_apps SET
 			auth_status = COALESCE($2, auth_status),
 			risk = COALESCE($3, risk)
@@ -2203,7 +2252,7 @@ func (r *DlpRepo) UpdateShadowItApp(ctx context.Context, id int64, authStatus, r
 }
 
 func (r *DlpRepo) ListUnauthorizedShadowDeny(ctx context.Context) (domains, appNames []string, err error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db().Query(ctx, `
 		SELECT name, kind FROM shadow_it_apps
 		WHERE deleted_at IS NULL AND auth_status = 'unauthorized'`)
 	if err != nil {
@@ -2229,13 +2278,13 @@ func (r *DlpRepo) ListUnauthorizedShadowDeny(ctx context.Context) (domains, appN
 func (r *DlpRepo) InsertRemovalChallenge(ctx context.Context, machineID, employeeID, tokenHash, purpose string, expiresAt time.Time, issuedBy *string) (string, error) {
 	var id string
 	if issuedBy != nil && *issuedBy != "" {
-		err := r.pool.QueryRow(ctx, `
+		err := r.db().QueryRow(ctx, `
 			INSERT INTO removal_challenges (machine_id, employee_id, token_hash, purpose, expires_at, issued_by)
 			VALUES ($1, $2, $3, $4, $5, $6::uuid)
 			RETURNING id::text`, machineID, employeeID, tokenHash, purpose, expiresAt, *issuedBy).Scan(&id)
 		return id, err
 	}
-	err := r.pool.QueryRow(ctx, `
+	err := r.db().QueryRow(ctx, `
 		INSERT INTO removal_challenges (machine_id, employee_id, token_hash, purpose, expires_at)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id::text`, machineID, employeeID, tokenHash, purpose, expiresAt).Scan(&id)
@@ -2467,4 +2516,39 @@ func normalizeActionTaken(s string) string {
 func HashRemovalToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+// UpsertPolicyDeviceAck records downloaded / installed / verified enforcement stages.
+func (r *DlpRepo) UpsertPolicyDeviceAck(
+	ctx context.Context,
+	machineID, employeeID string,
+	version int64,
+	hash, stage, detail string,
+) error {
+	stage = strings.ToLower(strings.TrimSpace(stage))
+	var col string
+	switch stage {
+	case "downloaded":
+		col = "downloaded_at"
+	case "installed":
+		col = "installed_at"
+	case "verified":
+		col = "verified_at"
+	default:
+		return fmt.Errorf("unknown ack stage %q", stage)
+	}
+	q := fmt.Sprintf(`
+		INSERT INTO dlp_policy_device_ack
+			(machine_id, employee_id, policy_version, policy_hash, %s, verify_detail, updated_at)
+		VALUES ($1, $2, $3, $4, NOW(), $5, NOW())
+		ON CONFLICT (machine_id, policy_version) DO UPDATE SET
+			employee_id = EXCLUDED.employee_id,
+			policy_hash = CASE WHEN EXCLUDED.policy_hash <> '' THEN EXCLUDED.policy_hash
+			                   ELSE dlp_policy_device_ack.policy_hash END,
+			%s = COALESCE(dlp_policy_device_ack.%s, EXCLUDED.%s),
+			verify_detail = CASE WHEN EXCLUDED.verify_detail <> '' THEN EXCLUDED.verify_detail
+			                     ELSE dlp_policy_device_ack.verify_detail END,
+			updated_at = NOW()`, col, col, col, col)
+	_, err := r.db().Exec(ctx, q, machineID, employeeID, version, hash, detail)
+	return err
 }

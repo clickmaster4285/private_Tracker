@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -71,6 +73,46 @@ internal static class PolicyBundleParser
         @"^[a-z0-9]([a-z0-9\-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    /// <summary>
+    /// Validates a server bundle before it can replace the last-known-good policy.
+    /// The server's hash is over the exact UTF-8 bundle bytes.
+    /// </summary>
+    public static PolicyBundle ValidateForPersistence(
+        string bundleJson, long expectedVersion, string? expectedHash)
+    {
+        if (expectedVersion <= 0)
+            throw new InvalidDataException("Policy version must be positive");
+        if (string.IsNullOrWhiteSpace(bundleJson))
+            throw new InvalidDataException("Policy bundle is empty");
+
+        VerifyHash(bundleJson, expectedHash);
+
+        using var doc = JsonDocument.Parse(bundleJson);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Policy bundle root must be an object");
+
+        var embeddedVersion = RequireInt64(root, "policyVersion");
+        if (embeddedVersion != expectedVersion)
+        {
+            throw new InvalidDataException(
+                $"Policy bundle version {embeddedVersion} does not match response version {expectedVersion}");
+        }
+
+        RequireBoolean(root, "lockdown");
+        RequireStringArray(RequireObject(root, "platformAllow"), "hosts");
+        var allow = RequireObject(root, "allow");
+        RequireStringArray(allow, "hosts");
+        RequireObjectArray(allow, "apps");
+        RequireObjectArray(root, "rules");
+        RequireStringArray(RequireObject(root, "shadowDeny"), "domains");
+        RequireObjectArray(root, "deviceControl");
+
+        // Parse every supported field now. Persistence must never discover malformed
+        // values after the old snapshot has started being replaced.
+        return Parse(bundleJson);
+    }
+
     public static PolicyBundle Parse(string bundleJson)
     {
         if (string.IsNullOrWhiteSpace(bundleJson))
@@ -140,6 +182,70 @@ internal static class PolicyBundleParser
             AllowApps = allowApps,
             DeviceControl = deviceControl,
         };
+    }
+
+    private static void VerifyHash(string bundleJson, string? expectedHash)
+    {
+        if (string.IsNullOrWhiteSpace(expectedHash))
+            return;
+
+        var supplied = expectedHash.Trim();
+        if (supplied.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+            supplied = supplied["sha256:".Length..];
+        if (supplied.Length != 64 || !supplied.All(Uri.IsHexDigit))
+            throw new InvalidDataException("Policy bundle hash is not a valid SHA-256 digest");
+
+        var actual = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(bundleJson))).ToLowerInvariant();
+        if (!CryptographicOperations.FixedTimeEquals(
+                Encoding.ASCII.GetBytes(actual),
+                Encoding.ASCII.GetBytes(supplied.ToLowerInvariant())))
+        {
+            throw new InvalidDataException("Policy bundle SHA-256 mismatch");
+        }
+    }
+
+    private static JsonElement RequireObject(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException($"Policy bundle '{name}' must be an object");
+        return value;
+    }
+
+    private static long RequireInt64(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) ||
+            value.ValueKind != JsonValueKind.Number ||
+            !value.TryGetInt64(out var result))
+        {
+            throw new InvalidDataException($"Policy bundle '{name}' must be an integer");
+        }
+        return result;
+    }
+
+    private static void RequireBoolean(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) ||
+            value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            throw new InvalidDataException($"Policy bundle '{name}' must be a boolean");
+        }
+    }
+
+    private static void RequireStringArray(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException($"Policy bundle '{name}' must be an array");
+        if (value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+            throw new InvalidDataException($"Policy bundle '{name}' must contain only strings");
+    }
+
+    private static void RequireObjectArray(JsonElement parent, string name)
+    {
+        if (!parent.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException($"Policy bundle '{name}' must be an array");
+        if (value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.Object))
+            throw new InvalidDataException($"Policy bundle '{name}' must contain only objects");
     }
 
 

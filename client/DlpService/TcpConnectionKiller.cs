@@ -62,9 +62,10 @@ internal static class TcpConnectionKiller
     }
 
     /// <summary>
-    /// Close established IPv4 TCP to remote port 80 or 443 whose address is not in
-    /// <paramref name="allow"/> and is not LAN/loopback/link-local. Used when lockdown
-    /// turns on so an already-open browser dies. The tracker API IP stays in the allow set.
+    /// Close established IPv4 TCP whose remote address is not in <paramref name="allow"/>
+    /// and is not LAN/loopback/link-local. Used when total-outbound lockdown turns on so
+    /// already-open sockets die. UDP/QUIC is covered by default-outbound Block.
+    /// The tracker API / protective DNS / published allow IPs stay in the allow set.
     /// </summary>
     public static int KillWebExcept(IEnumerable<IPAddress> allow)
     {
@@ -89,12 +90,14 @@ internal static class TcpConnectionKiller
             {
                 if (row.dwState is 2 or 11) // LISTEN, TIME_WAIT
                     continue;
-                var port = HostPort(row.dwRemotePort);
-                if (port is not (80 or 443))
-                    continue;
                 if (row.dwRemoteAddr == 0 || allowed.Contains(row.dwRemoteAddr))
                     continue;
                 if (IsPrivateOrLocal(row.dwRemoteAddr))
+                    continue;
+                // Keep DHCP / DNS / NTP control-plane sockets that use well-known
+                // local ports even when the remote was not yet in the allow set.
+                var localPort = HostPort(row.dwLocalPort);
+                if (localPort is 68 or 546)
                     continue;
                 var del = row;
                 del.dwState = MibTcpStateDeleteTcb;

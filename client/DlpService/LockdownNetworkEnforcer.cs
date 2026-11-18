@@ -8,37 +8,49 @@ using System.Text.RegularExpressions;
 namespace AlphaAITracker.Service;
 
 /// <summary>
-/// P1 lockdown (default-deny web) via Windows Advanced Firewall — Windows only.
+/// Total outbound default-deny via Windows Advanced Firewall — Windows only.
 ///
-/// Windows Firewall evaluates explicit BLOCK rules before explicit ALLOW rules, so a literal
-/// "one deny + allow-by-IP" rule set cannot work (the deny would win over every allow).
-/// Instead the deny rules carry the COMPLEMENT of the allowed set:
-/// <c>remoteip = (all IPv4 + IPv6) − (allowed IPs + LAN/loopback/link-local/multicast)</c>,
-/// <c>remoteport = 80,443</c>, one rule per protocol (TCP, UDP/QUIC). Allowed destinations are
-/// therefore simply never matched by a block rule. When the complement is too long for one
-/// netsh command it is chunked (<c>…-DENY-TCP</c>, <c>…-DENY-TCP-1</c>, …) — still no
-/// per-domain rules. Rule names: <c>AlphaAI-DLP-LOCK-DENY-TCP[-n]</c>, <c>…-DENY-UDP[-n]</c>.
+/// Sets <c>DefaultOutboundAction=Block</c> on Domain/Private/Public profiles, then installs
+/// verified explicit ALLOW rules for DHCP/DHCPv6, NDP (ICMPv6), NTP, protective DNS /
+/// approved DNS, system-update hosts, the API bootstrap host, and published allow.hosts.
+/// Legacy complement <c>DENY-*</c> rules from older builds are removed on apply.
 ///
-/// Allowed set = bootstrap host (ALPHA_SERVER_URL) + platformAllow.hosts + allow.hosts, resolved
-/// with the system resolver (NOT DoH — DoH is port 443 and would be blocked). Wildcard entries
-/// resolve the apex only. The same complement also denies public DNS (UDP/TCP 53) and
-/// DNS-over-TLS (TCP 853). Allowlisted names are pinned in the hosts file
-/// (<c># AlphaAI-DLP-ALLOW</c>) so they still resolve. If the server name does not resolve,
-/// the last saved server IPs are used and the apply stays not-ready (<c>bootstrap_unresolved</c>)
-/// — public 80/443/53/853 are still denied.
+/// No provider CDN allow and no "block all Cloudflare" rule. Every CDN IP, including
+/// Cloudflare, stays denied because DefaultOutbound=Block. A CDN IP is reachable only
+/// when an approved domain's IP expansion adds it. Shared-CDN vhosts are a residual risk.
+/// Allowlisted names are pinned in the hosts file (<c># AlphaAI-DLP-ALLOW</c>).
+/// Block proof is <c>Get-NetFirewallProfile -PolicyStore ActiveStore</c> (enabled + Block
+/// on Domain, Private, and Public) plus an explicit outbound UDP 443 block. netsh only writes.
 ///
 /// Generation lock: <see cref="Apply"/> and <see cref="Clear"/> bump <c>_generation</c>; an
-/// in-flight apply whose generation went stale (Clear ran during DNS) no-ops.
+/// in-flight apply whose generation went stale (Clear ran during DNS) no-ops. Fingerprints
+/// advance only after OS verification of default-outbound Block + expected allow rules.
 /// </summary>
 internal static class LockdownNetworkEnforcer
 {
     /// <summary>Namespace for every lockdown firewall rule (<c>AlphaAI-DLP-LOCK-*</c>).</summary>
     public const string RulePrefix = DomainBlockEnforcer.FirewallRulePrefix + "LOCK-";
-    private const string DenyTcpBase = RulePrefix + "DENY-TCP";
-    private const string DenyUdpBase = RulePrefix + "DENY-UDP";
-    private const string DenyDnsUdpBase = RulePrefix + "DENY-DNS-UDP";
-    private const string DenyDnsTcpBase = RulePrefix + "DENY-DNS-TCP";
-    private const string DenyDotBase = RulePrefix + "DENY-DOT";
+    private const string AllowDhcp = RulePrefix + "ALLOW-DHCP";
+    private const string AllowDhcpV6 = RulePrefix + "ALLOW-DHCPV6";
+    private const string AllowNdp = RulePrefix + "ALLOW-NDP";
+    private const string AllowNtp = RulePrefix + "ALLOW-NTP";
+    private const string AllowDnsUdpBase = RulePrefix + "ALLOW-DNS-UDP";
+    private const string AllowDnsTcpBase = RulePrefix + "ALLOW-DNS-TCP";
+    private const string AllowDotBase = RulePrefix + "ALLOW-DOT";
+    internal const string AllowMgmtTcpBase = RulePrefix + "ALLOW-MGMT-TCP";
+    internal const string AllowWebTcpBase = RulePrefix + "ALLOW-WEB-TCP";
+    internal const string AllowSysTcpBase = RulePrefix + "ALLOW-SYS-TCP";
+    /// <summary>Lifecycle name. Display name is <see cref="QuicBlockDisplayName"/>.</summary>
+    internal const string QuicBlockRuleName = RulePrefix + "BLOCK-QUIC";
+    internal const string QuicBlockDisplayName = "Block QUIC";
+    // Legacy complement-deny prefixes — deleted on every Apply so upgrades heal.
+    // Pre-2.9.1 ALLOW-DEST-TCP / ALLOW-DEST-UDP names are not in the desired set, so the
+    // removal loop deletes them and does not recreate an all-port UDP carve-out.
+    private const string LegacyDenyTcpBase = RulePrefix + "DENY-TCP";
+    private const string LegacyDenyUdpBase = RulePrefix + "DENY-UDP";
+    private const string LegacyDenyDnsUdpBase = RulePrefix + "DENY-DNS-UDP";
+    private const string LegacyDenyDnsTcpBase = RulePrefix + "DENY-DNS-TCP";
+    private const string LegacyDenyDotBase = RulePrefix + "DENY-DOT";
 
     /// <summary>Max resolved allow IPs kept live. Bootstrap IPs are kept first.</summary>
     public const int MaxAllowIps = 4096;
@@ -88,6 +100,10 @@ internal static class LockdownNetworkEnforcer
         if (!OperatingSystem.IsWindows())
             return new Result(false, false, 0, false, "unsupported_os");
 
+        var chromium = DomainBlockEnforcer.ApplyChromiumTransportLockdown();
+        if (!chromium.Detail.StartsWith("chromium_doh_quic", StringComparison.Ordinal))
+            return new Result(false, false, 0, false, chromium.Detail);
+
         var gen = Interlocked.Increment(ref _generation);
 
         // Bootstrap first so it survives the overflow cap. A failed resolve still
@@ -121,9 +137,8 @@ internal static class LockdownNetworkEnforcer
                 hostSet.Add(h);
         }
 
-        var ordered = new List<IPAddress>(bootstrapIps);
-        var seen = new HashSet<IPAddress>(bootstrapIps);
-        var otherIps = new List<IPAddress>();
+        var webIps = new List<IPAddress>();
+        var seenWeb = new HashSet<IPAddress>();
         foreach (var h in hostSet)
         {
             var ips = Resolve(h);
@@ -131,12 +146,34 @@ internal static class LockdownNetworkEnforcer
                 hostIps.Add((h, ips));
             foreach (var ip in ips)
             {
-                if (seen.Add(ip))
-                    otherIps.Add(ip);
+                if (seenWeb.Add(ip))
+                    webIps.Add(ip);
             }
         }
-        otherIps.Sort((a, b) => string.CompareOrdinal(a.ToString(), b.ToString()));
-        ordered.AddRange(otherIps);
+        webIps.Sort((a, b) => string.CompareOrdinal(a.ToString(), b.ToString()));
+
+        // Protective DNS stays on 53/853 only. System hosts get TCP 80+443.
+        // Management IPs are not also opened on those wider sets.
+        var dnsAllow = ResolveProtectiveDns();
+        var systemAllow = ResolveSystemAllowHosts();
+        var mgmtSet = new HashSet<IPAddress>(bootstrapIps);
+        var webOnly = webIps.Where(ip => !mgmtSet.Contains(ip)).ToList();
+        var systemOnly = systemAllow.Where(ip => !mgmtSet.Contains(ip)).ToList();
+
+        var ordered = new List<IPAddress>();
+        var seen = new HashSet<IPAddress>();
+        void Take(IEnumerable<IPAddress> ips)
+        {
+            foreach (var ip in ips)
+            {
+                if (seen.Add(ip))
+                    ordered.Add(ip);
+            }
+        }
+        Take(bootstrapIps);
+        Take(dnsAllow);
+        Take(systemOnly);
+        Take(webOnly);
 
         var overflow = false;
         if (ordered.Count > MaxAllowIps)
@@ -145,9 +182,17 @@ internal static class LockdownNetworkEnforcer
             ordered = ordered.Take(MaxAllowIps).ToList();
         }
 
-        var desired = BuildDesiredRules(ordered);
-        var fp = string.Join("\n", desired.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(kv => kv.Key + "=" + kv.Value));
+        var kept = new HashSet<IPAddress>(ordered);
+        var mgmtPort = ManagementTcpPort(serverUrl);
+        var desired = BuildDesiredAllowRules(
+            bootstrapIps.Where(kept.Contains).ToList(),
+            mgmtPort,
+            webOnly.Where(kept.Contains).ToList(),
+            systemOnly.Where(kept.Contains).ToList(),
+            dnsAllow.Where(kept.Contains).ToList());
+        var fp = "v291-activestore-quic\n" +
+                 string.Join("\n", desired.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                     .Select(kv => kv.Key + "=" + kv.Value));
 
         lock (Gate)
         {
@@ -155,18 +200,32 @@ internal static class LockdownNetworkEnforcer
                 return new Result(false, false, ordered.Count, overflow, "stale_generation");
 
             var now = DateTimeOffset.UtcNow;
-            if (fp == _lastFingerprint && now - _lastVerifyUtc < VerifyEvery)
+            if (fp == _lastFingerprint && now - _lastVerifyUtc < VerifyEvery
+                && QueryActiveNetworkProof().Ok)
                 return Finish(false, ordered.Count, overflow, "lock_fresh",
                     bootstrapUnresolved, hostIps, ordered);
 
             try
             {
+                // Fail closed first: default outbound Block before rewriting allow carve-outs.
+                var blockSet = SetDefaultOutboundAction(block: true);
+                if (!blockSet.Ok)
+                    return Fail(blockSet.Output, ordered.Count, overflow);
+
                 var existing = ListLockRules();
                 var existingSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+                var quic = EnsureQuicBlock();
+                if (!quic.Ok)
+                    return Fail(quic.Output, ordered.Count, overflow);
 
-                if (fp == _lastFingerprint && desired.Keys.All(existingSet.Contains)
-                    && existingSet.All(desired.ContainsKey))
+                if (fp == _lastFingerprint &&
+                    desired.Keys.All(existingSet.Contains) &&
+                    existing.All(n => desired.ContainsKey(n) || IsLegacyDenyRule(n) || IsQuicBlockRuleName(n)) &&
+                    QueryActiveNetworkProof().Ok)
                 {
+                    // Heal leftover complement-deny rules from older builds.
+                    foreach (var name in existing.Where(IsLegacyDenyRule))
+                        DomainBlockEnforcer.RunNetsh($"advfirewall firewall delete rule name=\"{name}\"");
                     _lastVerifyUtc = now;
                     return Finish(false, ordered.Count, overflow, "lock_verified",
                         bootstrapUnresolved, hostIps, ordered);
@@ -174,50 +233,66 @@ internal static class LockdownNetworkEnforcer
 
                 var added = 0;
                 var updated = 0;
+                // Add/update ALLOW rules first so there is never an open window with Block
+                // and no carve-out for DHCP / API / protective DNS.
                 foreach (var (name, remoteIp) in desired)
                 {
-                    var (proto, port) = SpecFor(name);
+                    var (proto, port, localPort) = SpecForAllow(name);
                     var exists = existingSet.Contains(name);
                     if (exists && _lastRules.TryGetValue(name, out var prev) && prev == remoteIp)
                         continue;
+
+                    var localPortArg = string.IsNullOrEmpty(localPort) ? "" : $" localport={localPort}";
+                    var remotePortArg = string.IsNullOrEmpty(port) ? "" : $" remoteport={port}";
+                    var remoteIpArg = string.IsNullOrEmpty(remoteIp) || remoteIp == "any"
+                        ? " remoteip=any"
+                        : $" remoteip={remoteIp}";
 
                     (bool Ok, string Output) r;
                     if (exists)
                     {
                         r = DomainBlockEnforcer.RunNetsh(
-                            $"advfirewall firewall set rule name=\"{name}\" new " +
-                            $"remoteip={remoteIp} remoteport={port} protocol={proto} enable=yes");
+                            $"advfirewall firewall set rule name=\"{name}\" new action=allow " +
+                            $"protocol={proto}{remoteIpArg}{remotePortArg}{localPortArg} enable=yes");
                         updated++;
                     }
                     else
                     {
                         r = DomainBlockEnforcer.RunNetsh(
-                            $"advfirewall firewall add rule name=\"{name}\" dir=out action=block " +
-                            $"protocol={proto} remoteport={port} remoteip={remoteIp} enable=yes profile=any");
+                            $"advfirewall firewall add rule name=\"{name}\" dir=out action=allow " +
+                            $"protocol={proto}{remoteIpArg}{remotePortArg}{localPortArg} enable=yes profile=any");
                         added++;
                     }
                     if (!r.Ok)
                         return Fail(r.Output, ordered.Count, overflow);
                 }
 
-                // Shrunk chunk count / obsolete rules go last so there is never a window
-                // where the deny coverage is weaker than the previous generation.
                 var removed = 0;
                 foreach (var name in existing)
                 {
-                    if (desired.ContainsKey(name))
+                    if (desired.ContainsKey(name) || IsQuicBlockRuleName(name))
                         continue;
                     DomainBlockEnforcer.RunNetsh($"advfirewall firewall delete rule name=\"{name}\"");
                     removed++;
                 }
 
+                var proof = QueryActiveNetworkProof();
+                if (!proof.Ok)
+                    return new Result(false, false, ordered.Count, overflow, proof.Detail);
+
+                // Confirm expected allow rules are present before advancing fingerprint.
+                var after = new HashSet<string>(ListLockRules(), StringComparer.OrdinalIgnoreCase);
+                if (!desired.Keys.All(after.Contains))
+                    return new Result(false, false, ordered.Count, overflow,
+                        "lock_error:allow_rules_missing");
+
                 _lastRules = new Dictionary<string, string>(desired, StringComparer.OrdinalIgnoreCase);
                 _lastFingerprint = fp;
                 _lastVerifyUtc = now;
                 _rulesMaybePresent = true;
-                var changed = added > 0 || updated > 0 || removed > 0;
+                var changed = added > 0 || updated > 0 || removed > 0 || blockSet.Changed;
                 return Finish(changed, ordered.Count, overflow,
-                    $"lock_add={added} upd={updated} rm={removed} rules={desired.Count} ips={ordered.Count}",
+                    $"lock_add={added} upd={updated} rm={removed} rules={desired.Count} ips={ordered.Count};outbound=block",
                     bootstrapUnresolved, hostIps, ordered);
             }
             catch (Exception ex)
@@ -227,7 +302,10 @@ internal static class LockdownNetworkEnforcer
         }
     }
 
-    /// <summary>Delete every <c>AlphaAI-DLP-LOCK-*</c> rule. Safe to call every tick.</summary>
+    /// <summary>
+    /// Delete every <c>AlphaAI-DLP-LOCK-*</c> rule and restore default outbound Allow
+    /// (lab / recovery only — production Clear is gated by <see cref="ProductionFailClosed"/>).
+    /// </summary>
     public static Result Clear()
     {
         if (!OperatingSystem.IsWindows())
@@ -240,8 +318,13 @@ internal static class LockdownNetworkEnforcer
             _lastRules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var hostsCleared = RemoveAllowHosts();
 
+            try { DomainBlockEnforcer.ClearChromiumTransportLockdown(); }
+            catch { /* firewall clear still runs */ }
+            RemoveQuicBlock();
+
             var now = DateTimeOffset.UtcNow;
-            if (!_rulesMaybePresent && !hostsCleared && now - _cleanVerifiedUtc < CleanVerifyEvery)
+            if (!_rulesMaybePresent && !hostsCleared && now - _cleanVerifiedUtc < CleanVerifyEvery
+                && !VerifyDefaultOutboundBlocked())
                 return new Result(false, false, 0, false, "lock_absent");
 
             try
@@ -255,6 +338,7 @@ internal static class LockdownNetworkEnforcer
                     return new Result(false, false, 0, false,
                         "lock_clear_failed:" + string.Join(",", still.Take(8)));
 
+                SetDefaultOutboundAction(block: false);
                 _rulesMaybePresent = false;
                 _cleanVerifiedUtc = now;
                 return new Result(existing.Count > 0, false, 0, false,
@@ -269,95 +353,381 @@ internal static class LockdownNetworkEnforcer
 
     // ---------------------------------------------------------------- rule building
 
-    private static Dictionary<string, string> BuildDesiredRules(IReadOnlyList<IPAddress> allow)
+    /// <summary>
+    /// Explicit ALLOW carve-outs under default-outbound Block. Values are remoteip lists
+    /// (or "any" for DHCP/NDP/NTP helpers that must reach link-local / broadcast).
+    /// </summary>
+    /// <summary>
+    /// Explicit ALLOW carve-outs. Management is one TCP port. Published web hosts are
+    /// TCP 443. The system-update/CRL set is TCP 80 and 443. Protective DNS is 53/853
+    /// only. There is no all-port dest UDP rule (that re-opened QUIC).
+    /// </summary>
+    internal static Dictionary<string, string> BuildDesiredAllowRules(
+        IReadOnlyList<IPAddress> mgmtIps,
+        int mgmtPort,
+        IReadOnlyList<IPAddress> webIps,
+        IReadOnlyList<IPAddress> systemIps,
+        IReadOnlyList<IPAddress> dnsIps)
     {
-        var v4 = new List<(uint Lo, uint Hi)>();
-        var v6 = new List<(UInt128 Lo, UInt128 Hi)>();
+        if (mgmtPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(mgmtPort));
 
-        // Never block LAN / loopback / link-local / multicast (intranet, printers, DHCP helpers).
-        v4.Add(Cidr4("0.0.0.0", 8));
-        v4.Add(Cidr4("10.0.0.0", 8));
-        v4.Add(Cidr4("127.0.0.0", 8));
-        v4.Add(Cidr4("169.254.0.0", 16));
-        v4.Add(Cidr4("172.16.0.0", 12));
-        v4.Add(Cidr4("192.168.0.0", 16));
-        v4.Add(Cidr4("224.0.0.0", 3)); // multicast + reserved + broadcast
-        v6.Add((UInt128.Zero, UInt128.One)); // :: and ::1
-        v6.Add(Cidr6("fc00::", 7));
-        v6.Add(Cidr6("fe80::", 10));
-        v6.Add(Cidr6("ff00::", 8));
-
-        foreach (var ip in allow)
+        var rules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            var bytes = ip.GetAddressBytes();
-            if (ip.AddressFamily == AddressFamily.InterNetwork)
-            {
-                var n = BinaryPrimitives.ReadUInt32BigEndian(bytes);
-                v4.Add((n, n));
-            }
-            else if (ip.AddressFamily == AddressFamily.InterNetworkV6)
-            {
-                var n = BinaryPrimitives.ReadUInt128BigEndian(bytes);
-                v6.Add((n, n));
-            }
-        }
+            [AllowDhcp] = "any",
+            [AllowDhcpV6] = "any",
+            [AllowNdp] = "any",
+            [AllowNtp] = "any",
+        };
 
-        var ranges = new List<string>();
-        foreach (var (lo, hi) in Complement4(v4))
-            ranges.Add(lo == hi ? Ip4(lo) : Ip4(lo) + "-" + Ip4(hi));
-        foreach (var (lo, hi) in Complement6(v6))
-            ranges.Add(lo == hi ? Ip6(lo) : Ip6(lo) + "-" + Ip6(hi));
-
-        var chunks = new List<string>();
-        var sb = new StringBuilder();
-        foreach (var r in ranges)
+        void AddChunks(string baseName, IReadOnlyList<IPAddress> ips)
         {
-            if (sb.Length > 0 && sb.Length + 1 + r.Length > MaxRemoteIpChars)
-            {
-                chunks.Add(sb.ToString());
-                sb.Clear();
-            }
-            if (sb.Length > 0) sb.Append(',');
-            sb.Append(r);
-        }
-        if (sb.Length > 0) chunks.Add(sb.ToString());
-
-        var rules = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        void Add(string baseName)
-        {
+            if (ips.Count == 0)
+                return;
+            var chunks = ChunkRemoteIps(ips);
             for (var i = 0; i < chunks.Count; i++)
             {
                 var suffix = i == 0 ? "" : "-" + i;
                 rules[baseName + suffix] = chunks[i];
             }
         }
-        // Web + QUIC, then public DNS and DNS-over-TLS. Same complement, so a CDN
-        // name can resolve only when its host is pinned below for the allowlist.
-        Add(DenyTcpBase);
-        Add(DenyUdpBase);
-        Add(DenyDnsUdpBase);
-        Add(DenyDnsTcpBase);
-        Add(DenyDotBase);
+
+        AddChunks(AllowDnsUdpBase, dnsIps);
+        AddChunks(AllowDnsTcpBase, dnsIps);
+        AddChunks(AllowDotBase, dnsIps);
+        AddChunks(AllowMgmtTcpBase + "-" + mgmtPort, mgmtIps);
+        AddChunks(AllowWebTcpBase, webIps);
+        AddChunks(AllowSysTcpBase, systemIps);
         return rules;
     }
 
-    private static (string Proto, string Port) SpecFor(string name)
+    private static List<string> ChunkRemoteIps(IReadOnlyList<IPAddress> ips)
     {
-        if (name.StartsWith(DenyDnsUdpBase, StringComparison.OrdinalIgnoreCase))
-            return ("udp", "53");
-        if (name.StartsWith(DenyDnsTcpBase, StringComparison.OrdinalIgnoreCase))
-            return ("tcp", "53");
-        if (name.StartsWith(DenyDotBase, StringComparison.OrdinalIgnoreCase))
-            return ("tcp", "853");
-        if (name.StartsWith(DenyUdpBase, StringComparison.OrdinalIgnoreCase))
-            return ("udp", "80,443");
-        return ("tcp", "80,443");
+        var chunks = new List<string>();
+        var sb = new StringBuilder();
+        foreach (var ip in ips.OrderBy(a => a.AddressFamily).ThenBy(a => a.ToString(), StringComparer.Ordinal))
+        {
+            var s = ip.ToString();
+            if (sb.Length > 0 && sb.Length + 1 + s.Length > MaxRemoteIpChars)
+            {
+                chunks.Add(sb.ToString());
+                sb.Clear();
+            }
+            if (sb.Length > 0) sb.Append(',');
+            sb.Append(s);
+        }
+        if (sb.Length > 0) chunks.Add(sb.ToString());
+        return chunks;
+    }
+
+    internal static (string Proto, string Port, string LocalPort) SpecForAllow(string name)
+    {
+        if (name.Equals(AllowDhcp, StringComparison.OrdinalIgnoreCase))
+            return ("udp", "67", "68");
+        if (name.Equals(AllowDhcpV6, StringComparison.OrdinalIgnoreCase))
+            return ("udp", "547", "546");
+        if (name.Equals(AllowNdp, StringComparison.OrdinalIgnoreCase))
+            return ("icmpv6", "", "");
+        if (name.Equals(AllowNtp, StringComparison.OrdinalIgnoreCase))
+            return ("udp", "123", "");
+        if (name.StartsWith(AllowDnsUdpBase, StringComparison.OrdinalIgnoreCase))
+            return ("udp", "53", "");
+        if (name.StartsWith(AllowDnsTcpBase, StringComparison.OrdinalIgnoreCase))
+            return ("tcp", "53", "");
+        if (name.StartsWith(AllowDotBase, StringComparison.OrdinalIgnoreCase))
+            return ("tcp", "853", "");
+        if (name.StartsWith(AllowWebTcpBase, StringComparison.OrdinalIgnoreCase))
+            return ("tcp", "443", "");
+        if (name.StartsWith(AllowSysTcpBase, StringComparison.OrdinalIgnoreCase))
+            return ("tcp", "80,443", "");
+        if (name.StartsWith(AllowMgmtTcpBase + "-", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = name[(AllowMgmtTcpBase.Length + 1)..];
+            var dash = rest.IndexOf('-');
+            var portToken = dash >= 0 ? rest[..dash] : rest;
+            if (!int.TryParse(portToken, out var port) || port is < 1 or > 65535)
+                throw new InvalidOperationException("mgmt_tcp_port:" + name);
+            return ("tcp", portToken, "");
+        }
+        // Never fall open to every port. Unknown names are a programming error.
+        throw new InvalidOperationException("allow_spec:" + name);
+    }
+
+    internal static bool IsQuicBlockRuleName(string name) =>
+        name.Equals(QuicBlockRuleName, StringComparison.OrdinalIgnoreCase)
+        || name.Equals(QuicBlockDisplayName, StringComparison.OrdinalIgnoreCase);
+
+    internal static int ManagementTcpPort(string? serverUrl) => PortFromServerUrl(serverUrl);
+
+    private static bool IsLegacyDenyRule(string name) =>
+        name.StartsWith(LegacyDenyTcpBase, StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith(LegacyDenyUdpBase, StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith(LegacyDenyDnsUdpBase, StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith(LegacyDenyDnsTcpBase, StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith(LegacyDenyDotBase, StringComparison.OrdinalIgnoreCase);
+
+    private static (bool Ok, bool Changed, string Output) SetDefaultOutboundAction(bool block)
+    {
+        var action = block ? "block" : "allow";
+        var changed = false;
+        // Profiles must be ON. Lab PCs had Block with Enabled=False — rules never applied.
+        foreach (var profile in new[] { "domainprofile", "privateprofile", "publicprofile" })
+        {
+            var (stateOk, _) = DomainBlockEnforcer.RunNetsh($"advfirewall set {profile} state on");
+            if (stateOk)
+                changed = true;
+        }
+        DomainBlockEnforcer.RunNetsh("advfirewall set allprofiles state on");
+        // Best-effort NetSecurity path mirrors the lab command when netsh alone is stale.
+        RunPowerShell("""
+            $ErrorActionPreference = 'Continue'
+            Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True | Out-Null
+            """);
+
+        foreach (var profile in new[] { "domainprofile", "privateprofile", "publicprofile" })
+        {
+            var (ok, output) = DomainBlockEnforcer.RunNetsh(
+                $"advfirewall set {profile} firewallpolicy blockinbound,{action}outbound");
+            // Older netsh also accepts DefaultOutboundAction alone; try both styles.
+            if (!ok)
+            {
+                (ok, output) = DomainBlockEnforcer.RunNetsh(
+                    $"advfirewall set {profile} settings inboundblock outbound{action}");
+            }
+            if (!ok)
+                return (false, changed, output);
+            changed = true;
+        }
+        // Also set the current-profile knob used by some Win10 builds.
+        DomainBlockEnforcer.RunNetsh(
+            $"advfirewall set allprofiles firewallpolicy blockinbound,{(block ? "block" : "allow")}outbound");
+        return (true, changed, action);
     }
 
     /// <summary>
-    /// Rules are in place. Ready only when the server name resolved this pass and the
-    /// allowlist hosts block was written. <paramref name="bootstrapUnresolved"/> keeps
-    /// the gate on the error until a later tick resolves the name.
+    /// ActiveStore proof: every profile exists, is enabled, and blocks outbound.
+    /// Also requires the explicit QUIC block and no product UDP 443 punch-through.
+    /// </summary>
+    public static bool VerifyDefaultOutboundBlocked() => QueryActiveNetworkProof().OutboundBlocked;
+
+    internal static FirewallActiveStoreProof.Verdict QueryActiveNetworkProof()
+    {
+        var run = RunPowerShellDetailed(ActiveStoreScript);
+        if (!run.Ok)
+        {
+            var reason = FirstNonEmptyLine(run.Stderr) ?? FirstNonEmptyLine(run.Stdout) ?? run.Detail;
+            return FirewallActiveStoreProof.QueryFailed(reason);
+        }
+        var json = FirewallActiveStoreProof.ExtractJson(run.Stdout);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            var reason = FirstNonEmptyLine(run.Stderr) ?? "missing_json_marker";
+            return FirewallActiveStoreProof.QueryFailed(reason);
+        }
+        return FirewallActiveStoreProof.Parse(json);
+    }
+
+    private static string? FirstNonEmptyLine(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        foreach (var line in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var t = line.Trim();
+            if (t.Length > 0)
+                return t.Length > 160 ? t[..160] : t;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Pure egress decision. A public TCP connect is failure. Management success is a
+    /// completed TCP connect. DNS failure is success only when <paramref name="usedLastSavedIp"/>
+    /// is set and that last IP actually connected.
+    /// </summary>
+    internal static (bool Ok, string Detail) EvaluateBehavioralEgress(
+        bool publicConnected,
+        bool managementConnected,
+        bool usedLastSavedIp)
+    {
+        if (publicConnected)
+            return (false, "egress_probe_public_reachable");
+        if (managementConnected)
+            return (true, usedLastSavedIp
+                ? "egress_probe_ok;mgmt=last_ip"
+                : "egress_probe_ok;mgmt=resolved");
+        if (usedLastSavedIp)
+            return (false, "egress_probe_mgmt_last_ip_failed");
+        return (false, "egress_probe_mgmt_unreachable");
+    }
+
+    /// <summary>
+    /// Behavioral egress before the network layer is ready. 1.1.1.1:443 is a public-IP
+    /// probe, not a provider CDN allow or block. Management must complete a TCP connect.
+    /// When DNS fails, the last saved IP is success only if that TCP connect succeeds.
+    /// </summary>
+    public static (bool Ok, string Detail) VerifyBehavioralEgress(string? serverUrl) =>
+        VerifyBehavioralEgress(serverUrl, QueryActiveNetworkProof());
+
+    internal static (bool Ok, string Detail) VerifyBehavioralEgress(
+        string? serverUrl,
+        FirewallActiveStoreProof.Verdict proof)
+    {
+        // Profiles, explicit QUIC block, and "no UDP 443 allow" are one verdict.
+        if (!proof.Ok)
+            return (false, string.IsNullOrWhiteSpace(proof.Detail)
+                ? FirewallActiveStoreProof.QueryFailedDetail
+                : proof.Detail);
+
+        // Public IP probe. Not a Cloudflare allow or block rule.
+        var publicConnected = TryTcpConnect(IPAddress.Parse("1.1.1.1"), 443, TimeSpan.FromMilliseconds(800));
+        var host = HostFromServerUrl(serverUrl);
+        if (string.IsNullOrWhiteSpace(host))
+            return (false, "egress_probe_mgmt_unconfigured");
+
+        var port = PortFromServerUrl(serverUrl);
+        if (IPAddress.TryParse(host, out var literal))
+        {
+            var connected = TryTcpConnect(literal, port, TimeSpan.FromSeconds(2));
+            return EvaluateBehavioralEgress(publicConnected, connected, usedLastSavedIp: false);
+        }
+
+        List<IPAddress> addrs;
+        var dnsFailed = false;
+        try
+        {
+            addrs = Dns.GetHostAddresses(host).Where(IsUsable).Take(3).ToList();
+        }
+        catch
+        {
+            addrs = [];
+            dnsFailed = true;
+        }
+        if (addrs.Count == 0)
+            dnsFailed = true;
+
+        if (!dnsFailed)
+        {
+            var connected = false;
+            foreach (var ip in addrs)
+            {
+                if (TryTcpConnect(ip, port, TimeSpan.FromSeconds(2)))
+                {
+                    connected = true;
+                    break;
+                }
+            }
+            return EvaluateBehavioralEgress(publicConnected, connected, usedLastSavedIp: false);
+        }
+
+        var last = LoadBootstrapIps(host);
+        var lastConnected = false;
+        foreach (var ip in last.Take(3))
+        {
+            if (TryTcpConnect(ip, port, TimeSpan.FromSeconds(2)))
+            {
+                lastConnected = true;
+                break;
+            }
+        }
+        return EvaluateBehavioralEgress(publicConnected, lastConnected, usedLastSavedIp: true);
+    }
+
+    private static string? HostFromServerUrl(string? serverUrl)
+    {
+        var s = (serverUrl ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(s))
+            return null;
+        if (!s.Contains("://", StringComparison.Ordinal))
+            s = "https://" + s;
+        if (!Uri.TryCreate(s, UriKind.Absolute, out var uri))
+            return null;
+        return uri.Host;
+    }
+
+    private static int PortFromServerUrl(string? serverUrl)
+    {
+        var s = (serverUrl ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(s))
+            return 443;
+        if (!s.Contains("://", StringComparison.Ordinal))
+            s = "https://" + s;
+        if (!Uri.TryCreate(s, UriKind.Absolute, out var uri))
+            return 443;
+        if (uri.IsDefaultPort)
+            return string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase) ? 80 : 443;
+        return uri.Port;
+    }
+
+    private static bool TryTcpConnect(IPAddress ip, int port, TimeSpan timeout)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            var connect = client.ConnectAsync(ip, port);
+            if (!connect.Wait(timeout))
+                return false;
+            return client.Connected;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static List<IPAddress> ResolveProtectiveDns()
+    {
+        var raw = Environment.GetEnvironmentVariable("ALPHA_DLP_PROTECTIVE_DNS") ?? "";
+        var list = new List<IPAddress>();
+        var seen = new HashSet<IPAddress>();
+        foreach (var part in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var host = NormalizeHost(part) ?? part.Trim();
+            foreach (var ip in Resolve(host))
+            {
+                if (seen.Add(ip))
+                    list.Add(ip);
+            }
+        }
+        return list;
+    }
+
+    private static List<IPAddress> ResolveSystemAllowHosts()
+    {
+        var raw = Environment.GetEnvironmentVariable("ALPHA_DLP_SYSTEM_ALLOW_HOSTS") ?? "";
+        // Minimal built-in exceptions so Windows activation / update / CRL stay reachable
+        // when IT has not published a protective DNS gateway yet.
+        var defaults = new[]
+        {
+            "time.windows.com",
+            "activation.sls.microsoft.com",
+            "crl.microsoft.com",
+            "ocsp.digicert.com",
+        };
+        var hosts = new List<string>(defaults);
+        foreach (var part in raw.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var h = NormalizeHost(part);
+            if (h != null)
+                hosts.Add(h);
+        }
+        var list = new List<IPAddress>();
+        var seen = new HashSet<IPAddress>();
+        foreach (var h in hosts.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var ip in Resolve(h))
+            {
+                if (seen.Add(ip))
+                    list.Add(ip);
+            }
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Rules + default outbound Block are in place. Ready when the allowlist hosts pin
+    /// was written and observed outbound Block verifies. A missing server resolve still
+    /// leaves total outbound denied (fail-closed); detail notes <c>bootstrap_unresolved</c>.
     /// </summary>
     private static Result Finish(
         bool changed,
@@ -369,79 +739,28 @@ internal static class LockdownNetworkEnforcer
         IReadOnlyList<IPAddress> allowList)
     {
         var hosts = ApplyAllowHosts(hostIps);
-        MaybeKillWeb(allowList, changed);
+        MaybeKillWeb(allowList, force: true);
         var hostsOk = hosts is "hosts_allow_updated" or "hosts_allow_cleared"
             or "hosts_allow_fresh" or "hosts_allow_absent";
-        var ready = !bootstrapUnresolved && hostsOk;
+        var proof = QueryActiveNetworkProof();
+        var serverUrl = Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "";
+        var probe = VerifyBehavioralEgress(serverUrl, proof);
+        var ready = hostsOk && proof.Ok && probe.Ok;
         var finalDetail = detail;
-        if (bootstrapUnresolved)
-            finalDetail = "bootstrap_unresolved";
+        if (!proof.Ok)
+            finalDetail = proof.Detail;
+        else if (!probe.Ok)
+            finalDetail = probe.Detail;
+        else if (bootstrapUnresolved)
+            finalDetail = string.IsNullOrEmpty(detail) || detail is "lock_fresh" or "lock_verified"
+                ? "bootstrap_unresolved"
+                : detail + ";bootstrap_unresolved";
         else if (!hostsOk)
             finalDetail = hosts;
-        return new Result(changed, ready, allowIps, overflow, finalDetail, RulesPresent: true, HostsDetail: hosts);
-    }
-
-    private static IEnumerable<(uint Lo, uint Hi)> Complement4(List<(uint Lo, uint Hi)> allowed)
-    {
-        allowed.Sort((a, b) => a.Lo.CompareTo(b.Lo));
-        ulong next = 0;
-        foreach (var (lo, hi) in allowed)
-        {
-            if (lo > next)
-                yield return ((uint)next, lo - 1);
-            if ((ulong)hi + 1 > next)
-                next = (ulong)hi + 1;
-        }
-        if (next <= uint.MaxValue)
-            yield return ((uint)next, uint.MaxValue);
-    }
-
-    private static IEnumerable<(UInt128 Lo, UInt128 Hi)> Complement6(List<(UInt128 Lo, UInt128 Hi)> allowed)
-    {
-        allowed.Sort((a, b) => a.Lo.CompareTo(b.Lo));
-        UInt128 next = UInt128.Zero;
-        var exhausted = false;
-        foreach (var (lo, hi) in allowed)
-        {
-            if (exhausted) break;
-            if (lo > next)
-                yield return (next, lo - UInt128.One);
-            if (hi >= next)
-            {
-                if (hi == UInt128.MaxValue) exhausted = true;
-                else next = hi + UInt128.One;
-            }
-        }
-        if (!exhausted)
-            yield return (next, UInt128.MaxValue);
-    }
-
-    private static (uint Lo, uint Hi) Cidr4(string addr, int prefix)
-    {
-        var n = BinaryPrimitives.ReadUInt32BigEndian(IPAddress.Parse(addr).GetAddressBytes());
-        var mask = prefix == 0 ? 0u : uint.MaxValue << (32 - prefix);
-        return (n & mask, (n & mask) | ~mask);
-    }
-
-    private static (UInt128 Lo, UInt128 Hi) Cidr6(string addr, int prefix)
-    {
-        var n = BinaryPrimitives.ReadUInt128BigEndian(IPAddress.Parse(addr).GetAddressBytes());
-        var mask = prefix == 0 ? UInt128.Zero : UInt128.MaxValue << (128 - prefix);
-        return (n & mask, (n & mask) | ~mask);
-    }
-
-    private static string Ip4(uint n)
-    {
-        Span<byte> b = stackalloc byte[4];
-        BinaryPrimitives.WriteUInt32BigEndian(b, n);
-        return new IPAddress(b).ToString();
-    }
-
-    private static string Ip6(UInt128 n)
-    {
-        Span<byte> b = stackalloc byte[16];
-        BinaryPrimitives.WriteUInt128BigEndian(b, n);
-        return new IPAddress(b).ToString();
+        else
+            finalDetail = (string.IsNullOrEmpty(detail) ? "lock_ok" : detail) + ";" + probe.Detail;
+        return new Result(changed, ready, allowIps, overflow, finalDetail,
+            RulesPresent: proof.OutboundBlocked, HostsDetail: hosts);
     }
 
     // ---------------------------------------------------------------- DNS + hosts
@@ -694,6 +1013,156 @@ internal static class LockdownNetworkEnforcer
         }
         return list;
     }
+
+    private static (bool Ok, string Output) EnsureQuicBlock()
+    {
+        var run = RunPowerShellDetailed(EnsureQuicScript);
+        var text = (run.Stdout + "\n" + run.Stderr).Trim();
+        if (!run.Ok)
+            return (false, string.IsNullOrWhiteSpace(text) ? "quic_rule_missing" : text);
+        return (true, text);
+    }
+
+    private static void RemoveQuicBlock()
+    {
+        try { RunPowerShell(RemoveQuicScript); }
+        catch { /* Clear still deletes netsh LOCK rules */ }
+    }
+
+    private static (bool Ok, string Output) RunPowerShell(string script)
+    {
+        var run = RunPowerShellDetailed(script);
+        var text = (run.Stdout + "\n" + run.Stderr).Trim();
+        return (run.Ok, string.IsNullOrWhiteSpace(text) ? run.Detail : text);
+    }
+
+    private sealed record PowerShellRun(bool Ok, string Stdout, string Stderr, string Detail);
+
+    private static PowerShellRun RunPowerShellDetailed(string script)
+    {
+        var psExe = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "WindowsPowerShell", "v1.0", "powershell.exe");
+        if (!File.Exists(psExe))
+            psExe = "powershell.exe";
+        string? tmp = null;
+        try
+        {
+            tmp = Path.Combine(Path.GetTempPath(), "alpha-dlp-" + Guid.NewGuid().ToString("n") + ".ps1");
+            File.WriteAllText(tmp, script);
+            using var p = new System.Diagnostics.Process();
+            p.StartInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = psExe,
+                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + tmp + "\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            if (!p.Start())
+                return new PowerShellRun(false, "", "", "powershell_start_failed");
+            var stdout = p.StandardOutput.ReadToEnd();
+            var stderr = p.StandardError.ReadToEnd();
+            if (!p.WaitForExit(90_000))
+            {
+                try { p.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                return new PowerShellRun(false, stdout, stderr, "powershell_timeout");
+            }
+            return new PowerShellRun(p.ExitCode == 0, stdout, stderr, "powershell_exit=" + p.ExitCode);
+        }
+        catch (Exception ex)
+        {
+            return new PowerShellRun(false, "", "", ex.GetType().Name + ":" + Truncate(ex.Message, 100));
+        }
+        finally
+        {
+            if (tmp is not null)
+            {
+                try { File.Delete(tmp); } catch { /* ignore */ }
+            }
+        }
+    }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) || s.Length <= max ? s ?? "" : s[..max];
+
+    private const string EnsureQuicScript = """
+        $ErrorActionPreference = 'Stop'
+        $name = 'AlphaAI-DLP-LOCK-BLOCK-QUIC'
+        function Test-Quic($r) {
+          if (-not $r) { return $false }
+          $pf = $r | Get-NetFirewallPortFilter
+          $port = (@($pf.RemotePort) | ForEach-Object { "$_" }) -join ','
+          return ([string]$r.Enabled -eq 'True' -and [string]$r.Action -eq 'Block' -and [string]$r.Direction -eq 'Outbound' -and [string]$pf.Protocol -eq 'UDP' -and $port -eq '443')
+        }
+        $r = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+        if (Test-Quic $r) { Write-Output 'quic_present'; exit 0 }
+        if ($r) { Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue }
+        New-NetFirewallRule -Name $name -DisplayName 'Block QUIC' -Description $name -Direction Outbound -Action Block -Protocol UDP -RemotePort 443 -Profile Any -Enabled True | Out-Null
+        Write-Output 'quic_created'
+        """;
+
+    private const string RemoveQuicScript = """
+        $ErrorActionPreference = 'Continue'
+        $name = 'AlphaAI-DLP-LOCK-BLOCK-QUIC'
+        Remove-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+        Get-NetFirewallRule -DisplayName 'Block QUIC' -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -eq $name -or $_.Description -eq $name } |
+          Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        """;
+
+    // Emits one marked JSON line. Only product LOCK allow rules are listed for the
+    // UDP-443 punch-through check — not every Store/shell UDP Any allow.
+    private const string ActiveStoreScript = """
+        $ErrorActionPreference = 'Stop'
+        function Convert-Profile($p) {
+          [pscustomobject]@{
+            Name = [string]$p.Name
+            Enabled = [string]$p.Enabled
+            DefaultOutboundAction = [string]$p.DefaultOutboundAction
+          }
+        }
+        $active = @(Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object { Convert-Profile $_ })
+        $persistent = @(Get-NetFirewallProfile -PolicyStore PersistentStore | ForEach-Object { Convert-Profile $_ })
+        $q = Get-NetFirewallRule -PolicyStore ActiveStore -Name 'AlphaAI-DLP-LOCK-BLOCK-QUIC' -ErrorAction SilentlyContinue
+        if (-not $q) {
+          $byDisplay = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName 'Block QUIC' -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'AlphaAI-DLP-LOCK-BLOCK-QUIC' -or $_.Description -eq 'AlphaAI-DLP-LOCK-BLOCK-QUIC' })
+          if ($byDisplay.Count -gt 0) { $q = $byDisplay[0] }
+        }
+        if ($q) {
+          $pf = $q | Get-NetFirewallPortFilter
+          $quic = [pscustomobject]@{
+            present = $true
+            enabled = [string]$q.Enabled
+            action = [string]$q.Action
+            direction = [string]$q.Direction
+            protocol = [string]$pf.Protocol
+            remotePort = ((@($pf.RemotePort) | ForEach-Object { "$_" }) -join ',')
+          }
+        } else {
+          $quic = [pscustomobject]@{ present = $false; enabled = 'False'; action = ''; direction = ''; protocol = ''; remotePort = '' }
+        }
+        $allows = @()
+        Get-NetFirewallRule -PolicyStore ActiveStore -Direction Outbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
+          Where-Object {
+            $_.Name -like 'AlphaAI-DLP-LOCK-*' -or
+            $_.DisplayName -like 'AlphaAI-DLP-LOCK-*' -or
+            $_.Description -like 'AlphaAI-DLP-LOCK-*' -or
+            $_.Name -like '*ALLOW-DEST-UDP*' -or
+            $_.DisplayName -like '*ALLOW-DEST-UDP*'
+          } | ForEach-Object {
+            $pf = $_ | Get-NetFirewallPortFilter
+            $allows += [pscustomobject]@{
+              name = [string]($_.Name)
+              protocol = [string]$pf.Protocol
+              remotePort = ((@($pf.RemotePort) | ForEach-Object { "$_" }) -join ',')
+            }
+          }
+        $json = [pscustomobject]@{ active = $active; persistent = $persistent; quic = $quic; allows = $allows } | ConvertTo-Json -Depth 6 -Compress
+        Write-Output ('ALPHA_ACTIVE_STORE_JSON:' + $json)
+        """;
 
     private static Result Fail(string output, int ips, bool overflow)
     {

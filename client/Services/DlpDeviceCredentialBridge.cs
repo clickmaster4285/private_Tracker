@@ -50,7 +50,16 @@ public static class DlpDeviceCredentialBridge
 
         try
         {
-            var url = (serverUrl ?? Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "").TrimEnd('/');
+            var url = (serverUrl ?? Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "").Trim();
+            // Preserve https:// for nginx TLS — do not silently downgrade to http.
+            if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                url = "https://" + url["https://".Length..].TrimEnd('/');
+            else if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                url = "http://" + url["http://".Length..].TrimEnd('/');
+            else if (!string.IsNullOrWhiteSpace(url) && !url.Contains("://", StringComparison.Ordinal))
+                url = "https://" + url.TrimEnd('/');
+            else
+                url = url.TrimEnd('/');
             var payload = JsonSerializer.Serialize(new
             {
                 serverUrl = url,

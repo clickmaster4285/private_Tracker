@@ -128,8 +128,10 @@ public sealed class DlpConfig
 
         var cfg = new DlpConfig
         {
-            Enabled = GetBool("ALPHA_DLP_ENABLED", false),
-            ServerUrl = (Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "").TrimEnd('/'),
+            // Fail-closed ship default: blockers arm unless explicitly disabled.
+            Enabled = GetBool("ALPHA_DLP_ENABLED", true),
+            ServerUrl = ServerUrlNormalizer.Normalize(
+                Environment.GetEnvironmentVariable("ALPHA_SERVER_URL")),
             DeviceToken = Environment.GetEnvironmentVariable("ALPHA_DEVICE_TOKEN") ?? "",
             DataDir = Environment.GetEnvironmentVariable("ALPHA_DLP_DATA_DIR") is { Length: > 0 } d
                 ? d
@@ -182,25 +184,41 @@ public sealed class DlpConfig
     }
 
     /// <summary>
-    /// Re-read device.auth / env so workers can start after a post-boot tracker login.
-    /// Never clears a non-empty value already held unless the file has a newer token.
+    /// Re-read device.auth / tracker SQLite / env so workers pick up a post-boot login.
+    /// Tracker SQLite is preferred when present — a stale <c>device.auth</c> after reinstall
+    /// was causing 401 on policy pull and antivirus sync while the tracker itself synced OK.
     /// </summary>
     public void RefreshCredentials()
     {
         if (DeviceCredentialStore.TryLoad(out var fileUrl, out var fileTok))
         {
-            if (!string.IsNullOrWhiteSpace(fileUrl))
-                ServerUrl = fileUrl;
+            var normalizedFile = ServerUrlNormalizer.Normalize(fileUrl);
+            if (!string.IsNullOrWhiteSpace(normalizedFile))
+                ServerUrl = normalizedFile;
             if (!string.IsNullOrWhiteSpace(fileTok))
                 DeviceToken = fileTok;
         }
 
-        var envUrl = (Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "").TrimEnd('/');
+        // Prefer the live tracker DB token when it differs or file was empty.
+        if (TrackerTokenProbe.TryReadNewest(out var dbTok, out _))
+        {
+            if (string.IsNullOrWhiteSpace(DeviceToken) ||
+                !string.Equals(DeviceToken, dbTok, StringComparison.Ordinal))
+                DeviceToken = dbTok;
+        }
+
+        var envUrl = ServerUrlNormalizer.Normalize(
+            Environment.GetEnvironmentVariable("ALPHA_SERVER_URL"));
         var envTok = Environment.GetEnvironmentVariable("ALPHA_DEVICE_TOKEN") ?? "";
-        if (string.IsNullOrWhiteSpace(ServerUrl) && !string.IsNullOrWhiteSpace(envUrl))
+        if (!string.IsNullOrWhiteSpace(envUrl) &&
+            (string.IsNullOrWhiteSpace(ServerUrl) || ServerUrlNormalizer.NeedsRewrite(ServerUrl)))
             ServerUrl = envUrl;
         if (string.IsNullOrWhiteSpace(DeviceToken) && !string.IsNullOrWhiteSpace(envTok))
             DeviceToken = envTok;
+
+        ServerUrl = ServerUrlNormalizer.Normalize(ServerUrl);
+        if (!string.IsNullOrWhiteSpace(DeviceToken))
+            Environment.SetEnvironmentVariable("ALPHA_DEVICE_TOKEN", DeviceToken);
     }
 
     /// <summary>

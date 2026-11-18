@@ -293,6 +293,26 @@ if (args.Contains("--timedatewarning") && !args.Contains("--background"))
     return;
 }
 
+// Managed launcher — branded loader for allowlisted shortcuts only.
+// Direct EXE / CLI / scheduled launches stay under WDAC/AppLocker (native Windows denial).
+if (args.Contains("--managed-launch") && !args.Contains("--background"))
+{
+    client.Services.CliConsole.DetachForGui();
+    if (!OperatingSystem.IsWindows())
+        return;
+    string? launchId = null;
+    for (var i = 0; i < args.Length; i++)
+    {
+        if (args[i] == "--managed-launch" && i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+        {
+            launchId = args[i + 1];
+            break;
+        }
+    }
+    client.Services.ManagedLauncher.ManagedLauncherHost.Run(launchId);
+    return;
+}
+
 // Windows face soft-locker (spawned after login / session restore).
 // Sibling mutex; no tracker host; WinForms UI (not Avalonia). Soft-lock ≠ Winlogon.
 if (args.Contains("--face-verify") && !args.Contains("--background"))
@@ -342,7 +362,8 @@ var isGuiAgent = args.Contains("--gui");
 var isUserLaunch = !isBackground && !isMinimized && !isGuiAgent
     && !args.Contains("--celebrate-update")
     && !args.Contains("--timedatewarning")
-    && !args.Contains("--face-verify");
+    && !args.Contains("--face-verify")
+    && !args.Contains("--managed-launch");
 
 // L2: unsupervised `client --background` (autostart / menu / scripts) must hand
 // off to the user systemd unit BEFORE taking the mutex. Restart=always only

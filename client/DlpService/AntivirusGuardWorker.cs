@@ -627,6 +627,8 @@ public sealed class AntivirusGuardWorker : BackgroundService
             }
             else
             {
+                if ((int)resp.StatusCode == 401)
+                    _cfg.RefreshCredentials();
                 // 429/503 (admission) or older server without the route: retry next tick.
                 _logger.LogDebug("Antivirus status sync HTTP {Status}", (int)resp.StatusCode);
             }

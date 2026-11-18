@@ -27,6 +27,17 @@ public sealed class PolicyStore : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _initLock = new();
     private Task? _initTask;
+    /// <summary>Active write transaction for <see cref="SavePolicyAsync"/> replace.</summary>
+    private SqliteTransaction? _writeTx;
+
+    private SqliteCommand CreateWriteCommand()
+    {
+        EnsureOpen();
+        var cmd = _conn!.CreateCommand();
+        if (_writeTx != null)
+            cmd.Transaction = _writeTx;
+        return cmd;
+    }
 
     public PolicyStore(DlpConfig cfg, ILogger<PolicyStore> logger)
     {
@@ -38,6 +49,10 @@ public sealed class PolicyStore : IAsyncDisposable
     {
         lock (_initLock)
         {
+            // A faulted open (locked dlp.db) must not stick forever. The pipe host
+            // retries; the next call starts a fresh open.
+            if (_initTask is { IsCompleted: true, IsCompletedSuccessfully: false })
+                _initTask = null;
             _initTask ??= InitCoreAsync();
         }
         return _initTask.WaitAsync(ct);
@@ -45,11 +60,26 @@ public sealed class PolicyStore : IAsyncDisposable
 
     private async Task InitCoreAsync()
     {
+        if (_conn != null)
+        {
+            try { await _conn.DisposeAsync(); } catch { /* replace a half-open connection */ }
+            _conn = null;
+        }
+
         Directory.CreateDirectory(_cfg.DataDir);
         Directory.CreateDirectory(_cfg.PolicyDir);
 
         _conn = new SqliteConnection($"Data Source={_cfg.DbPath}");
-        await _conn.OpenAsync();
+        try
+        {
+            await _conn.OpenAsync();
+        }
+        catch
+        {
+            try { await _conn.DisposeAsync(); } catch { /* ignore */ }
+            _conn = null;
+            throw;
+        }
 
         await using (var cmd = _conn.CreateCommand())
         {
@@ -354,28 +384,56 @@ public sealed class PolicyStore : IAsyncDisposable
 
     public async Task SavePolicyAsync(long version, string hash, string bundleJson, CancellationToken ct)
     {
+        // Validate BEFORE taking the write lock's destructive replace. A malformed /
+        // hash-mismatched / empty bundle must never wipe the last-known-good rows.
+        _ = PolicyBundleParser.ValidateForPersistence(bundleJson, version, hash);
+
         await _gate.WaitAsync(ct);
         try
         {
             EnsureOpen();
-            await using var cmd = _conn!.CreateCommand();
-            cmd.CommandText = """
-                UPDATE policy_meta SET version = $v, hash = $h, applied_at = $at WHERE id = 1
-                """;
-            cmd.Parameters.AddWithValue("$v", version);
-            cmd.Parameters.AddWithValue("$h", hash);
-            cmd.Parameters.AddWithValue("$at", DateTime.UtcNow.ToString("o"));
-            await cmd.ExecuteNonQueryAsync(ct);
+            await using var tx = (SqliteTransaction)await _conn!.BeginTransactionAsync(ct);
+            _writeTx = tx;
+            try
+            {
+                await using (var cmd = CreateWriteCommand())
+                {
+                    cmd.CommandText = """
+                        UPDATE policy_meta SET version = $v, hash = $h, applied_at = $at WHERE id = 1
+                        """;
+                    cmd.Parameters.AddWithValue("$v", version);
+                    cmd.Parameters.AddWithValue("$h", hash ?? "");
+                    cmd.Parameters.AddWithValue("$at", DateTime.UtcNow.ToString("o"));
+                    await cmd.ExecuteNonQueryAsync(ct);
+                }
 
-            await ReplacePolicyFromBundleAsync(bundleJson);
+                await ReplacePolicyFromBundleAsync(bundleJson);
+                await tx.CommitAsync(ct);
+            }
+            catch
+            {
+                try { await tx.RollbackAsync(ct); } catch { /* best-effort */ }
+                throw;
+            }
+            finally
+            {
+                _writeTx = null;
+            }
 
             // Debug snapshot only — source of truth is relational tables above.
+            // Written after commit so a disk-full snapshot cannot leave DB half-applied.
+            Directory.CreateDirectory(_cfg.PolicyDir);
             var path = Path.Combine(_cfg.PolicyDir, $"policy.v{version}.json");
             await File.WriteAllTextAsync(path, bundleJson, ct);
+            // Keep a signed-shape last-known-good copy for offline bootstrap / recovery.
+            await File.WriteAllTextAsync(
+                Path.Combine(_cfg.PolicyDir, "policy.lkg.json"), bundleJson, ct);
             var removed = TrimPolicySnapshots();
             _logger.LogInformation(
-                "Applied DLP policy version {Version} (dropped {Removed} older snapshots)",
-                version, removed);
+                "Applied DLP policy version {Version} hash={HashPrefix} (dropped {Removed} older snapshots)",
+                version,
+                string.IsNullOrEmpty(hash) ? "-" : (hash.Length <= 12 ? hash : hash[..12]),
+                removed);
         }
         finally
         {
@@ -540,7 +598,7 @@ public sealed class PolicyStore : IAsyncDisposable
 
     private async Task ReplacePolicyFromBundleAsync(string bundleJson)
     {
-        await using (var clear = _conn!.CreateCommand())
+        await using (var clear = CreateWriteCommand())
         {
             clear.CommandText = """
                 DELETE FROM policy_rules;
@@ -557,16 +615,17 @@ public sealed class PolicyStore : IAsyncDisposable
         }
 
         if (string.IsNullOrWhiteSpace(bundleJson))
-            return;
+            throw new InvalidDataException("Refusing to replace policy with an empty bundle");
 
         using var doc = JsonDocument.Parse(bundleJson);
         var root = doc.RootElement;
 
-        // Missing lockdown → ON (fail-closed). Explicit false → OFF.
+        // Missing lockdown → ON (fail-closed). Explicit false → OFF (lab only;
+        // production EnforceWorker ignores clear without recovery auth).
         var lockdownOn = true;
         if (root.TryGetProperty("lockdown", out var ldEl))
             lockdownOn = ldEl.ValueKind != JsonValueKind.False;
-        await using (var ld = _conn.CreateCommand())
+        await using (var ld = CreateWriteCommand())
         {
             ld.CommandText = "UPDATE policy_lockdown SET lockdown = $v WHERE id = 1";
             ld.Parameters.AddWithValue("$v", lockdownOn ? 1 : 0);
@@ -587,7 +646,7 @@ public sealed class PolicyStore : IAsyncDisposable
                 var sched = match.ValueKind == JsonValueKind.Object && match.TryGetProperty("schedule", out var s)
                     ? s : default;
 
-                await using var ins = _conn.CreateCommand();
+                await using var ins = CreateWriteCommand();
                 ins.CommandText = """
                     INSERT OR REPLACE INTO policy_rules
                     (rule_id, name, trigger, action, severity, alert, enabled,
@@ -616,7 +675,7 @@ public sealed class PolicyStore : IAsyncDisposable
                     {
                         var day = d.GetString();
                         if (string.IsNullOrWhiteSpace(day)) continue;
-                        await using var dayCmd = _conn.CreateCommand();
+                        await using var dayCmd = CreateWriteCommand();
                         dayCmd.CommandText = "INSERT OR IGNORE INTO policy_schedule_days (rule_id, day) VALUES ($r,$d)";
                         dayCmd.Parameters.AddWithValue("$r", id);
                         dayCmd.Parameters.AddWithValue("$d", day.Trim().ToLowerInvariant());
@@ -635,7 +694,7 @@ public sealed class PolicyStore : IAsyncDisposable
             {
                 var dom = d.GetString();
                 if (string.IsNullOrWhiteSpace(dom)) continue;
-                await using var cmd = _conn.CreateCommand();
+                await using var cmd = CreateWriteCommand();
                 cmd.CommandText = "INSERT OR IGNORE INTO policy_domains (domain, rule_id, source) VALUES ($d,'', 'shadow')";
                 cmd.Parameters.AddWithValue("$d", dom.Trim().ToLowerInvariant());
                 await cmd.ExecuteNonQueryAsync();
@@ -653,7 +712,7 @@ public sealed class PolicyStore : IAsyncDisposable
             if (el.ValueKind != JsonValueKind.String) continue;
             var h = el.GetString();
             if (string.IsNullOrWhiteSpace(h)) continue;
-            await using var cmd = _conn!.CreateCommand();
+            await using var cmd = CreateWriteCommand();
             cmd.CommandText = "INSERT OR IGNORE INTO policy_allow_hosts (kind, host) VALUES ($k,$h)";
             cmd.Parameters.AddWithValue("$k", kind);
             cmd.Parameters.AddWithValue("$h", h.Trim());
@@ -679,7 +738,7 @@ public sealed class PolicyStore : IAsyncDisposable
             path = path.Trim();
             sha = sha.Trim().ToLowerInvariant().Replace("sha256:", "", StringComparison.OrdinalIgnoreCase);
             if (publisher.Length == 0 && path.Length == 0 && sha.Length != 64) continue;
-            await using var cmd = _conn!.CreateCommand();
+            await using var cmd = CreateWriteCommand();
             cmd.CommandText =
                 "INSERT INTO policy_allow_apps (seq, publisher, product, sha256, path) VALUES ($i,$p,$r,$h,$a)";
             cmd.Parameters.AddWithValue("$i", seq++);
@@ -705,7 +764,7 @@ public sealed class PolicyStore : IAsyncDisposable
             var action = (el.TryGetProperty("action", out var a) ? a.GetString() ?? "block" : "block").Trim().ToLowerInvariant();
             if (value.Length == 0 || (kind != "instance" && kind != "class")) continue;
             if (action != "block" && action != "allow" && action != "alert") action = "block";
-            await using var cmd = _conn!.CreateCommand();
+            await using var cmd = CreateWriteCommand();
             cmd.CommandText =
                 "INSERT INTO policy_device_control (seq, kind, value, pnp_class, action) VALUES ($i,$k,$v,$c,$a)";
             cmd.Parameters.AddWithValue("$i", seq++);
@@ -819,7 +878,7 @@ public sealed class PolicyStore : IAsyncDisposable
         {
             var v = el.GetString();
             if (string.IsNullOrWhiteSpace(v)) continue;
-            await using var cmd = _conn!.CreateCommand();
+            await using var cmd = CreateWriteCommand();
             if (source != null)
             {
                 cmd.CommandText = $"INSERT OR IGNORE INTO {table} ({col}, rule_id, source) VALUES ($v,$r,$s)";

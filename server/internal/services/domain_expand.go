@@ -124,8 +124,12 @@ var relatedDomainPacks = map[string][]string{
 	"dailymotion.com": {
 		"www.dailymotion.com", "dmcdn.net",
 	},
+	// Bing search only — not broad microsoft.com / office / live login surface.
 	"bing.com": {
-		"www.bing.com", "cn.bing.com",
+		"www.bing.com", "m.bing.com", "cn.bing.com", "www2.bing.com",
+		"th.bing.com", "c.bing.com", "r.bing.com", "serp.bing.com",
+		"api.bing.com", "bingapis.com", "www.bingapis.com",
+		"edgeservices.bing.com",
 	},
 	"yahoo.com": {
 		"www.yahoo.com", "m.yahoo.com", "yimg.com",

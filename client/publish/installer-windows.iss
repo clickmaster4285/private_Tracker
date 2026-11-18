@@ -57,7 +57,9 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 Source: "windows\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "Platform\Linux\*;Service\*;redist\*"
 ; restartreplace: if a handle still holds Service\*.dll after stop attempts, schedule
 ; replace on reboot instead of failing the whole upgrade with DeleteFile code 5.
-Source: "windows\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace; Check: DirExists(ExpandConstant('{src}\windows\Service'))
+; Service payload is REQUIRED — a missing windows\Service folder must fail the bake,
+; not silently install an open endpoint without LocalSystem enforcement.
+Source: "windows\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs restartreplace
 Source: "windows\config.enc"; DestDir: "{app}"; Flags: ignoreversion onlyifdoesntexist; Check: FileExists(ExpandConstant('{src}\windows\config.enc'))
 Source: "..\appsettings.json"; DestDir: "{app}"; Flags: ignoreversion
 ; Keep VC++ redistributables under {app}\redist (not only {tmp}) so post-install
@@ -261,9 +263,10 @@ procedure LockDlpServiceAcl;
 var
   ResultCode: Integer;
 begin
-  // SY=full; BA=query only — DLP service cannot be stopped from services.msc.
+  // SY=full; BA=query only; AU=query status (LC) so the tracker is not Access Denied.
+  // Must match ServiceAclHardener.LockedSddl. AU cannot stop the service.
   Exec('sc.exe',
-    'sdset {#WINDOWS_SERVICE_NAME} D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWLOCRRC;;;BA)',
+    'sdset {#WINDOWS_SERVICE_NAME} D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWLOCRRC;;;BA)(A;;LC;;;AU)',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
@@ -313,6 +316,9 @@ begin
   ForceDirectories(DataDir);
   EnvPath := DataDir + '\service.env';
   // Values come from client/.env at build (generate-windows-vars.sh → #defines).
+  // Seed / heal ALPHA_SERVER_URL (http:// or https:// for nginx TLS). Do not clear device tokens.
+  if '{#ALPHA_SERVER_URL}' <> '' then
+    SetEnvKey(EnvPath, 'ALPHA_SERVER_URL', '{#ALPHA_SERVER_URL}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_ENABLED', '{#ALPHA_DLP_ENABLED}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_USB_BLOCK', '{#ALPHA_DLP_USB_BLOCK}');
   SetEnvKey(EnvPath, 'ALPHA_DLP_WEB_BLOCK', '{#ALPHA_DLP_WEB_BLOCK}');
@@ -345,25 +351,111 @@ begin
   SetEnvKey(EnvPath, 'ALPHA_UPDATE_DOWNLOAD_JITTER_SEC', '{#ALPHA_UPDATE_DOWNLOAD_JITTER_SEC}');
 end;
 
-procedure InstallDlpService;
+// Remove stale SCM registrations that still point at Program Files (x86) or a
+// missing binary. Deny policy (hosts / AlphaAI-DLP-* FW) is intentionally left
+// in place so an upgrade cannot open the endpoint while the service is stopped.
+procedure MigrateLegacyDlpServiceRegistration;
+var
+  ResultCode: Integer;
+  ImagePath: string;
+  Pf86: string;
+begin
+  ImagePath := '';
+  RegQueryStringValue(HKLM,
+    'SYSTEM\CurrentControlSet\Services\{#WINDOWS_SERVICE_NAME}',
+    'ImagePath', ImagePath);
+  Pf86 := ExpandConstant('{pf32}');
+  if (ImagePath <> '') and
+     ((Pos(LowerCase(Pf86), LowerCase(ImagePath)) > 0) or
+      (Pos('\program files (x86)\', LowerCase(ImagePath)) > 0) or
+      (not FileExists(RemoveQuotes(ImagePath)))) then
+  begin
+    Log('Migrating legacy/stale DLP service ImagePath: ' + ImagePath);
+    Exec('sc.exe', 'stop {#WINDOWS_SERVICE_NAME}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('sc.exe', 'delete {#WINDOWS_SERVICE_NAME}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec('ping', '127.0.0.1 -n 2 -w 1000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+function WaitForDlpServiceRunning: Boolean;
+var
+  ResultCode: Integer;
+  Attempt: Integer;
+  StateFile: string;
+  StateText: AnsiString;
+begin
+  Result := False;
+  StateFile := ExpandConstant('{tmp}\alpha-dlp-svc-state.txt');
+  for Attempt := 1 to 15 do
+  begin
+    DeleteFile(StateFile);
+    Exec('cmd.exe',
+      '/C sc.exe query {#WINDOWS_SERVICE_NAME} | findstr /I "RUNNING" > "' + StateFile + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(StateFile) and LoadStringFromFile(StateFile, StateText) then
+    begin
+      if Pos('RUNNING', UpperCase(StateText)) > 0 then
+      begin
+        Result := True;
+        Exit;
+      end;
+    end;
+    Exec('ping', '127.0.0.1 -n 2 -w 1000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+function VerifyDlpServiceLocalSystem: Boolean;
+var
+  ObjName: string;
+begin
+  Result := False;
+  ObjName := '';
+  if not RegQueryStringValue(HKLM,
+    'SYSTEM\CurrentControlSet\Services\{#WINDOWS_SERVICE_NAME}',
+    'ObjectName', ObjName) then
+    Exit;
+  Result := (CompareText(ObjName, 'LocalSystem') = 0) or
+            (CompareText(ObjName, '.\LocalSystem') = 0);
+end;
+
+function InstallDlpServiceVerified: Boolean;
 var
   ResultCode: Integer;
   ExePath: string;
+  ImagePath: string;
 begin
+  Result := False;
   ExePath := ExpandConstant('{app}\Service\{#WINDOWS_SERVICE_EXE_NAME}');
   if not FileExists(ExePath) then
+  begin
+    MsgBox(
+      '{#MyAppName} setup cannot continue: the LocalSystem DLP service binary is missing.'#13#10#13#10 +
+      'Expected:'#13#10 + ExePath + #13#10#13#10 +
+      'Rebuild the Windows installer with the Service payload present.',
+      mbError, MB_OK);
     Exit;
+  end;
 
   EnsureServiceEnvFile;
+  MigrateLegacyDlpServiceRegistration;
 
   // Ensure no stale registration before create (upgrade already deleted; rollback may need recreate).
   Exec('sc.exe', 'stop {#WINDOWS_SERVICE_NAME}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('sc.exe', 'delete {#WINDOWS_SERVICE_NAME}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('ping', '127.0.0.1 -n 2 -w 1000', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-  Exec('sc.exe',
+  if not Exec('sc.exe',
     'create {#WINDOWS_SERVICE_NAME} binPath= "' + ExePath + '" start= auto DisplayName= "{#WINDOWS_SERVICE_DISPLAY_NAME}" obj= LocalSystem',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+  begin
+    MsgBox(
+      'Failed to register {#WINDOWS_SERVICE_NAME} as LocalSystem (sc create exit ' +
+      IntToStr(ResultCode) + ').'#13#10 +
+      'Setup will abort so this PC is not left without verified DLP.',
+      mbError, MB_OK);
+    Exit;
+  end;
+
   Exec('sc.exe',
     'description {#WINDOWS_SERVICE_NAME} "{#MyAppName} Security & DLP enforcement (USB / policy / alerts)."',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -372,6 +464,32 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('sc.exe', 'start {#WINDOWS_SERVICE_NAME}', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   LockDlpServiceAcl;
+
+  ImagePath := '';
+  RegQueryStringValue(HKLM,
+    'SYSTEM\CurrentControlSet\Services\{#WINDOWS_SERVICE_NAME}',
+    'ImagePath', ImagePath);
+  if (Pos(LowerCase(ExpandConstant('{app}\Service')), LowerCase(ImagePath)) = 0) or
+     (not VerifyDlpServiceLocalSystem) or
+     (not WaitForDlpServiceRunning) then
+  begin
+    MsgBox(
+      '{#MyAppName} DLP service failed verified startup.'#13#10#13#10 +
+      'ImagePath: ' + ImagePath + #13#10 +
+      'Expected LocalSystem + RUNNING under {app}\Service.'#13#10#13#10 +
+      'Reboot and re-run setup. Firewall/hosts deny artifacts were left in place.',
+      mbError, MB_OK);
+    Exit;
+  end;
+
+  Result := True;
+end;
+
+procedure InstallDlpService;
+begin
+  // Compatibility wrapper for DeinitializeSetup rollback path.
+  if not InstallDlpServiceVerified then
+    Log('InstallDlpService: verification failed');
 end;
 
 procedure RemoveDlpService;
@@ -525,7 +643,10 @@ begin
   begin
     // CRT system install BEFORE service start — face ORT / vpx need it on clean Win10.
     InstallVcRedists;
-    InstallDlpService;
+    if not InstallDlpServiceVerified then
+      RaiseException(
+        'DLP service failed verified LocalSystem startup. Setup aborted; ' +
+        'existing firewall/hosts deny artifacts were preserved.');
     GInstallSucceeded := True;
   end;
 end;

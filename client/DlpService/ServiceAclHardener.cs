@@ -16,9 +16,12 @@ internal static class ServiceAclHardener
     /// <summary>
     /// SY: full control (incl. stop/delete/change DACL).
     /// BA: query/enumerate/read only — no SERVICE_STOP, DELETE, or CHANGE_CONFIG.
+    /// AU: SERVICE_QUERY_STATUS only, so the signed-in tracker can see Running.
+    ///     Without LC, OpenService returns error 5 and the policy screen cannot
+    ///     tell that the service is up. AU cannot start or stop the service.
     /// </summary>
     public const string LockedSddl =
-        "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWLOCRRC;;;BA)";
+        "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWLOCRRC;;;BA)(A;;LC;;;AU)";
 
     /// <summary>
     /// After a verified removal code: SY + BA full so the service can stop and

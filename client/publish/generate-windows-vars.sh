@@ -44,6 +44,27 @@ env_get() {
   printf '%s' "$fallback"
 }
 
+# Preserve http:// and https:// from bake .env (nginx TLS uses https://).
+ALPHA_SERVER_URL_RAW=$(env_get ALPHA_SERVER_URL "")
+ALPHA_SERVER_URL_V=$(printf '%s' "$ALPHA_SERVER_URL_RAW" | sed 's#/*$##')
+case "$ALPHA_SERVER_URL_V" in
+  ""|"http://"|"https://"|"HTTP://"|"HTTPS://")
+    ALPHA_SERVER_URL_V=""
+    ;;
+  http://*|HTTP://*|https://*|HTTPS://*)
+    ;;
+  *://*)
+    echo "ERROR: ALPHA_SERVER_URL must be http:// or https:// (got: $ALPHA_SERVER_URL_RAW)" >&2
+    exit 1
+    ;;
+  *)
+    if [ -n "$ALPHA_SERVER_URL_V" ]; then
+      ALPHA_SERVER_URL_V="https://$ALPHA_SERVER_URL_V"
+    fi
+    ;;
+esac
+ALPHA_SERVER_URL_V=$(printf '%s' "$ALPHA_SERVER_URL_V" | sed 's#/*$##')
+
 ALPHA_DLP_ENABLED_V=$(env_get ALPHA_DLP_ENABLED true)
 ALPHA_DLP_USB_BLOCK_V=$(env_get ALPHA_DLP_USB_BLOCK true)
 ALPHA_DLP_WEB_BLOCK_V=$(env_get ALPHA_DLP_WEB_BLOCK true)
@@ -88,6 +109,7 @@ cat > "$OUT" <<EOF
 #define WINDOWS_SERVICE_MAINT_TASK "$WINDOWS_SERVICE_MAINT_TASK"
 #define WINDOWS_SERVICE_EXE_NAME "$WINDOWS_SERVICE_NAME.exe"
 ; DLP / update knobs baked from .env at build time
+#define ALPHA_SERVER_URL "$ALPHA_SERVER_URL_V"
 #define ALPHA_DLP_ENABLED "$ALPHA_DLP_ENABLED_V"
 #define ALPHA_DLP_USB_BLOCK "$ALPHA_DLP_USB_BLOCK_V"
 #define ALPHA_DLP_WEB_BLOCK "$ALPHA_DLP_WEB_BLOCK_V"

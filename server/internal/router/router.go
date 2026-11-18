@@ -173,6 +173,7 @@ func Setup(
 	// Security & DLP — device surface (policy pull, alert sync, health, removal verify)
 	if dlpHandler != nil {
 		syncGroup.GET("/dlp/policy", dlpHandler.GetPolicy)
+		syncAdmit.POST("/dlp/policy/ack", dlpHandler.AckPolicy)
 		syncAdmit.POST("/dlp/alerts/sync", dlpHandler.SyncAlerts)
 		syncAdmit.POST("/dlp/health", dlpHandler.PostHealth)
 		syncAdmit.POST("/devices/removal-verify", dlpHandler.VerifyRemovalCode)

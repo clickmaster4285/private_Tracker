@@ -243,6 +243,20 @@ type DlpPolicyPullResponse struct {
 	LockdownPausedUntil *time.Time `json:"lockdownPausedUntil,omitempty"`
 }
 
+// DlpPolicyAckRequest is posted by the Windows service after download / install / verify.
+type DlpPolicyAckRequest struct {
+	PolicyVersion int64  `json:"policyVersion"`
+	Hash          string `json:"hash"`
+	// Stage: downloaded | installed | verified
+	Stage  string `json:"stage"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type DlpPolicyAckResponse struct {
+	Accepted bool   `json:"accepted"`
+	Stage    string `json:"stage"`
+}
+
 // ── Device: Alert sync ──────────────────────────────────────────────────────
 
 // EvidenceMap accepts flat string maps OR nested JSON (arrays/objects/numbers)

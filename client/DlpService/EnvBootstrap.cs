@@ -1,5 +1,3 @@
-using Microsoft.Data.Sqlite;
-
 namespace AlphaAITracker.Service;
 
 /// <summary>
@@ -43,6 +41,7 @@ internal static class EnvBootstrap
         ("ALPHA_UPDATE_AUTO_INSTALL", "true"),
         ("ALPHA_UPDATE_CHECK_INTERVAL_SEC", "60"),
         ("ALPHA_UPDATE_DOWNLOAD_JITTER_SEC", "3600"),
+        ("ALPHA_DLP_PRODUCTION_PROFILE", "true"),
     ];
 
     public static void Apply()
@@ -50,8 +49,63 @@ internal static class EnvBootstrap
         EnsureShippedServiceEnvDefaults();
         LoadServiceEnv(overwrite: false);
         LoadDotEnvNearBinary();
+        NormalizeServerUrlInProcessAndServiceEnv();
         TryFillFromDeviceAuthFile();
         TryFillDeviceTokenFromTrackerDb();
+        // Re-normalize after credential fill — device.auth may still carry https://.
+        NormalizeServerUrlInProcessAndServiceEnv();
+    }
+
+    /// <summary>
+    /// Normalize and seed <c>ALPHA_SERVER_URL</c> into <c>service.env</c> so
+    /// lockdown can carve out the API before DeviceAuth exists (fail-closed).
+    /// Preserves <c>https://</c> for nginx TLS — never downgrades to HTTP.
+    /// </summary>
+    private static void NormalizeServerUrlInProcessAndServiceEnv()
+    {
+        var raw = Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "";
+        var normalized = ServerUrlNormalizer.Normalize(raw);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return;
+
+        if (!string.Equals(raw.Trim().TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("ALPHA_SERVER_URL", normalized);
+            Console.WriteLine(
+                $"[DlpService] ALPHA_SERVER_URL normalized: {normalized}");
+        }
+        else
+        {
+            Environment.SetEnvironmentVariable("ALPHA_SERVER_URL", normalized);
+        }
+
+        // Seed once; overwrite only when healing blank / unsupported scheme.
+        var fileNeedsRewrite = false;
+        try
+        {
+            var path = Path.Combine(DeviceCredentialStore.DefaultDir, "service.env");
+            if (File.Exists(path))
+            {
+                foreach (var line in File.ReadAllLines(path))
+                {
+                    var t = line.Trim();
+                    if (!t.StartsWith("ALPHA_SERVER_URL=", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    var existing = t["ALPHA_SERVER_URL=".Length..].Trim().Trim('"').Trim('\'');
+                    fileNeedsRewrite = ServerUrlNormalizer.NeedsRewrite(existing);
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[DlpService] Warning: could not read service.env URL: {ex.Message}");
+        }
+
+        _ = EnsureKey(
+            "ALPHA_SERVER_URL",
+            normalized,
+            overwrite: ServerUrlNormalizer.NeedsRewrite(raw) || fileNeedsRewrite);
     }
 
     /// <summary>
@@ -297,9 +351,11 @@ internal static class EnvBootstrap
     {
         if (!DeviceCredentialStore.TryLoad(out var url, out var tok)) return;
 
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ALPHA_SERVER_URL")) &&
-            !string.IsNullOrWhiteSpace(url))
-            Environment.SetEnvironmentVariable("ALPHA_SERVER_URL", url);
+        var normalizedUrl = ServerUrlNormalizer.Normalize(url);
+        var currentUrl = Environment.GetEnvironmentVariable("ALPHA_SERVER_URL") ?? "";
+        if (!string.IsNullOrWhiteSpace(normalizedUrl) &&
+            (string.IsNullOrWhiteSpace(currentUrl) || ServerUrlNormalizer.NeedsRewrite(currentUrl)))
+            Environment.SetEnvironmentVariable("ALPHA_SERVER_URL", normalizedUrl);
 
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ALPHA_DEVICE_TOKEN")) &&
             !string.IsNullOrWhiteSpace(tok))
@@ -315,97 +371,17 @@ internal static class EnvBootstrap
         if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ALPHA_DEVICE_TOKEN")))
             return;
 
-        foreach (var dbPath in CandidateTrackerDbPaths())
+        if (TrackerTokenProbe.TryReadNewest(out var tok, out var dbPath))
         {
-            if (!File.Exists(dbPath)) continue;
-            try
-            {
-                using var conn = new SqliteConnection($"Data Source={dbPath};Mode=ReadOnly");
-                conn.Open();
-                using var cmd = conn.CreateCommand();
-                cmd.CommandText =
-                    "SELECT device_token FROM employee_info WHERE device_token IS NOT NULL AND length(device_token) > 0 LIMIT 1";
-                var tok = cmd.ExecuteScalar() as string;
-                if (string.IsNullOrWhiteSpace(tok)) continue;
-
-                Environment.SetEnvironmentVariable("ALPHA_DEVICE_TOKEN", tok.Trim());
-                Console.WriteLine(
-                    $"[DlpService] ALPHA_DEVICE_TOKEN filled from {dbPath} (len={tok.Trim().Length}). " +
-                    "If policy pull returns 401, re-login the tracker.");
-                return;
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[DlpService] Warning: could not read {dbPath}: {ex.Message}");
-            }
+            Environment.SetEnvironmentVariable("ALPHA_DEVICE_TOKEN", tok);
+            Console.WriteLine(
+                $"[DlpService] ALPHA_DEVICE_TOKEN filled from {dbPath} (len={tok.Length}). " +
+                "If policy pull returns 401, re-login the tracker.");
+            return;
         }
 
         Console.WriteLine(
             "[DlpService] No device_token yet (device.auth / tracker SQLite). " +
             "Workers will wait until the tracker logs in.");
-    }
-
-    private static IEnumerable<string> CandidateTrackerDbPaths()
-    {
-        var configured = Environment.GetEnvironmentVariable("ALPHA_DB_PATH");
-        var dbNames = new List<string> { "aat_verify.db", "alpha_tracker.db" };
-        if (!string.IsNullOrWhiteSpace(configured))
-        {
-            var name = Path.GetFileName(configured.Trim().Replace('/', Path.DirectorySeparatorChar));
-            if (!string.IsNullOrEmpty(name) && !dbNames.Contains(name, StringComparer.OrdinalIgnoreCase))
-                dbNames.Insert(0, name);
-            if (Path.IsPathRooted(configured) && File.Exists(configured))
-                yield return configured;
-        }
-
-        // Interactive user (dotnet run / double-click as admin).
-        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var folder = ServiceIdentity.DataFolderName;
-        var linuxPkg = ServiceIdentity.PackageName;
-        foreach (var name in dbNames)
-        {
-            yield return Path.Combine(local, folder, "data", name);
-            if (OperatingSystem.IsLinux())
-                yield return Path.Combine(local, linuxPkg, "data", name);
-        }
-
-        if (OperatingSystem.IsLinux())
-        {
-            // Root daemon: scan /home/*/.local/share/<package|mutex>/data/
-            if (Directory.Exists("/home"))
-            {
-                foreach (var profile in Directory.EnumerateDirectories("/home"))
-                {
-                    foreach (var name in dbNames)
-                    {
-                        yield return Path.Combine(profile, ".local", "share", linuxPkg, "data", name);
-                        yield return Path.Combine(profile, ".local", "share", folder, "data", name);
-                    }
-                }
-            }
-            yield break;
-        }
-
-        // LocalSystem: scan every profile under C:\Users\*\AppData\Local\...
-        string usersRoot;
-        try
-        {
-            usersRoot = Path.GetFullPath(Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".."));
-        }
-        catch
-        {
-            usersRoot = Path.Combine(Path.GetPathRoot(Environment.SystemDirectory) ?? @"C:\", "Users");
-        }
-
-        if (!Directory.Exists(usersRoot)) yield break;
-
-        foreach (var profile in Directory.EnumerateDirectories(usersRoot))
-        {
-            var leaf = Path.GetFileName(profile);
-            if (leaf is "Public" or "Default" or "Default User" or "All Users") continue;
-            foreach (var name in dbNames)
-                yield return Path.Combine(profile, "AppData", "Local", folder, "data", name);
-        }
     }
 }

@@ -53,7 +53,15 @@ public sealed class EnforceWorker : BackgroundService
         if (!_cfg.Enabled)
         {
             _logger.LogInformation("EnforceWorker parked (ALPHA_DLP_ENABLED=false)");
-            // Never strand a PC behind lockdown filters left by an earlier enabled run.
+            if (!ProductionFailClosed.AllowFailOpen("dlp_disabled", out var parkDetail))
+            {
+                _logger.LogWarning(
+                    "Production profile blocked park Clear ({Detail}) — keeping deny rules while disabled",
+                    parkDetail);
+                await _store.AuditAsync("park_clear_blocked", parkDetail, stoppingToken);
+                return;
+            }
+            // Lab / recovery: clear leftovers left by an earlier enabled run.
             try
             {
                 var parkClear = await Task.Run(LockdownNetworkEnforcer.Clear, stoppingToken);
@@ -157,9 +165,14 @@ public sealed class EnforceWorker : BackgroundService
     {
         var (version, hash, bundleJson) = await _store.GetAppliedAsync(ct);
         _cfg.RefreshCredentials();
-        var hasCredsForStatus = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
-                                !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
-        EnforceStatus.Shared.BeginApply(hasCredsForStatus);
+        // Fail-closed: local blocker switches arm the policy screen and Apply even
+        // before DeviceAuth. Missing token must never Clear lockdown / AppLocker.
+        var armed = _cfg.NetworkLockdown || _cfg.AppBlock ||
+                    (!string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
+                     !string.IsNullOrWhiteSpace(_cfg.DeviceToken));
+        EnforceStatus.Shared.BeginApply(armed);
+        if (armed)
+            EnforceStatus.Shared.MarkVerifying();
         try
         {
             await ApplyCoreAsync(version, hash, bundleJson, ct);
@@ -167,6 +180,8 @@ public sealed class EnforceWorker : BackgroundService
         finally
         {
             EnforceStatus.Shared.FinishApply();
+            if (version > 0 && EnforceStatus.Shared.IsEnforcing)
+                _ = PolicyAckClient.TryAckAsync(_cfg, version, hash, "verified", "enforcing", ct);
         }
     }
 
@@ -204,6 +219,13 @@ public sealed class EnforceWorker : BackgroundService
         await ApplyUsbAsync(bundle, version, wantUsbBlock, ct);
         // Lockdown (allow-world) first; explicit web-block domains below still apply inside it.
         await ApplyLockdownAsync(bundle, ct);
+        // Phase 2 optional WFP app-aware (parked unless ALPHA_DLP_WFP_APP_AWARE=true + driver).
+        var wfp = WfpAppAwareEnforcer.Apply();
+        if (wfp.Detail.Contains("wfp_driver", StringComparison.OrdinalIgnoreCase)
+            || WfpAppAwareEnforcer.Enabled)
+        {
+            await _store.AuditAsync("wfp_status", wfp.Detail, ct);
+        }
         await ApplyAppLockdownAsync(bundle, ct);
         await ApplyDeleteBlockAsync(bundle, ct);
         await ApplyFileTransferAsync(bundle, version, ct);
@@ -340,18 +362,16 @@ public sealed class EnforceWorker : BackgroundService
             return;
 
         _cfg.RefreshCredentials();
-        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
-                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var active = _cfg.FileTransferBlock && hasCreds && !paused;
+        // Fail-closed: apply whenever the local switch is on and not paused — no DeviceAuth gate.
+        var active = _cfg.FileTransferBlock && !paused;
         var downloadRule = PolicyBundleParser.BlockingRule(bundle, "file_download");
         var uploadRule = PolicyBundleParser.BlockingRule(bundle, "file_upload");
         var wantDownload = active && downloadRule is not null;
         var wantUpload = active && uploadRule is not null;
         var state = !_cfg.FileTransferBlock ? "disabled_local"
             : paused ? "paused"
-            : !hasCreds ? "no_device"
             : $"dl={(wantDownload ? 1 : 0)},ul={(wantUpload ? 1 : 0)}";
 
         var result = await Task.Run(() => FileTransferEnforcer.Apply(wantDownload, wantUpload), ct);
@@ -396,6 +416,7 @@ public sealed class EnforceWorker : BackgroundService
 
     /// <summary>
     /// NTFS Deny Delete on Fixed/Removable roots when lockdown is ON (create/edit stay allowed).
+    /// Does not wait for DeviceAuth — fail-closed with network/apps.
     /// </summary>
     private async Task ApplyDeleteBlockAsync(PolicyBundle bundle, CancellationToken ct)
     {
@@ -403,24 +424,22 @@ public sealed class EnforceWorker : BackgroundService
             return;
 
         _cfg.RefreshCredentials();
-        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
-                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var want = _cfg.DeleteBlock && hasCreds && !paused && bundle.LockdownEnabled;
+        var want = _cfg.DeleteBlock && !paused && bundle.LockdownEnabled;
 
         if (!want)
         {
             var clear = await Task.Run(DeleteBlockAclEnforcer.Clear, ct);
-            var state = !_cfg.DeleteBlock ? "disabled_local" : paused ? "paused" : "off";
-            if (clear.Changed || _lastDeleteBlockState is not (null or "off" or "paused" or "disabled_local"))
+            var state = !_cfg.DeleteBlock ? "disabled_local" : paused ? "paused" : "lockdown_off";
+            if (clear.Changed || _lastDeleteBlockState is not (null or "off" or "paused" or "disabled_local" or "lockdown_off"))
             {
                 await _store.AuditAsync("delete_block_clear", $"state={state} detail={clear.Detail}", ct);
                 _logger.LogInformation("Delete-block ACLs CLEARED (state={State}, detail={Detail})", state, clear.Detail);
             }
             if (clear.Applied)
                 _lastDeleteBlockState = state;
-            Report("delete", "off", state);
+            Report("delete", state is "disabled_local" or "lockdown_off" ? "off" : "failed", state);
             return;
         }
 
@@ -453,7 +472,8 @@ public sealed class EnforceWorker : BackgroundService
 
     /// <summary>
     /// AppLocker EXE default-deny when lockdown is ON (same switch as network lockdown).
-    /// Pause / lockdown:false / no DeviceAuth clears the policy.
+    /// Pause / lockdown:false / local switch off clears. Missing DeviceAuth does
+    /// <b>not</b> clear — bootstrap A + published allow.apps stay fail-closed.
     /// </summary>
     private async Task ApplyAppLockdownAsync(PolicyBundle bundle, CancellationToken ct)
     {
@@ -461,63 +481,122 @@ public sealed class EnforceWorker : BackgroundService
             return;
 
         _cfg.RefreshCredentials();
-        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
-                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var want = _cfg.AppBlock && hasCreds && !paused && bundle.LockdownEnabled;
+        var want = _cfg.AppBlock && !paused && bundle.LockdownEnabled;
 
+        string? blockedOpen = null;
         if (!want)
         {
-            var clear = await Task.Run(AppAllowEnforcer.Clear, ct);
-            var state = !_cfg.AppBlock ? "disabled_local" : paused ? "paused" : "off";
-            if (clear.Changed || _lastAppLockdownState is not (null or "off" or "paused" or "disabled_local"))
+            var openReason = !_cfg.AppBlock ? "disabled_local"
+                : paused ? "paused"
+                : "lockdown_off";
+            if (!ProductionFailClosed.AllowFailOpen(openReason, out var openDetail))
             {
-                await _store.AuditAsync("app_lockdown_clear", $"state={state} detail={clear.Detail}", ct);
-                _logger.LogInformation("AppLocker CLEARED (state={State}, detail={Detail})", state, clear.Detail);
+                await _store.AuditAsync("app_lockdown_clear_blocked", openDetail, ct);
+                _logger.LogWarning(
+                    "Production profile blocked AppLocker Clear ({Detail}) — keeping enforce",
+                    openDetail);
+                blockedOpen = openReason;
+                // Fall through and re-apply bootstrap A + published apps.
             }
-            if (clear.Applied)
-                _lastAppLockdownState = state;
-            EnforceStatus.Shared.SetWatch(false, Array.Empty<AllowAppEntry>());
-            Report("applocker", !hasCreds ? "off" : "failed", !hasCreds ? "no_device" : state);
-            return;
+            else
+            {
+                if (openDetail.StartsWith("recovery:", StringComparison.Ordinal))
+                    await _store.AuditAsync("recovery_bypass", openDetail, ct);
+                var clear = await Task.Run(AppAllowEnforcer.Clear, ct);
+                if (clear.Changed || _lastAppLockdownState is not (null or "off" or "paused" or "disabled_local" or "lockdown_off"))
+                {
+                    await _store.AuditAsync("app_lockdown_clear", $"state={openReason} detail={clear.Detail}", ct);
+                    _logger.LogInformation("AppLocker CLEARED (state={State}, detail={Detail})", openReason, clear.Detail);
+                }
+                if (clear.Applied)
+                    _lastAppLockdownState = openReason;
+                EnforceStatus.Shared.SetWatch(false, Array.Empty<AllowAppEntry>());
+                Report("applocker", openReason is "disabled_local" or "lockdown_off" ? "off" : "failed", openReason);
+                return;
+            }
         }
 
         var apps = bundle.AllowApps;
+        var (version, hash, _) = await _store.GetAppliedAsync(ct);
+        ManagedLauncherCatalog.Publish(apps, version, hash);
+
+        // Signed WDAC base (when CIP present) + AppLocker interim. WDAC never clears
+        // AppLocker — AppLocker stays the per-user / unsigned-PC layer.
+        var wdac = await Task.Run(() => WdacEnforcer.Apply(apps), ct);
+        if (wdac.Changed || !string.IsNullOrEmpty(wdac.Detail))
+        {
+            await _store.AuditAsync(
+                wdac.Applied ? "wdac_apply" : "wdac_status",
+                wdac.Detail,
+                ct);
+            if (wdac.Applied)
+                _logger.LogInformation("WDAC ENFORCED ({Detail})", wdac.Detail);
+            else if (DateTimeOffset.UtcNow - _lastAppLockdownWarn > TimeSpan.FromMinutes(10))
+                _logger.LogInformation("WDAC status: {Detail}", wdac.Detail);
+        }
+
         var result = await Task.Run(() => AppAllowEnforcer.Apply(apps), ct);
-        var enforcing = result.Applied &&
-                        result.Detail.Contains("verify=enforcing", StringComparison.OrdinalIgnoreCase);
+        var canaryThrew = result.Detail.Contains("canary_probe_failed", StringComparison.OrdinalIgnoreCase);
+        var canaryDenied = result.Applied
+                           && !canaryThrew
+                           && result.Detail.Contains("verify=enforcing", StringComparison.OrdinalIgnoreCase);
+        var facts = AppControlCapability.Probe();
+        var secureBoot = WdacEnforcer.TryReadSecureBoot();
+        var decision = AppControlCapability.Decide(
+            ProductionFailClosed.Enabled,
+            WdacEnforcer.IsWindowsProSku(),
+            WdacEnforcer.HasOrgCip,
+            secureBoot,
+            WdacEnforcer.OrgCipFingerprintMatches(WdacEnforcer.OrgCipFingerprint()),
+            canaryDenied,
+            canaryThrew,
+            AppControlCapability.Assess(facts),
+            facts.Channel,
+            WdacEnforcer.BlockRulesDetail.Contains("verified", StringComparison.Ordinal));
+        var appDetail = decision.AppLockerDetail + ";" + result.Detail + ";" + wdac.Detail;
+        var wdacDetail = decision.WdacDetail + ";" + wdac.Detail;
         if (result.Detail != "stale_generation")
         {
-            if (enforcing)
+            if (blockedOpen is not null)
+                Report("applocker", "recovery_required", "recovery_required;" + blockedOpen + ";" + appDetail);
+            else
+                Report("applocker", decision.AppLockerCode, appDetail);
+
+            if (blockedOpen is not null && decision.WdacCode is not "recovery_required")
+                Report("wdac", "recovery_required", "recovery_required;" + blockedOpen + ";" + wdacDetail);
+            else
+                Report("wdac", decision.WdacCode, wdacDetail);
+
+            // Watch clears only when the canary or the org CIP (with Secure Boot) proved
+            // a native block. A SAC/p7b heuristic never reaches Decide.
+            EnforceStatus.Shared.SetWatch(decision.ArmWatch, apps);
+            if (decision.OverallEnforcing && blockedOpen is null)
             {
-                Report("applocker", "ok", result.Detail);
-                EnforceStatus.Shared.SetWatch(false, apps);
-                if (result.Changed || _lastAppLockdownState != "on")
+                if (result.Changed || wdac.Changed || _lastAppLockdownState != "on")
                 {
                     await _store.AuditAsync(
                         "app_lockdown_apply",
-                        $"apps={apps.Count} detail={result.Detail}",
+                        $"apps={apps.Count} detail={appDetail}",
                         ct);
                     _logger.LogInformation(
-                        "AppLocker ENFORCED (allowApps={Count}, detail={Detail}) — blocked apps show Windows dialog",
-                        apps.Count, result.Detail);
+                        "App control ENFORCED (allowApps={Count}, detail={Detail}) — denied launches show native Windows UI",
+                        apps.Count, appDetail);
                 }
                 _lastAppLockdownState = "on";
             }
             else
             {
-                Report("applocker", "failed", result.Detail);
-                // Windows will not show the block dialog. Kill new processes and let the
-                // tracker show one allowlist dialog until verify passes.
-                EnforceStatus.Shared.SetWatch(true, apps);
                 if (DateTimeOffset.UtcNow - _lastAppLockdownWarn > TimeSpan.FromMinutes(2))
                 {
                     _lastAppLockdownWarn = DateTimeOffset.UtcNow;
-                    _logger.LogWarning("AppLocker not enforcing: {Detail}", result.Detail);
-                    await _store.AuditAsync("app_lockdown_apply_failed", result.Detail, ct);
+                    _logger.LogWarning("App control not enforcing: {Detail}", appDetail + ";" + wdacDetail);
+                    await _store.AuditAsync("app_lockdown_apply_failed", appDetail + ";" + wdacDetail, ct);
                 }
-                _lastAppLockdownState = "failed";
+                _lastAppLockdownState = blockedOpen is not null || decision.WdacCode == "recovery_required"
+                    ? "recovery_required"
+                    : "failed";
                 _nextAppSweepDue = DateTimeOffset.MinValue;
             }
         }
@@ -547,37 +626,51 @@ public sealed class EnforceWorker : BackgroundService
     }
 
     /// <summary>
-    /// Default-deny web after DeviceAuth. ON unless paused or the published bundle sets
-    /// <c>lockdown: false</c>. Publish is only required to expand <c>allow.hosts</c>, not to block.
+    /// Default-deny web (80/443 + DNS 53/853). ON whenever the local switch and
+    /// published lockdown are on — DeviceAuth is <b>not</b> required. Missing token
+    /// must never Clear the firewall (that left every site open). Publish only expands
+    /// <c>allow.hosts</c>. Bootstrap carve-out uses <c>ALPHA_SERVER_URL</c> when present.
     /// </summary>
     private async Task ApplyLockdownAsync(PolicyBundle bundle, CancellationToken ct)
     {
         _cfg.RefreshCredentials();
-        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
-                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var want = _cfg.NetworkLockdown && hasCreds && !paused && bundle.LockdownEnabled;
+        var want = _cfg.NetworkLockdown && !paused && bundle.LockdownEnabled;
 
+        string? blockedOpen = null;
         if (!want)
         {
-            var clear = await Task.Run(LockdownNetworkEnforcer.Clear, ct);
-            var state = !_cfg.NetworkLockdown ? "disabled_local" : paused ? "paused" : "off";
-            if (clear.Changed || _lastLockdownState is not (null or "off" or "paused" or "disabled_local"))
+            var openReason = !_cfg.NetworkLockdown ? "disabled_local"
+                : paused ? "paused"
+                : "lockdown_off";
+            if (!ProductionFailClosed.AllowFailOpen(openReason, out var openDetail))
             {
-                await _store.AuditAsync("lockdown_clear", $"state={state} detail={clear.Detail}", ct);
-                _logger.LogInformation("Lockdown filters CLEARED (state={State}, detail={Detail})", state, clear.Detail);
+                await _store.AuditAsync("lockdown_clear_blocked", openDetail, ct);
+                _logger.LogWarning(
+                    "Production profile blocked network Clear ({Detail}) — keeping deny rules",
+                    openDetail);
+                blockedOpen = openReason;
+                // Fall through: re-apply deny with empty allow expansion rather than Clear.
             }
-            if (!clear.Detail.StartsWith("lock_clear_failed", StringComparison.Ordinal))
-                _lastLockdownState = state;
-            _lockdownOverflowAudited = false;
-            // No credentials yet: the login screen is still waiting, not failed.
-            // A local switch off or a pause is a real gap and stays on the policy screen.
-            var code = !hasCreds ? "off" : "failed";
-            var detail = !hasCreds ? "no_device" : state;
-            Report("network", code, detail);
-            Report("dns", code, detail);
-            return;
+            else
+            {
+                if (openDetail.StartsWith("recovery:", StringComparison.Ordinal))
+                    await _store.AuditAsync("recovery_bypass", openDetail, ct);
+                var clear = await Task.Run(LockdownNetworkEnforcer.Clear, ct);
+                if (clear.Changed || _lastLockdownState is not (null or "off" or "paused" or "disabled_local" or "lockdown_off"))
+                {
+                    await _store.AuditAsync("lockdown_clear", $"state={openReason} detail={clear.Detail}", ct);
+                    _logger.LogInformation("Lockdown filters CLEARED (state={State}, detail={Detail})", openReason, clear.Detail);
+                }
+                if (!clear.Detail.StartsWith("lock_clear_failed", StringComparison.Ordinal))
+                    _lastLockdownState = openReason;
+                _lockdownOverflowAudited = false;
+                var code = openReason is "disabled_local" or "lockdown_off" ? "off" : "failed";
+                Report("network", code, openReason);
+                Report("dns", code, openReason);
+                return;
+            }
         }
 
         var hosts = bundle.PlatformAllowHosts.Concat(bundle.AllowHosts).ToList();
@@ -603,10 +696,28 @@ public sealed class EnforceWorker : BackgroundService
         if (result.Detail == "stale_generation")
             return;
 
-        if (result.Applied)
+        // Ready only when ActiveStore, QUIC, and the management TCP probe all passed.
+        // Rules sitting on disk are not enough: a failed egress probe stays Failed.
+        // bootstrap_unresolved is still Applied when the last saved management IP connected.
+        var networkReady = result.Applied;
+        var hd = result.HostsDetail ?? "";
+        var hostsReady = networkReady &&
+                         (string.IsNullOrEmpty(hd) ||
+                          hd.StartsWith("hosts_allow", StringComparison.OrdinalIgnoreCase));
+
+        if (networkReady)
         {
-            Report("network", "ok", result.Detail);
-            Report("dns", "ok", string.IsNullOrEmpty(result.HostsDetail) ? result.Detail : result.HostsDetail);
+            if (blockedOpen is not null)
+            {
+                Report("network", "recovery_required", "recovery_required;" + blockedOpen + ";" + result.Detail);
+                Report("dns", "recovery_required", "recovery_required;" + blockedOpen);
+            }
+            else
+            {
+                Report("network", "ok", result.Detail);
+                Report("dns", hostsReady ? "ok" : "failed",
+                    string.IsNullOrEmpty(result.HostsDetail) ? result.Detail : result.HostsDetail);
+            }
             if (result.Changed || _lastLockdownState != "on")
             {
                 await _store.AuditAsync(
@@ -621,11 +732,7 @@ public sealed class EnforceWorker : BackgroundService
             return;
         }
 
-        var networkReady = result.RulesPresent &&
-                           !result.Detail.Contains("bootstrap_unresolved", StringComparison.OrdinalIgnoreCase) &&
-                           !result.Detail.Contains("access_denied", StringComparison.OrdinalIgnoreCase) &&
-                           !result.Detail.StartsWith("lock_error", StringComparison.OrdinalIgnoreCase);
-        Report("network", networkReady ? "ok" : "failed", result.Detail);
+        Report("network", "failed", result.Detail);
         Report("dns", "failed", string.IsNullOrEmpty(result.HostsDetail) ? result.Detail : result.HostsDetail);
 
         // Not applied (bootstrap unresolved / access denied / netsh error): rules from a
@@ -733,11 +840,16 @@ public sealed class EnforceWorker : BackgroundService
         CancellationToken ct)
     {
         _cfg.RefreshCredentials();
-        var hasCreds = !string.IsNullOrWhiteSpace(_cfg.ServerUrl) &&
-                       !string.IsNullOrWhiteSpace(_cfg.DeviceToken);
         var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
         var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
-        var lockdownOn = _cfg.NetworkLockdown && hasCreds && !paused && bundle.LockdownEnabled;
+        // DeviceAuth is not required — fail-closed with network lockdown.
+        var lockdownOn = _cfg.NetworkLockdown && !paused && bundle.LockdownEnabled;
+        if (!lockdownOn && !ProductionFailClosed.AllowFailOpen(
+                !_cfg.NetworkLockdown ? "disabled_local" : paused ? "paused" : "lockdown_off",
+                out _))
+        {
+            lockdownOn = true;
+        }
         var lockdownAllow = lockdownOn
             ? BuildLockdownBrowserAllowHosts(bundle, wantDomains, _cfg.ServerUrl)
             : null;

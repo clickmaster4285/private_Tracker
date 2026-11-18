@@ -1,7 +1,201 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-17
+> **Last audited:** 2026-11-18
 > **Changelog:**
+>
+> - 2026-11-18: **Dev skip for topmost policy gate (2.9.3).** `ALPHA_DLP_POLICY_GATE`
+> (default true) — set `false` in client `.env` to skip the full-screen post-login
+> security policy UI; DLP service enforcement is unchanged. Client **VERSION 2.9.3**.
+> Installer-Parity: re-bake `config.enc` + rebuild Windows Setup when shipping the
+> lab value; local `dotnet run` picks up `.env` without a bake.
+>
+> - 2026-11-18: **ActiveStore gate stuck on lab PCs (2.9.2).** Apply turns Domain/Private/Public
+> firewall profiles **Enabled** before outbound Block (netsh state on + Set-NetFirewallProfile).
+> ActiveStore probe runs via PowerShell `-File` with a marked JSON line; stdout/stderr stay
+> separate so `active_store_query_failed` includes the real reason. UDP-443 punch-through
+> check is limited to `AlphaAI-DLP-LOCK-*` / `ALLOW-DEST-UDP` leftovers — stock Store/shell
+> `UDP Any` allows no longer fail the gate. Client **VERSION 2.9.2**. Installer-Parity:
+> rebuild Windows Setup (no `config.enc` re-bake); restart DLP; Retry the policy gate.
+>
+> - 2026-11-18: **Strict default-deny V2 corrections (2.9.1).** ActiveStore is the only
+> outbound-Block proof (profile must exist, be Enabled, and be Block; local Block with
+> active Allow stays Failed as `active store disagreed`). Explicit outbound UDP 443
+> block `AlphaAI-DLP-LOCK-BLOCK-QUIC` / display name `Block QUIC`; no all-port dest UDP
+> carve-out, and any other UDP 443 allow fails the gate. Management TCP is the server
+> URL port only; web hosts TCP 443; system-update/CRL hosts TCP 80+443. DNS-fail is
+> success only when TCP to the last saved management IP succeeds. Chromium
+> `DnsOverHttpsMode=off` and `QuicAllowed=0` under lockdown (no URLAllowlist). Policy
+> phases add `verifying` and `recovery_required`; `pipe_timeout` is still never
+> Enforcing. AppLocker capability probe uses build, exact KB5024351 packages or a
+> pinned UBR floor, and GP vs MDM vs local — Pro is not hard-coded unsupported.
+> Secure Boot off or unreadable is not signed-policy tamper resistance
+> (`wdac_secure_boot_off`). `client/publish/merge-wdac-recommended-blocks.ps1` pins the
+> Microsoft block-rules page by version and SHA256, merges offline, and writes
+> `recommended-blocks.merged` only after success. Client **VERSION 2.9.1**.
+> Installer-Parity: re-bake `config.enc` with `https://` unchanged, rebuild Windows
+> Setup, restart DLP. Lab evidence is still pending — do not call this complete
+> default-deny until the matrix rows are attached.
+>
+> - 2026-11-18: **Strict default-deny V2 (2.9.0 — P0+P1+P2).** Preserve `https://` in
+> `ALPHA_SERVER_URL` (nginx TLS; no https→http rewrite). PolicyGate: `pipe_timeout` never
+> Enforcing; LongRunning pipe; NamedPipeHost before EnforceWorker; defer AppBlockNotice.
+> Network: Block on all profiles + behavioral egress probe before gate OK. AppLocker:
+> canary fail-closed; msiexec SYSTEM-only; named product binaries; FileHash from published
+> sha256 (fingerprint `v9`). WDAC: org CIP fingerprint only (no SAC/p7b heuristic); Pro +
+> production requires CIP; recovery.auth single-use. Optional WFP stub
+> (`ALPHA_DLP_WFP_APP_AWARE`). Matrix: [`doc/dlp-security-matrix-v2.md`](doc/dlp-security-matrix-v2.md)
+> + `client/publish/dlp-security-matrix-v2.ps1`. Client **VERSION 2.9.0**. Installer-Parity:
+> re-bake `config.enc` with `https://…` + rebuild Windows Setup; place signed
+> `%ProgramData%\…\dlp\wdac\base-policy.cip` on Pro; restart DLP; Retry policy gate.
+>
+> - 2026-11-18: **DeviceAuth 401 spam + AppLocker verify_failed probe (2.7.5).**
+> DlpService `RefreshCredentials` prefers the live tracker SQLite device token over a
+> stale `device.auth` (policy/antivirus 401 while tracker sync still 200). Policy/AV
+> workers refresh credentials after 401. AppLocker verify uses System32 PowerShell and
+> treats Exe Enabled as success when `Test-AppLockerPolicy` throws. Client **VERSION
+> 2.7.5**. Rebuild Windows Setup; restart DLP; Retry the policy gate; ensure tracker is
+> logged in so SQLite has a device token.
+>
+> - 2026-11-18: **Publish `conn busy` + AppLocker gate trust canary (2.7.4).**
+> `ExpandEnabledAllowApps` no longer calls `ResolveCatalogApp` while a tx `rows`
+> cursor is open (pgx `conn busy` on auto-publish / `POST /dlp/rules/publish`).
+> AppLocker verify passes when Exe is Enabled and the deny canary is not Allowed —
+> registry DWORD heal is best-effort (PowerShell + managed write) and no longer
+> blocks the policy gate alone. Client **VERSION 2.7.4**. Restart API for publish
+> fix; rebuild Windows Setup; Retry the policy gate.
+>
+> - 2026-11-18: **AppLocker gate stuck after reinstall — EnforcementMode DWORD race.**
+> Apply order is now Set-AppLockerPolicy → assert Exe/Appx Enabled → AppIDSvc restart
+> once → write `SrpV2\*\EnforcementMode=1` → verify. Writing the DWORD *before* AppID
+> restart let the restart drop it, so the policy screen stayed on “not marked Enforcing
+> in the registry.” Heal rewrite no longer restarts AppID. `WriteEnforcementModeRegistry`
+> returns success/fail (`registry_write_failed`). Gate copy distinguishes
+> `still_notconfigured` / `set_policy_failed` / registry miss. Client **VERSION 2.7.3**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake); restart DLP; Retry
+> the policy gate (reboot once if AppLocker cache is still dirty).
+>
+> - 2026-11-17: **Strict shell-only apps + host-only browsing (2.7.1 / undocumented 2.7.2).**
+> AppLocker verify uses deny canary; shell-only Everyone bootstrap; AppProcessGuard kills
+> non-bootstrap WindowsApps; Bing host expand on allowlist. Client **VERSION 2.7.2**
+> shipped the first registry-heal attempt (DWORD before AppID — superseded by 2.7.3).
+>
+> - 2026-11-17: **Strict shell-only apps + host-only browsing.** AppLocker verify uses
+> fixed deny canary (`C:\AlphaAI-DLP-DenyCanary.exe`) so an allowlisted Task Manager no
+> longer sticks the policy gate on NOT_ENFORCING. Everyone bootstrap is Explorer /
+> Search/Start shell + OS survival + product only; winget / Desktop App Installer are
+> LocalSystem-only (fingerprint `v8`). `AppProcessGuard` kills non-bootstrap WindowsApps
+> (Store / Calculator / Edge packages) unless publish-allowed. Network stays total-
+> outbound Block; allowing Edge does not open the internet. Server auto-expands
+> related hosts on allowlist create/update and at Publish (Bing search CDN pack only —
+> not broad `microsoft.com`). Client **VERSION 2.7.1**. Installer-Parity: rebuild
+> Windows Setup (no `config.enc` re-bake); restart API for Bing expand; restart DLP
+> after install; Retry the policy gate.
+>
+> - 2026-11-17: **Production DLP hardening (fail-closed install + total outbound + WDAC/AppLocker + atomic policy).**
+> Installer migrates stale x86 SCM registrations, requires the LocalSystem Service payload,
+> verifies RUNNING under Program Files, and seeds plain-HTTP `ALPHA_SERVER_URL` (HTTPS bake
+> URLs rewritten). PolicyStore validates + transactionally replaces bundles and keeps
+> `policy.lkg.json`; malformed/hash-mismatch pulls never clear deny. Production profile
+> (`ALPHA_DLP_PRODUCTION_PROFILE`, default true) blocks Clear/pause/lockdown:false/
+> disabled park without a signed expiring `recovery.auth.json`. Network lockdown sets
+> Windows Firewall default outbound **Block** with explicit ALLOW for DHCP/NDP/NTP,
+> protective DNS (`ALPHA_DLP_PROTECTIVE_DNS`), system update hosts, and published
+> destinations; TCP killer closes non-allowlisted outbound sockets. AppLocker rejects
+> user-writable path allows, enforces Script (SYSTEM-only interpreters), and verifies
+> Task Manager is not Allowed (registry alone is insufficient). WDAC signed CIP deploy
+> when present (`%ProgramData%\…\dlp\wdac\`); managed launcher via
+> `client.exe --managed-launch`. Server Publish is transactional + hashed + complete-
+> bundle validated; allowlist mutations auto-publish; DeviceAuth
+> `POST /dlp/policy/ack` + migration **076**. Lab matrix: [`doc/dlp-windows-matrix.md`](doc/dlp-windows-matrix.md).
+> Client **VERSION 2.7.0**. Installer-Parity: re-bake `config.enc` (HTTP URL) + rebuild
+> Windows Setup; restart API for **076**; restart DLP service after install.
+>
+> - 2026-11-17: **Fail-closed blockers no longer wait for DeviceAuth (root cause of open web/apps).**
+> Lab PCs had zero `AlphaAI-DLP-LOCK-*` firewall rules and empty AppLocker enforce because
+> `ApplyLockdown` / `ApplyAppLockdown` required a device token and **Cleared** on
+> `no_device`. Default-deny now applies whenever `ALPHA_DLP_NETWORK_LOCKDOWN` /
+> `ALPHA_DLP_APP_BLOCK` (and delete / file-transfer) are on — missing token never clears.
+> Policy gate arms from local switches, not only credentials. Bootstrap unresolved still
+> leaves deny-all on and does not fail the network layer. `ALPHA_DLP_ENABLED` ship default
+> is true; `ALPHA_SERVER_URL` is seeded into `service.env` from bake/.env when absent.
+> Client **VERSION 2.6.13**. Installer-Parity: rebuild Windows Setup (no `config.enc`
+> re-bake). Restart the service after install.
+>
+> - 2026-11-17: **Production fail-closed lockdown — AppLocker-first UX + CDN TCP kill on apply.**
+> AppProcessGuard no longer toasts Windows / SystemApps / WindowsApps paths (Game Bar,
+> Xbox, LocationNotification, SecurityHealthHost); AppLocker Exe+Appx refuse-at-start
+> stays the primary block. Lockdown `Finish` always TCP-kills non-allowlisted 80/443
+> (including gate Retry when the fingerprint is unchanged). Policy-gate Retry wakes
+> enforce as well as pull. `GetEnforceStatus` failureCode names the layer (network /
+> dns / applocker); AV stays out of the gate; AppIDSvc idle is still not a failure.
+> Client **VERSION 2.6.12**. Installer-Parity: rebuild Windows Setup (no `config.enc`
+> re-bake). Restart the service.
+>
+> - 2026-11-17: **Empty web policy is not a failure while lockdown allow pins are in hosts.**
+> The policy screen showed `web: ... hosts=already_applied; fw=fw_empty` and stayed there.
+> `HasLeftoverOsArtifacts` treated `# AlphaAI-DLP-ALLOW` as a web-block leftover because
+> it contains `# AlphaAI-DLP`. The allow pin is ignored. A real `# AlphaAI-DLP-BEGIN`
+> deny block is still a leftover. Client **VERSION 2.6.11**. Installer-Parity: rebuild
+> Windows Setup (no `config.enc` re-bake). Restart the service.
+>
+> - 2026-11-17: **AppLocker enforce is read from the registry, not from AppIDSvc being Running.**
+> The policy screen stayed on "Application Identity is not enforcing" because the
+> PowerShell probe did not return the old `taskmgr_denied` text, and a Stopped
+> trigger-start service was still treated as failure. Verify now passes when
+> `SrpV2\Exe\EnforcementMode` is 1. The screen names the real miss (no policy,
+> Task Manager still allowed, or mode not Enforcing). Client **VERSION 2.6.10**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake). Restart the service.
+>
+> - 2026-11-17: **AppIDSvc idle is not a failed enforce, and Windows Security is not a blocked app.**
+> Application Identity is trigger-start and sits Stopped until the next process create.
+> The policy screen treated that idle state as `NOT_ENFORCING` and the backup killer then
+> popped "SecurityHealthHost is blocked". Verify now passes when the Exe collection is
+> Enabled and Task Manager is not Allowed. Processes under the Windows directory are not
+> killed or dialoged. powershell, cmd, Settings, and the Windows Security UI still are.
+> Client **VERSION 2.6.9**. Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake).
+> Restart the service.
+>
+> - 2026-11-17: **Tracker package tools are allowed; a manual open is still killed.**
+> `winget list` (package inventory) was default-denied. AppLocker now allows the
+> Desktop App Installer package (`winget.exe`, `WindowsPackageManagerServer.exe`,
+> `AppInstaller.exe`, per-user WindowsApps aliases) plus Chocolatey and `WMIC`.
+> The backup killer keeps any process whose parent chain is `client` or
+> `AlphaAITracker.Service`, and still kills Explorer / Start / Search launches.
+> powershell.exe and cmd.exe stay LocalSystem-only. Client **VERSION 2.6.8**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake). Restart the service.
+>
+> - 2026-11-17: **AppLocker verify no longer sticks on a false NOT_ENFORCING.**
+> `Test-AppLockerPolicy -Filter Denied` returns nothing for an implicit deny, so the
+> policy screen never cleared and the backup killer popped "LocationNotificationWindows
+> is blocked" for a Windows component. Verify now reads `PolicyDecision` plus
+> AppIDSvc running, and `sc.exe` starts AppIDSvc. Windows-directory processes are not
+> killed or dialoged. powershell/cmd opened by hand still are. Client **VERSION 2.6.7**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake). Restart the service.
+>
+> - 2026-11-17: **PowerShell the tracker starts is kept; a manual open is still blocked.**
+> The backup killer treated every user-session `powershell` as a person opening it, so the
+> policy screen showed "powershell is blocked" for the tracker's own helper. Session 0 and
+> any PowerShell whose parent chain is `client` or `AlphaAITracker.Service` stays up and
+> does not raise that dialog. Explorer, Search, Start menu, and Windows Terminal launches
+> are still killed. AppLocker still allows `powershell.exe` only for LocalSystem, so a
+> double-click never starts once enforce is on. Client **VERSION 2.6.6**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake).
+>
+> - 2026-11-17: **Policy pipe write no longer hangs.** The tracker was connecting to
+> `AlphaAITracker.Dlp` and then stopping on `WriteAsync` (`write_timeout`), so the
+> policy screen never saw enforce status. The request and reply are now a synchronous
+> pipe exchange, and the service pipe buffer is 64 KB. Authenticated Users may query
+> the service (`LC` only) — `OpenService` was error 5, so the screen could not see
+> that the service was running. They still cannot stop it. Client **VERSION 2.6.5**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake). Restart the service.
+>
+> - 2026-11-17: **Policy screen no longer says the service is stopped when it is running.**
+> The pipe opens before `dlp.db`, so a locked database cannot leave
+> `AlphaAITracker.Service` Running with nothing to connect to. Client pipe
+> rights include Synchronize (access denied looked like "not running"). The
+> window shows the real pipe error and the SCM state. Client **VERSION 2.6.4**.
+> Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake). Restart
+> the service after install.
 >
 > - 2026-11-17: **Face enroll false `worker_error` after success.** Go `NotifyWorker`
 > waited only 5s while buffalo_l ran longer → socket abort → face_worker treated the

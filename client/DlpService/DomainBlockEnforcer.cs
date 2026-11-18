@@ -16,8 +16,8 @@ namespace AlphaAITracker.Service;
 /// 1) hosts DNS sink (A+AAAA → loopback) with <c># AlphaAI-DLP</c> markers
 /// 2) Windows: outbound firewall <c>AlphaAI-DLP-*</c> (+ lockdown <c>AlphaAI-DLP-LOCK-*</c>)
 ///    + DNS flush; Linux: nftables inet drop-set for resolved CDN/apex IPs
-/// No Chrome/Edge HKLM URL policy writes — allow/deny is network + hosts for every app.
-/// Legacy Chromium policy keys are only cleared so old installs self-heal.
+/// No Chromium URLAllowlist writes (Phase 2). Under lockdown, DnsOverHttpsMode=off and
+/// QuicAllowed=0 are set for Chrome, Edge, Brave, and Chromium. URL lists stay cleared.
 /// Requires LocalSystem / root.
 /// </summary>
 internal static class DomainBlockEnforcer
@@ -31,7 +31,8 @@ internal static class DomainBlockEnforcer
     public const string AllowEndMarker = "# AlphaAI-DLP-ALLOW-END";
     public const string AllowLineMarker = "# AlphaAI-DLP-ALLOW";
 
-    // Historical HKLM roots we once wrote (URLBlocklist / DoH / Quic). Cleanup only — not detection.
+    // Chromium policy roots. URLAllowlist is never written. DoH/QUIC are set only while
+    // lockdown is on, and removed when lockdown is cleared.
     private static readonly (string Policy, string UrlBlock, string UrlAllow)[] LegacyChromiumPolicyRoots =
     {
         (@"SOFTWARE\Policies\Google\Chrome",
@@ -40,6 +41,12 @@ internal static class DomainBlockEnforcer
         (@"SOFTWARE\Policies\Microsoft\Edge",
             @"SOFTWARE\Policies\Microsoft\Edge\URLBlocklist",
             @"SOFTWARE\Policies\Microsoft\Edge\URLAllowlist"),
+        (@"SOFTWARE\Policies\BraveSoftware\Brave",
+            @"SOFTWARE\Policies\BraveSoftware\Brave\URLBlocklist",
+            @"SOFTWARE\Policies\BraveSoftware\Brave\URLAllowlist"),
+        (@"SOFTWARE\Policies\Chromium",
+            @"SOFTWARE\Policies\Chromium\URLBlocklist",
+            @"SOFTWARE\Policies\Chromium\URLAllowlist"),
     };
 
     /// <summary>How long resolved A/AAAA stay cached before a background refresh.</summary>
@@ -140,8 +147,11 @@ internal static class DomainBlockEnforcer
             return new Result(false, desired.Count, 0, fwResult.Detail);
         }
 
-        _ = lockdownAllowHosts; // lockdown allow set is applied by LockdownNetworkEnforcer
-        var browserClear = ClearLegacyChromiumPolicyArtifacts();
+        // lockdown allow set is applied by LockdownNetworkEnforcer. While lockdown is on,
+        // force DoH/QUIC off. Do not restore URLAllowlist.
+        var browserClear = lockdownAllowHosts is not null
+            ? ApplyChromiumTransportLockdown()
+            : ClearLegacyChromiumPolicyArtifacts();
         var tcpKilled = 0;
         if (desired.Count > 0 && !fwResult.Detail.StartsWith("access_denied", StringComparison.Ordinal))
             tcpKilled = KillEstablishedTcp(desired);
@@ -237,13 +247,8 @@ internal static class DomainBlockEnforcer
 
         try
         {
-            if (File.Exists(HostsPath))
-            {
-                var content = File.ReadAllText(HostsPath);
-                if (content.Contains(BeginMarker, StringComparison.OrdinalIgnoreCase) ||
-                    content.Contains(MarkerPrefix, StringComparison.OrdinalIgnoreCase))
-                    return true;
-            }
+            if (File.Exists(HostsPath) && HostsFileHasWebBlockLines(File.ReadAllText(HostsPath)))
+                return true;
         }
         catch
         {
@@ -348,9 +353,22 @@ internal static class DomainBlockEnforcer
                 return set;
             var content = File.ReadAllText(HostsPath);
             var inBlock = false;
+            var inAllow = false;
             foreach (var rawLine in content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
             {
                 var t = rawLine.Trim();
+                if (t.Equals(AllowBeginMarker, StringComparison.OrdinalIgnoreCase))
+                {
+                    inAllow = true;
+                    continue;
+                }
+                if (t.Equals(AllowEndMarker, StringComparison.OrdinalIgnoreCase))
+                {
+                    inAllow = false;
+                    continue;
+                }
+                if (inAllow || t.Contains(AllowLineMarker, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 if (t.Equals(BeginMarker, StringComparison.OrdinalIgnoreCase))
                 {
                     inBlock = true;
@@ -361,7 +379,7 @@ internal static class DomainBlockEnforcer
                     inBlock = false;
                     continue;
                 }
-                if (!inBlock && !t.Contains(MarkerPrefix, StringComparison.OrdinalIgnoreCase))
+                if (!inBlock && !IsWebBlockMarkerLine(t))
                     continue;
                 // "127.0.0.1 host # AlphaAI-DLP" or "::1 host # AlphaAI-DLP"
                 var parts = t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
@@ -380,6 +398,38 @@ internal static class DomainBlockEnforcer
         }
         return set;
     }
+
+    /// <summary>
+    /// True when the hosts file still has a web-block deny entry. The lockdown allow
+    /// pin (<c># AlphaAI-DLP-ALLOW</c>) contains <c># AlphaAI-DLP</c> and is not a leftover.
+    /// </summary>
+    private static bool HostsFileHasWebBlockLines(string content)
+    {
+        var inAllow = false;
+        foreach (var rawLine in content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            var t = rawLine.Trim();
+            if (t.Equals(AllowBeginMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                inAllow = true;
+                continue;
+            }
+            if (t.Equals(AllowEndMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                inAllow = false;
+                continue;
+            }
+            if (inAllow || t.Contains(AllowLineMarker, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (t.Equals(BeginMarker, StringComparison.OrdinalIgnoreCase) || IsWebBlockMarkerLine(t))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool IsWebBlockMarkerLine(string line) =>
+        line.Contains(MarkerPrefix, StringComparison.OrdinalIgnoreCase)
+        && !line.Contains("AlphaAI-DLP-ALLOW", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// While the domain set is unchanged, periodically refresh CDN IPs and patch firewall
@@ -1027,9 +1077,74 @@ internal static class DomainBlockEnforcer
     }
 
     /// <summary>
-    /// Clears Chromium HKLM URL/DoH/Quic leftovers from older builds. Web allow/deny is
-    /// hosts + AdvFirewall only (all browsers / all apps). Failures surface so EnforceWorker
-    /// does not fingerprint-advance.
+    /// Lockdown-only: DnsOverHttpsMode=off and QuicAllowed=0. Does not create URLAllowlist.
+    /// Stale URL block/allow lists are deleted so an old allowlist cannot remain.
+    /// </summary>
+    public static Result ApplyChromiumTransportLockdown()
+    {
+        if (!OperatingSystem.IsWindows())
+            return new Result(false, 0, 0, "unsupported_os");
+        try
+        {
+            var changed = false;
+            foreach (var root in LegacyChromiumPolicyRoots)
+            {
+                changed |= ClearUrlList(root.UrlBlock);
+                changed |= ClearUrlList(root.UrlAllow);
+                using var key = Registry.LocalMachine.CreateSubKey(root.Policy);
+                if (key is null)
+                    return new Result(false, 0, 0, "browser_error:no_key");
+                if (key.GetValue("DnsOverHttpsMode") as string != "off")
+                {
+                    key.SetValue("DnsOverHttpsMode", "off", RegistryValueKind.String);
+                    changed = true;
+                }
+                if (key.GetValue("QuicAllowed") is not int quic || quic != 0)
+                {
+                    key.SetValue("QuicAllowed", 0, RegistryValueKind.DWord);
+                    changed = true;
+                }
+            }
+            return new Result(changed, LegacyChromiumPolicyRoots.Length, LegacyChromiumPolicyRoots.Length,
+                changed ? "chromium_doh_quic_off" : "chromium_doh_quic_fresh");
+        }
+        catch (Exception ex) when (IsAccessDenied(ex))
+        {
+            return new Result(false, 0, 0, "access_denied_need_admin");
+        }
+        catch (Exception ex)
+        {
+            return new Result(false, 0, 0, "browser_error:" + ex.Message);
+        }
+    }
+
+    /// <summary>Removes only the DoH/QUIC values this product set, when lockdown is cleared.</summary>
+    public static void ClearChromiumTransportLockdown()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        foreach (var root in LegacyChromiumPolicyRoots)
+        {
+            try
+            {
+                using var key = Registry.LocalMachine.OpenSubKey(root.Policy, writable: true);
+                if (key is null)
+                    continue;
+                if (key.GetValue("DnsOverHttpsMode") as string == "off")
+                    key.DeleteValue("DnsOverHttpsMode", throwOnMissingValue: false);
+                if (key.GetValue("QuicAllowed") is int quic && quic == 0)
+                    key.DeleteValue("QuicAllowed", throwOnMissingValue: false);
+            }
+            catch
+            {
+                /* best-effort on clear */
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clears Chromium HKLM URL/DoH/Quic leftovers when lockdown is off.
+    /// Failures surface so EnforceWorker does not fingerprint-advance.
     /// </summary>
     private static Result ClearLegacyChromiumPolicyArtifacts()
     {
