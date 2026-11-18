@@ -71,11 +71,26 @@ internal static class AppProcessGuard
                     if (string.IsNullOrWhiteSpace(path) && !interactiveDenied)
                         continue;
 
+                    // Anything the tracker or the service started (winget, its helper
+                    // processes, the product's own PowerShell) stays up. A Start-menu
+                    // or Explorer launch has no product parent and is still killed.
+                    if (sessionId == 0 || IsOwnedByProduct(proc.Id))
+                        continue;
+
+                    // Spare Windows System32 / SystemApps and bootstrap shell Appx only.
+                    // Store / Calculator / Edge packages under WindowsApps are killed
+                    // unless already matched by allow.apps above.
+                    if (!IsDeniedInteractiveName(name) && IsWindowsComponent(path, name))
+                        continue;
+
                     try
                     {
                         proc.Kill(entireProcessTree: true);
                         killed++;
-                        onKilled?.Invoke(name, path ?? name);
+                        // Product dialog only for clear user EXEs (shells / Settings /
+                        // non-Windows paths). Never for Windows component leftovers.
+                        if (ShouldRaiseBlockNotice(path, name))
+                            onKilled?.Invoke(name, path ?? name);
                         if (examples.Count < 8)
                             examples.Add($"{name}:{path ?? "?"}");
                     }
@@ -259,6 +274,182 @@ internal static class AppProcessGuard
         return false;
     }
 
+    /// <summary>
+    /// True when the backup killer may show the product allowlist dialog. False for
+    /// Windows System32 / bootstrap shell Appx. Store / Calculator under WindowsApps
+    /// may raise a notice when killed (strict shell-only).
+    /// </summary>
+    internal static bool ShouldRaiseBlockNotice(string? path, string processName)
+    {
+        if (IsWindowsComponent(path, processName))
+            return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Processes under the Windows directory / SystemApps, plus bootstrap shell Appx
+    /// under WindowsApps. Store / Calculator / Edge / Xbox packages are NOT spared —
+    /// AppLocker denies new launches; this killer removes already-running ones unless
+    /// the path is on published allow.apps (checked before this call).
+    /// </summary>
+    private static bool IsWindowsComponent(string? path, string processName)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            var windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (!string.IsNullOrEmpty(windir))
+            {
+                var root = windir.TrimEnd('\\') + "\\";
+                if (path.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            // Spare only bootstrap shell Appx (Start/Search/Lock). Kill Store/Calculator/etc.
+            if (IsUnderWindowsApps(path))
+                return IsBootstrapWindowsAppsPackage(path);
+        }
+
+        return processName.Equals("LocationNotificationWindows", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("LockApp", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("StartMenuExperienceHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("ShellExperienceHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("SearchApp", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("SearchHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("TextInputHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("SecurityHealthHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("SecurityHealthSystray", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// True when a WindowsApps path belongs to a bootstrap shell Appx product family.
+    /// </summary>
+    internal static bool IsBootstrapWindowsAppsPackage(string path)
+    {
+        foreach (var product in AppAllowEnforcer.BootstrapAppxProductNames)
+        {
+            if (string.IsNullOrWhiteSpace(product))
+                continue;
+            // ...\WindowsApps\Microsoft.Windows.Search_cw5n1h2txyewy\...
+            if (path.Contains("\\" + product + "_", StringComparison.OrdinalIgnoreCase)
+                || path.Contains("\\" + product + "\\", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>Store package root under either Program Files tree.</summary>
+    private static bool IsUnderWindowsApps(string path)
+    {
+        var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (!string.IsNullOrEmpty(pf))
+        {
+            var root = Path.Combine(pf.TrimEnd('\\'), "WindowsApps") + "\\";
+            if (path.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        if (!string.IsNullOrEmpty(pf86)
+            && !string.Equals(pf, pf86, StringComparison.OrdinalIgnoreCase))
+        {
+            var root = Path.Combine(pf86.TrimEnd('\\'), "WindowsApps") + "\\";
+            if (path.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        // Some builds report \\?\ or short paths; also match the folder segment.
+        return path.Contains("\\WindowsApps\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsProductProcessName(string processName)
+    {
+        if (processName.Equals(ServiceIdentity.ExecutableName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (processName.Equals("client", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (processName.Equals(ServiceIdentity.ServiceName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (processName.Equals("AlphaAITracker.Service", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
+    /// <summary>Start menu, Explorer, and Search. A shell under one of these was opened by hand.</summary>
+    private static bool IsManualShellParent(string processName)
+    {
+        return processName.Equals("explorer", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("SearchHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("SearchApp", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("StartMenuExperienceHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("ShellExperienceHost", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("OpenWith", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("WindowsTerminal", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("wt", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// True when this process was started by the tracker or the service
+    /// (parent, or a parent further up, is the product).
+    /// </summary>
+    private static bool IsOwnedByProduct(int pid)
+    {
+        var current = pid;
+        var seen = new HashSet<int>();
+        for (var depth = 0; depth < 8; depth++)
+        {
+            if (!seen.Add(current))
+                return false;
+            var parent = ParentPid(current);
+            if (parent <= 4)
+                return false;
+            var parentName = ProcessNameFromPid(parent);
+            if (string.IsNullOrEmpty(parentName))
+                return false;
+            if (IsProductProcessName(parentName))
+                return true;
+            if (IsManualShellParent(parentName))
+                return false;
+            current = parent;
+        }
+        return false;
+    }
+
+    private static string? ProcessNameFromPid(int pid)
+    {
+        var path = TryGetProcessImagePath(pid);
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+        try
+        {
+            return Path.GetFileNameWithoutExtension(path);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static int ParentPid(int pid)
+    {
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
+        if (handle == IntPtr.Zero)
+            return 0;
+        try
+        {
+            var info = new ProcessBasicInformation();
+            var len = Marshal.SizeOf<ProcessBasicInformation>();
+            var status = NtQueryInformationProcess(handle, 0, ref info, len, out _);
+            if (status != 0)
+                return 0;
+            var parent = info.InheritedFromUniqueProcessId.ToInt64();
+            if (parent <= 0 || parent > int.MaxValue)
+                return 0;
+            return (int)parent;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
     private static int SafeSessionId(Process proc)
     {
         try { return proc.SessionId; }
@@ -291,6 +482,25 @@ internal static class AppProcessGuard
             return value + path[macro.Length..];
         return path;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessBasicInformation
+    {
+        public IntPtr Reserved1;
+        public IntPtr PebBaseAddress;
+        public IntPtr Reserved2_0;
+        public IntPtr Reserved2_1;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(
+        IntPtr processHandle,
+        int processInformationClass,
+        ref ProcessBasicInformation processInformation,
+        int processInformationLength,
+        out int returnLength);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(uint processAccess, bool inheritHandle, uint processId);

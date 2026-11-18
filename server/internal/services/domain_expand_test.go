@@ -21,6 +21,27 @@ func TestExpandRelatedDomainsYouTube(t *testing.T) {
 	}
 }
 
+func TestExpandRelatedDomainsBingSearchPack(t *testing.T) {
+	got := ExpandRelatedDomains([]string{"bing.com"})
+	need := []string{
+		"bing.com", "www.bing.com", "m.bing.com", "th.bing.com",
+		"c.bing.com", "bingapis.com", "serp.bing.com",
+	}
+	have := map[string]bool{}
+	for _, d := range got {
+		have[d] = true
+		// Must not open broad Microsoft surface from Bing alone.
+		if d == "microsoft.com" || d == "live.com" || d == "office.com" || d == "azure.com" {
+			t.Fatalf("bing expand must not include broad Microsoft host %q", d)
+		}
+	}
+	for _, d := range need {
+		if !have[d] {
+			t.Fatalf("missing %q in %v", d, got)
+		}
+	}
+}
+
 func TestExpandRelatedDomainsUnknownGetsWwwM(t *testing.T) {
 	got := ExpandRelatedDomains([]string{"acme-widgets.example"})
 	have := map[string]bool{}

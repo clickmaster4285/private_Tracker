@@ -1,9 +1,11 @@
 namespace AlphaAITracker.Service;
 
 /// <summary>
-/// Backup only while AppLocker verify is not enforcing. Polls user processes and
-/// kills anything outside bootstrap + allow.apps, then records one block notice
-/// for the tracker dialog. Stays idle once <c>verify=enforcing</c>.
+/// Backup only while AppLocker verify is not enforcing. AppLocker (Exe + Appx) is
+/// the production refuse-at-start path; this watcher only kills clear user EXEs
+/// outside bootstrap + allow.apps and may raise one product dialog. Windows /
+/// SystemApps / WindowsApps paths are never toasted. Idle once
+/// <c>verify=enforcing</c>.
 /// </summary>
 public sealed class AppLaunchWatcher : BackgroundService
 {

@@ -65,8 +65,11 @@ public sealed class NamedPipeHost : BackgroundService
             return;
         }
 
+        // Listen before the database opens. A locked dlp.db used to keep this
+        // process Running in Services while the pipe did not exist, and the
+        // tracker reported "service is not running."
         if (_cfg.Enabled)
-            await _store.InitializeAsync(stoppingToken);
+            _ = InitializeStoreInBackground(stoppingToken);
         else
             _logger.LogInformation(
                 "NamedPipeHost listening for update IPC (ALPHA_DLP_ENABLED=false)");
@@ -85,7 +88,9 @@ public sealed class NamedPipeHost : BackgroundService
                 // LocalSystem default pipe ACL denies interactive users — CLI
                 // AuthorizeTeardown / ApplyTeardownGate would get Access Denied.
                 var server = CreatePipeServer(_cfg.PipeName, maxConcurrent);
-                _ = Task.Run(async () =>
+                // LongRunning: AppLocker PowerShell must not starve the shared pool used by
+                // GetEnforceStatus while Set-AppLockerPolicy runs on EnforceWorker.
+                _ = Task.Factory.StartNew(async () =>
                 {
                     try
                     {
@@ -105,7 +110,7 @@ public sealed class NamedPipeHost : BackgroundService
                         try { await server.DisposeAsync(); } catch { /* ignore */ }
                         try { slot.Release(); } catch { /* ignore */ }
                     }
-                }, CancellationToken.None);
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -113,9 +118,44 @@ public sealed class NamedPipeHost : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Named pipe accept loop error");
+                _logger.LogWarning(ex, "Named pipe accept loop error on {Pipe}", _cfg.PipeName);
                 try { slot.Release(); } catch { /* ignore */ }
                 try { await Task.Delay(500, stoppingToken); } catch { /* ignore */ }
+            }
+        }
+    }
+
+    private async Task InitializeStoreInBackground(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                using var openBudget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                openBudget.CancelAfter(TimeSpan.FromSeconds(15));
+                try
+                {
+                    await _store.InitializeAsync(openBudget.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning("Policy store did not open within 15s; pipe stays up");
+                    EnforceStatus.Shared.NoteStoreFailed("dlp.db did not open within 15 seconds");
+                    await _store.InitializeAsync(ct);
+                }
+                _logger.LogInformation("Policy store ready");
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Policy store init failed; pipe stays open and will retry");
+                EnforceStatus.Shared.NoteStoreFailed(ex.Message);
+                try { await Task.Delay(TimeSpan.FromSeconds(2), ct); }
+                catch (OperationCanceledException) { return; }
             }
         }
     }
@@ -139,19 +179,30 @@ public sealed class NamedPipeHost : BackgroundService
             new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
             PipeAccessRights.FullControl,
             AccessControlType.Allow));
+        // Synchronize is required. Without it CreateFile on the pipe returns
+        // access denied even though the service process is running.
+        var clientRights = PipeAccessRights.ReadWrite
+            | PipeAccessRights.CreateNewInstance
+            | PipeAccessRights.Synchronize;
         security.AddAccessRule(new PipeAccessRule(
             new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
-            PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
+            clientRights,
+            AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+            clientRights,
             AccessControlType.Allow));
 
+        // A full request line must fit without the server already reading.
+        // A zero buffer makes the client's write wait forever (write_timeout).
         return NamedPipeServerStreamAcl.Create(
             pipeName,
             PipeDirection.InOut,
             maxNumberOfServerInstances: maxInstances,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous,
-            inBufferSize: 0,
-            outBufferSize: 0,
+            inBufferSize: 64 * 1024,
+            outBufferSize: 64 * 1024,
             security);
     }
 
@@ -244,16 +295,13 @@ public sealed class NamedPipeHost : BackgroundService
 
     private async Task HandleClientAsync(NamedPipeServerStream server, CancellationToken ct)
     {
-        using var reader = new StreamReader(server, Encoding.UTF8, leaveOpen: true);
-        await using var writer = new StreamWriter(server, Encoding.UTF8, leaveOpen: true) { AutoFlush = true };
-
         // Bound read so an abandoned client cannot hold a pipe instance forever.
         using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         readCts.CancelAfter(TimeSpan.FromSeconds(20));
         string? line;
         try
         {
-            line = await reader.ReadLineAsync(readCts.Token);
+            line = await ReadPipeLineAsync(server, readCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -262,7 +310,36 @@ public sealed class NamedPipeHost : BackgroundService
         if (string.IsNullOrWhiteSpace(line)) return;
 
         var response = await DispatchLineAsync(line, server, ct);
-        await writer.WriteLineAsync(response.AsMemory(), ct);
+        var bytes = Encoding.UTF8.GetBytes(response + "\n");
+        try
+        {
+            // Synchronous write fills the outbound buffer. WriteAsync here deadlocks
+            // with the tracker's read the same way the client write used to.
+            server.Write(bytes, 0, bytes.Length);
+            server.Flush();
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            /* client gave up */
+        }
+    }
+
+    private static async Task<string?> ReadPipeLineAsync(NamedPipeServerStream server, CancellationToken ct)
+    {
+        var buffer = new byte[1];
+        var sb = new StringBuilder(256);
+        while (sb.Length < 64_000)
+        {
+            var n = await server.ReadAsync(buffer.AsMemory(0, 1), ct);
+            if (n <= 0)
+                return sb.Length > 0 ? sb.ToString() : null;
+            var ch = (char)buffer[0];
+            if (ch == '\n')
+                return sb.ToString().TrimEnd('\r');
+            if (ch != '\r')
+                sb.Append(ch);
+        }
+        return sb.ToString();
     }
 
     private async Task<string> DispatchLineAsync(
@@ -298,10 +375,15 @@ public sealed class NamedPipeHost : BackgroundService
         }
     }
 
-    /// <summary>Server pushed "policy_changed" (via the tracker's WebSocket) — pull now.</summary>
+    /// <summary>
+    /// Server pushed "policy_changed", or the policy-gate Retry button. Pull now and
+    /// wake Enforce so blockers re-apply (TCP-kill CDN sockets) even when the
+    /// published version is unchanged.
+    /// </summary>
     private static string RequestPolicyPullJson()
     {
         DlpSignals.RequestPull();
+        DlpSignals.RequestEnforce();
         return JsonSerializer.Serialize(new { ok = true, queued = true });
     }
 

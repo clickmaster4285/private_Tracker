@@ -6,14 +6,34 @@ namespace client.Services;
 /// <summary>
 /// Full-screen gate after login. Stays up until the security service reports every
 /// blocker enforcing. When a post-login reboot is armed, it stays up through the restart.
+/// Lab / local development: set <c>ALPHA_DLP_POLICY_GATE=false</c> to skip the UI
+/// (DLP service enforcement is unchanged). Ship default is on.
 /// </summary>
 public static class PolicyGate
 {
+    /// <summary>
+    /// Ship default ON. <c>false</c> / <c>0</c> skips the topmost gate window only.
+    /// </summary>
+    public static bool IsEnabled
+    {
+        get
+        {
+            var raw = Environment.GetEnvironmentVariable("ALPHA_DLP_POLICY_GATE");
+            if (string.IsNullOrWhiteSpace(raw))
+                return true;
+            return raw is not ("0" or "false" or "False" or "FALSE");
+        }
+    }
+
     public static Task WaitAsync(CancellationToken ct = default)
     {
-        AppBlockNotice.Start();
-        if (!OperatingSystem.IsWindows())
+        // Defer AppBlockNotice until the gate closes — competing GetEnforceStatus
+        // calls starve the pipe during AppLocker Apply and caused false pipe_timeout.
+        if (!OperatingSystem.IsWindows() || !IsEnabled)
+        {
+            AppBlockNotice.Start();
             return Task.CompletedTask;
+        }
 
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
@@ -28,6 +48,10 @@ public static class PolicyGate
             catch (Exception ex)
             {
                 tcs.TrySetException(ex);
+            }
+            finally
+            {
+                AppBlockNotice.Start();
             }
         });
         thread.IsBackground = true;
@@ -188,31 +212,124 @@ internal static class PolicyGateForm
             {
                 if (_ct.IsCancellationRequested)
                 {
-                    CloseReady();
+                    Post(CloseReady);
                     return;
                 }
 
-                var (connected, body) = await DlpPipeClient.SendAsync(
-                    new { op = "GetEnforceStatus" },
-                    connectTimeoutMs: 2000,
-                    responseTimeoutMs: 4000);
-
-                if (!connected || string.IsNullOrWhiteSpace(body))
+                DlpPipeClient.PipeCallResult call;
+                try
                 {
-                    ShowFailed(
-                        "The security service is not running. Start " + AppInfo.WindowsServiceName +
-                        ", then choose Retry.");
-                    return;
+                    // Longer response budget while Applying — never treat timeout as Enforcing.
+                    call = await DlpPipeClient.SendDetailedAsync(
+                        new { op = "GetEnforceStatus" },
+                        pipeName: AppInfo.WindowsDlpPipeName,
+                        connectTimeoutMs: 4000,
+                        responseTimeoutMs: 20_000);
+                }
+                catch (Exception ex)
+                {
+                    call = new DlpPipeClient.PipeCallResult(false, false, "", ex.Message);
                 }
 
-                using var doc = JsonDocument.Parse(body);
+                var scm = "unknown";
+                try
+                {
+                    scm = WindowsScmNative.QueryServiceState(AppInfo.WindowsServiceName);
+                }
+                catch
+                {
+                    scm = "query_failed";
+                }
+
+                Post(() => ApplyCall(call, scm));
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pollBusy, 0);
+            }
+        }
+
+        /// <summary>Runs on the window thread. A thrown UI update must not be relabeled.</summary>
+        private void Post(Action action)
+        {
+            try
+            {
+                if (IsDisposed || !IsHandleCreated)
+                    return;
+                if (InvokeRequired)
+                    BeginInvoke(action);
+                else
+                    action();
+            }
+            catch (InvalidOperationException)
+            {
+                /* closing */
+            }
+        }
+
+        private void ApplyCall(DlpPipeClient.PipeCallResult call, string scm)
+        {
+            // pipe_timeout is NEVER Enforcing. While the service is RUNNING, stay on
+            // Applying and keep polling — do not auto-close the desktop.
+            if (call.TimedOut ||
+                (!call.Connected && string.Equals(call.Error, "pipe_timeout", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (scm is "RUNNING" or "START_PENDING" or "CONTINUE_PENDING")
+                {
+                    _title.Text = "Applying security policy";
+                    _body.Text = "Waiting for " + AppInfo.WindowsServiceName +
+                                 " (pipe busy). This screen stays until blocking is verified.";
+                    _solution.Visible = false;
+                    _retry.Visible = false;
+                    Cursor = System.Windows.Forms.Cursors.WaitCursor;
+                    return;
+                }
+                ShowFailed(PipeProblem(call, scm));
+                return;
+            }
+
+            if (!call.Connected || string.IsNullOrWhiteSpace(call.Body))
+            {
+                ShowFailed(PipeProblem(call, scm));
+                return;
+            }
+
+            JsonDocument doc;
+            try
+            {
+                doc = JsonDocument.Parse(call.Body);
+            }
+            catch (Exception ex)
+            {
+                ShowFailed(ServiceIsRunning(scm)
+                    + " The reply was not valid (" + ex.Message + ").");
+                return;
+            }
+
+            using (doc)
+            {
                 var root = doc.RootElement;
-                if (root.TryGetProperty("error", out var err) &&
-                    err.GetString() is "dlp_disabled")
+                var error = root.TryGetProperty("error", out var errEl) &&
+                            errEl.ValueKind == JsonValueKind.String
+                    ? errEl.GetString() ?? ""
+                    : "";
+                if (error == "dlp_disabled")
                 {
                     ShowFailed(
                         "Security policy is switched off (ALPHA_DLP_ENABLED). Turn it on and restart " +
                         AppInfo.WindowsServiceName + ".");
+                    return;
+                }
+                if (error == "unknown_op")
+                {
+                    ShowFailed(
+                        AppInfo.WindowsServiceName +
+                        " is running, but it is an older build and does not report policy status. Reinstall the current setup.");
+                    return;
+                }
+                if (error.Length > 0 && !root.TryGetProperty("phase", out _))
+                {
+                    ShowFailed(ServiceIsRunning(scm) + " Pipe error: " + error + ".");
                     return;
                 }
 
@@ -250,10 +367,31 @@ internal static class PolicyGateForm
                     return;
                 }
 
+                if (phase == "recovery_required")
+                {
+                    _title.Text = "Recovery required";
+                    _body.Text = "Blocking stays on. This screen does not close.";
+                    ShowSolution(string.IsNullOrWhiteSpace(solution)
+                        ? "A valid single-use recovery authorization is required to turn blocking off, or Secure Boot must be on before signed policy tamper resistance can be claimed."
+                        : solution);
+                    Cursor = System.Windows.Forms.Cursors.Default;
+                    return;
+                }
+
+                if (phase == "verifying")
+                {
+                    _title.Text = "Verifying security policy";
+                    _body.Text = "Checking the firewall, network, and application control. This screen stays until those checks pass.";
+                    _solution.Visible = false;
+                    _retry.Visible = false;
+                    Cursor = System.Windows.Forms.Cursors.WaitCursor;
+                    return;
+                }
+
                 if (phase == "failed")
                 {
                     _title.Text = "Security policy did not apply";
-                    _body.Text = "Blocking is not on yet. Fix the problem below, then choose Retry.";
+                    _body.Text = "Blocking is not verified. Fix the problem below, then choose Retry.";
                     ShowSolution(string.IsNullOrWhiteSpace(solution)
                         ? "Choose Retry. If it keeps failing, restart " + AppInfo.WindowsServiceName + "."
                         : solution);
@@ -267,17 +405,32 @@ internal static class PolicyGateForm
                 _retry.Visible = false;
                 Cursor = System.Windows.Forms.Cursors.WaitCursor;
             }
-            catch
-            {
-                ShowFailed(
-                    "The security service is not running. Start " + AppInfo.WindowsServiceName +
-                    ", then choose Retry.");
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _pollBusy, 0);
-            }
         }
+
+        private static string PipeProblem(DlpPipeClient.PipeCallResult call, string scm)
+        {
+            var err = string.IsNullOrWhiteSpace(call.Error) ? "no reply" : call.Error;
+            var pipe = AppInfo.WindowsDlpPipeName;
+            var svc = AppInfo.WindowsServiceName;
+            if (scm == "RUNNING")
+                return svc + " is running, but this window cannot reach pipe " + pipe +
+                       " (" + err + "). Restart the service.";
+            if (scm.Contains("OpenService:5", StringComparison.Ordinal))
+                return "Cannot reach pipe " + pipe + " (" + err + "). " +
+                       "Windows denied a status check for this account (access denied).";
+            if (scm is "STOPPED" or "STOP_PENDING")
+                return svc + " is stopped, so blocking cannot be applied (" + err + ").";
+            if (scm == "absent")
+                return svc + " is not installed. Run the Windows setup again.";
+            if (scm is "START_PENDING" or "CONTINUE_PENDING")
+                return svc + " is still starting. This window will keep trying (" + err + ").";
+            return "Cannot reach pipe " + pipe + " (" + err + "). Service status: " + scm + ".";
+        }
+
+        private static string ServiceIsRunning(string scm) =>
+            scm == "RUNNING"
+                ? AppInfo.WindowsServiceName + " is running."
+                : AppInfo.WindowsServiceName + " status: " + scm + ".";
 
         private void ShowFailed(string solution)
         {

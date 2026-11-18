@@ -210,6 +210,42 @@ public sealed class PolicyPullWorker : BackgroundService
         }
     }
 
+    private async Task AckPolicyAsync(
+        long version, string hash, string stage, string detail, CancellationToken ct)
+    {
+        if (version <= 0 || string.IsNullOrWhiteSpace(_cfg.ServerUrl) ||
+            string.IsNullOrWhiteSpace(_cfg.DeviceToken))
+            return;
+        try
+        {
+            var client = _httpFactory.CreateClient("dlp");
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post, $"{_cfg.ServerUrl}/api/v1/dlp/policy/ack");
+            req.Headers.Authorization = new AuthenticationHeaderValue("Device", _cfg.DeviceToken);
+            req.Content = new StringContent(
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    policyVersion = version,
+                    hash = hash ?? "",
+                    stage,
+                    detail,
+                }),
+                System.Text.Encoding.UTF8,
+                "application/json");
+            using var resp = await client.SendAsync(req, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogDebug(
+                    "Policy ack {Stage} v{Version} HTTP {Status}",
+                    stage, version, (int)resp.StatusCode);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Policy ack {Stage} v{Version} failed", stage, version);
+        }
+    }
+
     private async Task PullOnceAsync(CancellationToken ct)
     {
         var (version, _, _) = await _store.GetAppliedAsync(ct);
@@ -226,8 +262,11 @@ public sealed class PolicyPullWorker : BackgroundService
         {
             if ((int)resp.StatusCode == 401)
             {
+                _cfg.RefreshCredentials();
                 _logger.LogWarning(
-                    "DLP policy pull HTTP 401 — device token invalid/revoked. Re-login the tracker.");
+                    "DLP policy pull HTTP 401 — refreshed credentials from device.auth/tracker DB " +
+                    "(tokenLen={Len}). Re-login the tracker if this keeps failing.",
+                    _cfg.DeviceToken?.Length ?? 0);
             }
             else
             {
@@ -279,7 +318,25 @@ public sealed class PolicyPullWorker : BackgroundService
         {
             bundle = "{}";
         }
-        await _store.SavePolicyAsync(newVersion, hash, bundle, ct);
+        try
+        {
+            await _store.SavePolicyAsync(newVersion, hash, bundle, ct);
+        }
+        catch (InvalidDataException ex)
+        {
+            // Keep last-known-good. Malformed / hash-mismatched bundles never clear deny.
+            _logger.LogError(
+                ex,
+                "Rejected DLP policy v{Version} — keeping last-known-good ({Message})",
+                newVersion, ex.Message);
+            await _store.AuditAsync(
+                "policy_reject",
+                $"version={newVersion};{ex.Message}",
+                ct);
+            return;
+        }
+        await AckPolicyAsync(newVersion, hash, "downloaded", "saved", ct);
+        await AckPolicyAsync(newVersion, hash, "installed", "persisted", ct);
         // Apply right away instead of waiting out EnforceWorker's 15 s tick.
         DlpSignals.RequestEnforce();
 

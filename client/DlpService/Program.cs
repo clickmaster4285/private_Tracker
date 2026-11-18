@@ -50,6 +50,8 @@ builder.Services.AddSingleton<SilentUpdateWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SilentUpdateWorker>());
 
 builder.Services.AddHostedService<ServiceAclWorker>();
+// Pipe before EnforceWorker so GetEnforceStatus answers while AppLocker/firewall Apply runs.
+builder.Services.AddHostedService<NamedPipeHost>();
 builder.Services.AddSingleton<EnforceWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<EnforceWorker>());
 builder.Services.AddHostedService<PolicyPullWorker>();
@@ -59,7 +61,6 @@ builder.Services.AddHostedService<PortGuardWorker>();
 builder.Services.AddHostedService<AntivirusGuardWorker>();
 builder.Services.AddHostedService<DnsBlockPinWorker>();
 builder.Services.AddHostedService<AppLaunchWatcher>();
-builder.Services.AddHostedService<NamedPipeHost>();
 builder.Services.AddHostedService<TrackerWatchdogWorker>();
 
 var host = builder.Build();

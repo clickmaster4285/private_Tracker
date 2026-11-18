@@ -41,6 +41,25 @@ func (h *DlpHandler) resolveEmployee(c echo.Context) (*models.Employee, error) {
 
 // ── Device (DeviceAuth) ─────────────────────────────────────────────────────
 
+// AckPolicy handles POST /api/v1/dlp/policy/ack (DeviceAuth).
+func (h *DlpHandler) AckPolicy(c echo.Context) error {
+	var req dto.DlpPolicyAckRequest
+	if err := c.Bind(&req); err != nil {
+		return errorResponse(c, http.StatusBadRequest, "Invalid request body", err)
+	}
+	employeeID, _ := c.Get("employee_id").(string)
+	machineID, _ := c.Get("device_machine_id").(string)
+	resp, err := h.svc.AckPolicy(c.Request().Context(), machineID, employeeID, req)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "must") || strings.Contains(msg, "required") || strings.Contains(msg, "unknown") {
+			return errorResponse(c, http.StatusBadRequest, msg, err)
+		}
+		return errorResponse(c, http.StatusInternalServerError, "Failed to acknowledge policy", err)
+	}
+	return c.JSON(http.StatusOK, resp)
+}
+
 // GetPolicy handles GET /api/v1/dlp/policy?sinceVersion=
 func (h *DlpHandler) GetPolicy(c echo.Context) error {
 	since := int64(0)

@@ -378,23 +378,47 @@ func validateWebBlockerRule(rule models.WebBlockerRule) error {
 
 // Publish compiles enabled rules + shadow deny + lockdown draft into an immutable policy version.
 func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.PublishDlpPolicyResponse, error) {
-	rules, err := s.repo.ListEnabledRules(ctx)
+	var resp *dto.PublishDlpPolicyResponse
+	err := s.repo.InTransaction(ctx, func(r *repository.DlpRepo) error {
+		var err error
+		resp, err = s.publishWithRepo(ctx, r, publishedBy)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	webRules, err := s.repo.ListEnabledWebBlockerRules(ctx)
+	if s.policyNotifier != nil && resp != nil {
+		n := s.policyNotifier()
+		log.Printf("[dlp] policy v%d published — pushed policy_changed to %d connected device(s)", resp.PolicyVersion, n)
+	}
+	return resp, nil
+}
+
+// publishWithRepo compiles a complete immutable policy version on the given repo
+// (pool or transaction). Callers that mutate drafts must use the same transaction
+// so a draft change cannot become visible without its matching policy version.
+func (s *DlpService) publishWithRepo(ctx context.Context, repo *repository.DlpRepo, publishedBy *string) (*dto.PublishDlpPolicyResponse, error) {
+	rules, err := repo.ListEnabledRules(ctx)
 	if err != nil {
 		return nil, err
 	}
-	domains, _, err := s.repo.ListUnauthorizedShadowDeny(ctx)
+	webRules, err := repo.ListEnabledWebBlockerRules(ctx)
 	if err != nil {
 		return nil, err
 	}
-	lockdown, allowHosts, _, err := s.repo.GetLockdownDraft(ctx)
+	domains, _, err := repo.ListUnauthorizedShadowDeny(ctx)
 	if err != nil {
 		return nil, err
 	}
-	allowApps, err := s.repo.ExpandEnabledAllowApps(ctx)
+	lockdown, allowHosts, _, err := repo.GetLockdownDraft(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Host-only browse: published allow.hosts always include curated related CDNs
+	// (e.g. bing.com → th.bing.com) so Edge≠internet until a host is allowlisted,
+	// and a single admin entry is enough for that site's search CDN set.
+	allowHosts = ExpandRelatedDomains(allowHosts)
+	allowApps, err := repo.ExpandEnabledAllowApps(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -404,44 +428,66 @@ func (s *DlpService) Publish(ctx context.Context, publishedBy *string) (*dto.Pub
 	if lockdown && len(allowApps) > repository.MaxLockdownAllowApps {
 		return nil, fmt.Errorf("allow apps cap exceeded: %d > %d", len(allowApps), repository.MaxLockdownAllowApps)
 	}
-	platformHosts := s.platformHosts
+	// Production fail-closed: never publish an explicit open lockdown:false.
+	// Lab can still draft false; publish forces true so fleet stays denied.
 	if !lockdown {
-		platformHosts = nil
-		allowHosts = nil
-		allowApps = nil
+		log.Printf("[dlp] publish forced lockdown=true (draft was false) — production fail-closed")
+		lockdown = true
 	}
-	ver, err := s.repo.InsertPolicyVersion(ctx, "pending", publishedBy)
+	platformHosts := s.platformHosts
+	ver, err := repo.InsertPolicyVersion(ctx, "pending", publishedBy)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts, allowApps); err != nil {
+	if err := repo.PublishSnapshot(ctx, ver.Version, rules, webRules, domains, lockdown, allowHosts, platformHosts, allowApps); err != nil {
 		return nil, err
 	}
-	// Device/port control is fleet-wide and independent of network lockdown.
-	if err := s.repo.SnapshotDeviceControl(ctx, ver.Version); err != nil {
+	if err := repo.SnapshotDeviceControl(ctx, ver.Version); err != nil {
 		return nil, err
 	}
-	final, err := s.repo.AssembleBundleJSON(ctx, ver.Version)
+	final, err := repo.AssembleBundleJSON(ctx, ver.Version)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateCompleteBundle(final); err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(final)
 	finalHash := "sha256:" + hex.EncodeToString(sum[:])
-	if err := s.repo.UpdatePolicyHash(ctx, ver.Version, finalHash); err != nil {
+	if err := repo.UpdatePolicyHash(ctx, ver.Version, finalHash); err != nil {
 		return nil, err
 	}
-
-	if s.policyNotifier != nil {
-		n := s.policyNotifier()
-		log.Printf("[dlp] policy v%d published — pushed policy_changed to %d connected device(s)", ver.Version, n)
-	}
-
 	return &dto.PublishDlpPolicyResponse{
 		PolicyVersion: ver.Version,
 		Hash:          finalHash,
 		PublishedAt:   ver.PublishedAt,
 		RuleCount:     len(rules) + len(webRules),
 	}, nil
+}
+
+func validateCompleteBundle(raw json.RawMessage) error {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return fmt.Errorf("incomplete policy bundle: %w", err)
+	}
+	required := []string{"policyVersion", "lockdown", "platformAllow", "allow", "rules", "shadowDeny", "deviceControl"}
+	for _, k := range required {
+		if _, ok := m[k]; !ok {
+			return fmt.Errorf("incomplete policy bundle: missing %s", k)
+		}
+	}
+	return nil
+}
+
+// publishAfterDraftMutation publishes inside the same advisory transaction when possible.
+func (s *DlpService) publishAfterDraftMutation(ctx context.Context, userID string) {
+	var publishedBy *string
+	if strings.TrimSpace(userID) != "" {
+		publishedBy = &userID
+	}
+	if _, err := s.Publish(ctx, publishedBy); err != nil {
+		log.Printf("[dlp] auto-publish after draft mutation failed: %v", err)
+	}
 }
 
 // GetLockdownDraft returns the editable lockdown settings + compiled platform hosts.
@@ -544,7 +590,8 @@ func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHos
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	row, err := s.repo.InsertAllowHost(ctx, host, strings.TrimSpace(req.Note), enabled, uid)
+	note := strings.TrimSpace(req.Note)
+	row, err := s.repo.InsertAllowHost(ctx, host, note, enabled, uid)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") ||
 			strings.Contains(err.Error(), "duplicate key") {
@@ -552,12 +599,43 @@ func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHos
 		}
 		return nil, err
 	}
+	// Auto-expand related CDN / www / m hosts into the draft so Bing search (etc.)
+	// works from a single allowlist entry without opening microsoft.com broadly.
+	s.insertRelatedAllowHosts(ctx, host, enabled, uid, note)
+
 	// Refresh names
 	list, err := s.repo.ListAllowHosts(ctx, host, "", "", 1, 1)
+	var out *dto.AllowHostRow
 	if err == nil && len(list) > 0 {
-		return ptrAllowHost(mapAllowHost(list[0])), nil
+		out = ptrAllowHost(mapAllowHost(list[0]))
+	} else {
+		out = ptrAllowHost(mapAllowHost(*row))
 	}
-	return ptrAllowHost(mapAllowHost(*row)), nil
+	s.publishAfterDraftMutation(ctx, userID)
+	return out, nil
+}
+
+// insertRelatedAllowHosts best-effort inserts ExpandRelatedDomains siblings for host.
+// Duplicates and cap exhaustion are ignored so the primary create still succeeds.
+func (s *DlpService) insertRelatedAllowHosts(ctx context.Context, host string, enabled bool, uid *string, primaryNote string) {
+	expanded := ExpandRelatedDomains([]string{host})
+	relNote := "auto: related to " + host
+	if primaryNote != "" {
+		relNote = primaryNote + " (related)"
+	}
+	for _, h := range expanded {
+		if h == host {
+			continue
+		}
+		count, err := s.repo.CountAllowHosts(ctx, "", "", "")
+		if err != nil || count >= repository.MaxLockdownAllowHosts {
+			return
+		}
+		if _, err := s.repo.InsertAllowHost(ctx, h, relNote, enabled, uid); err != nil {
+			// Unique / race — already present; keep going.
+			continue
+		}
+	}
 }
 
 func ptrAllowHost(r dto.AllowHostRow) *dto.AllowHostRow { return &r }
@@ -584,11 +662,23 @@ func (s *DlpService) UpdateAllowHost(ctx context.Context, id int64, req dto.Upda
 	if err != nil {
 		return nil, err
 	}
+	if hostPtr != nil {
+		enabled := row.Enabled
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		s.insertRelatedAllowHosts(ctx, *hostPtr, enabled, uid, strings.TrimSpace(row.Note))
+	}
+	s.publishAfterDraftMutation(ctx, userID)
 	return ptrAllowHost(mapAllowHost(*row)), nil
 }
 
 func (s *DlpService) DeleteAllowHost(ctx context.Context, id int64) error {
-	return s.repo.DeleteAllowHost(ctx, id)
+	if err := s.repo.DeleteAllowHost(ctx, id); err != nil {
+		return err
+	}
+	s.publishAfterDraftMutation(ctx, "")
+	return nil
 }
 
 func (s *DlpService) ListAllowApps(ctx context.Context, q dto.AllowListQuery) (*dto.AllowAppListResponse, error) {
@@ -671,10 +761,12 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 				if getErr != nil {
 					return nil, fmt.Errorf("application already on the allow list")
 				}
+				s.publishAfterDraftMutation(ctx, userID)
 				return ptrAllowApp(mapAllowApp(*existing)), nil
 			}
 			return nil, err
 		}
+		s.publishAfterDraftMutation(ctx, userID)
 		return ptrAllowApp(mapAllowApp(*row)), nil
 	}
 
@@ -696,6 +788,7 @@ func (s *DlpService) CreateAllowApp(ctx context.Context, req dto.CreateAllowAppR
 	if err != nil {
 		return nil, err
 	}
+	s.publishAfterDraftMutation(ctx, userID)
 	return ptrAllowApp(mapAllowApp(*row)), nil
 }
 
@@ -753,6 +846,7 @@ func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.Updat
 		if err != nil {
 			return nil, err
 		}
+		s.publishAfterDraftMutation(ctx, userID)
 		return ptrAllowApp(mapAllowApp(*row)), nil
 	}
 	merged := dto.LockdownAllowApp{
@@ -788,11 +882,16 @@ func (s *DlpService) UpdateAllowApp(ctx context.Context, id int64, req dto.Updat
 	if err != nil {
 		return nil, err
 	}
+	s.publishAfterDraftMutation(ctx, userID)
 	return ptrAllowApp(mapAllowApp(*row)), nil
 }
 
 func (s *DlpService) DeleteAllowApp(ctx context.Context, id int64) error {
-	return s.repo.DeleteAllowApp(ctx, id)
+	if err := s.repo.DeleteAllowApp(ctx, id); err != nil {
+		return err
+	}
+	s.publishAfterDraftMutation(ctx, "")
+	return nil
 }
 
 func pagePer(page, perPage int) (int, int, int) {
@@ -846,6 +945,7 @@ func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLock
 	if err := s.repo.ReplaceLockdownDraft(ctx, lockdown, hosts, apps); err != nil {
 		return nil, err
 	}
+	s.publishAfterDraftMutation(ctx, "")
 	return s.GetLockdownDraft(ctx)
 }
 
@@ -899,6 +999,23 @@ func (s *DlpService) PauseLockdown(ctx context.Context, employeeCode, machineID 
 
 // ── Device policy ───────────────────────────────────────────────────────────
 
+func (s *DlpService) AckPolicy(ctx context.Context, machineID, employeeID string, req dto.DlpPolicyAckRequest) (*dto.DlpPolicyAckResponse, error) {
+	if strings.TrimSpace(machineID) == "" {
+		return nil, fmt.Errorf("machine id required")
+	}
+	if req.PolicyVersion <= 0 {
+		return nil, fmt.Errorf("policyVersion must be positive")
+	}
+	stage := strings.ToLower(strings.TrimSpace(req.Stage))
+	if stage != "downloaded" && stage != "installed" && stage != "verified" {
+		return nil, fmt.Errorf("stage must be downloaded, installed, or verified")
+	}
+	if err := s.repo.UpsertPolicyDeviceAck(ctx, machineID, employeeID, req.PolicyVersion, strings.TrimSpace(req.Hash), stage, strings.TrimSpace(req.Detail)); err != nil {
+		return nil, err
+	}
+	return &dto.DlpPolicyAckResponse{Accepted: true, Stage: stage}, nil
+}
+
 func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employeeID, machineID string) (*dto.DlpPolicyPullResponse, error) {
 	latest, err := s.repo.LatestPolicyVersion(ctx)
 	if err != nil {
@@ -912,10 +1029,16 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 		}
 	}
 	if latest == nil {
+		// Complete fail-closed bootstrap shape — clients ValidateForPersistence reject
+		// incomplete bundles and keep last-known-good.
 		empty, _ := json.Marshal(map[string]any{
 			"policyVersion": 0,
+			"lockdown":      true,
+			"platformAllow": map[string]any{"hosts": []string{}},
+			"allow":         map[string]any{"hosts": []string{}, "apps": []any{}},
 			"rules":         []any{},
 			"shadowDeny":    map[string]any{"domains": []string{}, "publishers": []string{}, "appNames": []string{}},
+			"deviceControl": []any{},
 		})
 		return &dto.DlpPolicyPullResponse{
 			PolicyVersion:       0,

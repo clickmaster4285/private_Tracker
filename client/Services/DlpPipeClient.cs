@@ -101,18 +101,21 @@ public static class DlpPipeClient
             var payload = JsonSerializer.Serialize(request) + "\n";
             var payloadBytes = Encoding.UTF8.GetBytes(payload);
 
-            // Write without StreamWriter (its Dispose can also hang on a stuck pipe).
-            var writeTask = client.WriteAsync(payloadBytes, 0, payloadBytes.Length, CancellationToken.None);
-            var writeDone = await Task.WhenAny(writeTask, Task.Delay(responseMs, CancellationToken.None))
-                .ConfigureAwait(false);
-            if (writeDone != writeTask)
+            // WriteAsync on a Windows named pipe often never completes, even after the
+            // service has accepted the connection (the policy screen showed write_timeout).
+            // A synchronous write copies into the pipe buffer and returns.
+            string? line;
+            try
+            {
+                line = await ExchangeWithTimeoutAsync(client, payloadBytes, responseMs)
+                    .ConfigureAwait(false);
+            }
+            catch (TimeoutException)
             {
                 AbandonPipe(ref client);
                 return new PipeCallResult(false, true,
-                    "{\"ok\":false,\"error\":\"write_timeout\"}", "write_timeout");
+                    "{\"ok\":false,\"error\":\"pipe_timeout\"}", "pipe_timeout");
             }
-
-            try { await writeTask.ConfigureAwait(false); }
             catch (Exception ex)
             {
                 AbandonPipe(ref client);
@@ -121,11 +124,6 @@ public static class DlpPipeClient
                     ex.Message);
             }
 
-            try { await client.FlushAsync(CancellationToken.None).ConfigureAwait(false); }
-            catch { /* ignore */ }
-
-            // Read one line with a hard deadline; do not use StreamReader.Dispose on timeout.
-            var line = await ReadLineWithDeadlineAsync(client, responseMs).ConfigureAwait(false);
             if (line is null)
             {
                 AbandonPipe(ref client);
@@ -423,39 +421,57 @@ public static class DlpPipeClient
         catch { /* ignore */ }
     }
 
-    private static async Task<string?> ReadLineWithDeadlineAsync(NamedPipeClientStream client, int timeoutMs)
+    /// <summary>
+    /// One request and one response line on a background thread. Join is bounded so a
+    /// stuck Write cannot pin the caller; the pipe is then abandoned by the caller.
+    /// </summary>
+    private static async Task<string?> ExchangeWithTimeoutAsync(
+        NamedPipeClientStream client, byte[] payload, int timeoutMs)
+    {
+        string? line = null;
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                client.Write(payload, 0, payload.Length);
+                client.Flush();
+                line = ReadLineSync(client);
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "dlp-pipe",
+        };
+        thread.Start();
+        var finished = await Task.Run(() => thread.Join(timeoutMs)).ConfigureAwait(false);
+        if (!finished)
+            throw new TimeoutException("pipe_timeout");
+        if (error != null)
+            throw error;
+        return line;
+    }
+
+    private static string? ReadLineSync(NamedPipeClientStream client)
     {
         var buffer = new byte[1];
         var sb = new StringBuilder(256);
-        var deadline = Environment.TickCount64 + timeoutMs;
-
-        while (Environment.TickCount64 < deadline)
+        while (sb.Length < 64_000)
         {
-            var remaining = (int)Math.Max(1, deadline - Environment.TickCount64);
-            var readTask = client.ReadAsync(buffer, 0, 1, CancellationToken.None);
-            var done = await Task.WhenAny(readTask, Task.Delay(remaining, CancellationToken.None))
-                .ConfigureAwait(false);
-            if (done != readTask)
-                return null;
-
-            int n;
-            try { n = await readTask.ConfigureAwait(false); }
-            catch { return null; }
-
+            var n = client.Read(buffer, 0, 1);
             if (n <= 0)
                 return sb.Length > 0 ? sb.ToString() : null;
-
             var ch = (char)buffer[0];
             if (ch == '\n')
                 return sb.ToString().TrimEnd('\r');
             if (ch != '\r')
                 sb.Append(ch);
-
-            if (sb.Length > 64_000)
-                return sb.ToString();
         }
-
-        return null;
+        return sb.ToString();
     }
 
     private static bool IsOk(string body)

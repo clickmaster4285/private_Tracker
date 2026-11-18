@@ -257,7 +257,13 @@ if [ "$BUILD_WIN" = true ]; then
   if dotnet publish "$SERVICE_PROJ" -c Release -r win-x64 --self-contained -o "$SERVICE_OUT" --nologo; then
     cp "$PROJECT_DIR/DlpService/install-service.ps1" "$SERVICE_OUT/" 2>/dev/null || true
     cp "$PROJECT_DIR/DlpService/uninstall-service.ps1" "$SERVICE_OUT/" 2>/dev/null || true
-    echo "  ✓ DLP service → $SERVICE_OUT"
+    # Fail closed: never produce a Windows installer without the LocalSystem service payload.
+    SERVICE_EXE="$SERVICE_OUT/${WINDOWS_SERVICE_NAME}.exe"
+    if [ ! -f "$SERVICE_EXE" ]; then
+      echo "ERROR: DlpService publish succeeded but $SERVICE_EXE is missing — aborting installer bake."
+      exit 1
+    fi
+    echo "  ✓ DLP service → $SERVICE_OUT ($(basename "$SERVICE_EXE"))"
   else
     echo "ERROR: DlpService publish failed."
     exit 1
@@ -309,6 +315,13 @@ if [ "$BUILD_WIN" = true ]; then
   echo ""
   echo "[Windows] Building Windows installer..."
   bash "$SCRIPT_DIR/generate-windows-vars.sh"
+  # shellcheck disable=SC1090
+  source "$PROJECT_DIR/APP_IDENTIFIERS"
+  : "${WINDOWS_SERVICE_NAME:=${APP_MUTEX}.Service}"
+  if [ ! -f "$PUBLISH_WIN/Service/${WINDOWS_SERVICE_NAME}.exe" ]; then
+    echo "ERROR: $PUBLISH_WIN/Service/${WINDOWS_SERVICE_NAME}.exe missing — refusing to build an open-endpoint installer."
+    exit 1
+  fi
   if command -v iscc &>/dev/null; then
     iscc "$SCRIPT_DIR/installer-windows.iss"
   elif [ -f "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then
