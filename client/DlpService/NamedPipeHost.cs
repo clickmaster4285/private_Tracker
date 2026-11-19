@@ -391,7 +391,7 @@ public sealed class NamedPipeHost : BackgroundService
     {
         if (!_cfg.AvEnforce)
             return JsonSerializer.Serialize(new { ok = false, error = "av_enforce_disabled" });
-        var r = await AvSelfProtection.RunAsync(force: false, ct);
+        var r = await AvSelfProtection.RunAsync(AvSelfProtection.Trigger.Pipe, ct);
         if (r.Added.Count > 0 || r.Restored.Count > 0)
         {
             _logger.LogWarning("Pipe EnsureAvSelfProtection: added={Added} restored={Restored}",

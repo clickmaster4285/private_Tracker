@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Eventing.Reader;
 using System.Text;
-using System.Text.Json;
 using System.Xml.Linq;
 using Microsoft.Win32;
 
@@ -13,8 +12,10 @@ namespace AlphaAITracker.Service;
 /// and blocked + quarantined when malicious). This class keeps that engine ON at maximum
 /// strength and reports what it finds:
 /// <list type="bullet">
-/// <item><see cref="ReadStatus"/> — engine health via <c>Get-MpComputerStatus</c> +
-/// <c>Get-MpPreference</c> + Security Center (third-party AV).</item>
+/// <item><see cref="ReadStatus"/> — engine health via Defender's WMI provider
+/// (MSFT_MpComputerStatus / MSFT_MpPreference) + Security Center (third-party AV).
+/// All Defender reads/writes go through <see cref="DefenderWmi"/> — no encoded PowerShell,
+/// which Defender flags as Trojan:Win32/PowExcEnv.</item>
 /// <item><see cref="Enforce"/> — reverts every weakening change: real-time / behaviour /
 /// download / script scanning off, cloud protection lowered, PUA off, network protection
 /// off, threat action set to Allow / NoAction, unauthorized exclusions, per-threat allow
@@ -118,139 +119,144 @@ internal static class DefenderGuard
 
     // ── Status ──────────────────────────────────────────────────────────────
 
-    private const string StatusScript = """
-        $ErrorActionPreference = 'Stop'
-        function Iso($d) { if ($d -and $d.Year -gt 1601) { $d.ToUniversalTime().ToString('o') } else { '' } }
-        $o = [ordered]@{ available = $false; error = '' }
-        try {
-          $s = Get-MpComputerStatus
-          $p = Get-MpPreference
-          $o.available = $true
-          $o.runningMode = [string]$s.AMRunningMode
-          $o.serviceEnabled = [bool]$s.AMServiceEnabled
-          $o.antivirusEnabled = [bool]$s.AntivirusEnabled
-          $o.realTime = [bool]$s.RealTimeProtectionEnabled
-          $o.behavior = [bool]$s.BehaviorMonitorEnabled
-          $o.onAccess = [bool]$s.OnAccessProtectionEnabled
-          $o.ioav = [bool]$s.IoavProtectionEnabled
-          $o.tamper = [bool]$s.IsTamperProtected
-          $o.cloud = ([int]$p.MAPSReporting -gt 0)
-          $o.pua = ([int]$p.PUAProtection -eq 1)
-          $o.netProt = ([int]$p.EnableNetworkProtection -eq 1)
-          $o.sigVersion = [string]$s.AntivirusSignatureVersion
-          $o.sigAge = [int]$s.AntivirusSignatureAge
-          $o.sigUpdated = Iso $s.AntivirusSignatureLastUpdated
-          $o.quickScan = Iso $s.QuickScanEndTime
-          $o.fullScan = Iso $s.FullScanEndTime
-          $o.engine = [string]$s.AMProductVersion
-          $o.exclusions = @($p.ExclusionPath).Count + @($p.ExclusionProcess).Count + @($p.ExclusionExtension).Count
-          $o.emailScan = (-not $p.DisableEmailScanning)
-          # ASR rules: count configured (block=1 / audit=2), and block-mode specifically.
-          $acts = @($p.AttackSurfaceReductionRules_Actions | ForEach-Object { [int]$_ })
-          $o.asrConfigured = @($acts | Where-Object { $_ -eq 1 -or $_ -eq 2 }).Count
-          $o.asrBlock = @($acts | Where-Object { $_ -eq 1 }).Count
-          $o.cfa = switch ([int]$p.EnableControlledFolderAccess) { 1 { 'block' } 2 { 'audit' } default { 'off' } }
-          $o.netMode = switch ([int]$p.EnableNetworkProtection) { 1 { 'block' } 2 { 'audit' } default { 'off' } }
-          # Quarantined / active threats (best-effort).
-          try { $o.quarantined = @(Get-MpThreat -ErrorAction Stop).Count } catch { $o.quarantined = 0 }
-        } catch { $o.error = $_.Exception.Message }
-        # Device Guard: memory integrity (HVCI = service 2) + Credential Guard (service 1).
-        $o.memoryIntegrity = $false; $o.credentialGuard = $false
-        try {
-          $dg = Get-CimInstance -Namespace root/Microsoft/Windows/DeviceGuard -ClassName Win32_DeviceGuard -ErrorAction Stop
-          $running = @($dg.SecurityServicesRunning | ForEach-Object { [int]$_ })
-          $o.memoryIntegrity = ($running -contains 2)
-          $o.credentialGuard = ($running -contains 1)
-        } catch { }
-        # SmartScreen for apps/files (Explorer policy; 'RequireAdmin'/'Warn' = on, 'Off' = off).
-        $o.smartScreen = $false
-        try {
-          $ss = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' -Name SmartScreenEnabled -ErrorAction Stop).SmartScreenEnabled
-          $o.smartScreen = ($ss -and $ss -ne 'Off')
-        } catch { }
-        # Exploit protection: system DEP mitigation ON = baseline active.
-        $o.exploitProtection = $false
-        try {
-          $mp = Get-ProcessMitigation -System -ErrorAction Stop
-          $o.exploitProtection = ([string]$mp.Dep.Enable -eq 'ON' -or [int]$mp.Dep.Enable -eq 1)
-        } catch { }
-        $tp = @()
-        try {
-          $tp = @(Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop |
-                  Where-Object { $_.displayName -and $_.displayName -notmatch 'Windows Defender|Microsoft Defender' } |
-                  ForEach-Object { [string]$_.displayName })
-        } catch { }
-        $o.thirdParty = $tp
-        $o | ConvertTo-Json -Compress -Depth 3
-        """;
-
+    /// <summary>
+    /// Engine status through Defender's own WMI provider (MSFT_MpComputerStatus /
+    /// MSFT_MpPreference / MSFT_MpThreat) plus Device Guard, Security Center and registry —
+    /// the same fields the former PowerShell probe returned, without spawning PowerShell.
+    /// </summary>
     public static AvStatus ReadStatus()
     {
         if (!OperatingSystem.IsWindows())
             return Empty("unsupported_os");
 
-        var (exit, stdout, stderr) = RunPowerShell(StatusScript, TimeSpan.FromSeconds(60));
-        var json = LastJsonLine(stdout);
-        if (json is null)
-            return Empty($"status_probe_failed exit={exit} {Trim(stderr, 200)}");
+        var third = ReadThirdPartyAv();
+        var memoryIntegrity = false;
+        var credentialGuard = false;
+        try
+        {
+            foreach (var dg in DefenderWmi.Query(@"\.
+oot\Microsoft\Windows\DeviceGuard",
+                         "SELECT SecurityServicesRunning FROM Win32_DeviceGuard"))
+            {
+                using (dg)
+                {
+                    var running = DefenderWmi.Longs(dg, "SecurityServicesRunning");
+                    memoryIntegrity |= running.Contains(2);
+                    credentialGuard |= running.Contains(1);
+                }
+            }
+        }
+        catch { /* Device Guard not present */ }
+
+        var smartScreen = false;
+        try
+        {
+            using var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer");
+            var v = k?.GetValue("SmartScreenEnabled") as string;
+            smartScreen = !string.IsNullOrEmpty(v) && !v.Equals("Off", StringComparison.OrdinalIgnoreCase);
+        }
+        catch { /* ignore */ }
+
+        var exploit = ReadSystemDepOn();
 
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            var r = doc.RootElement;
-            var third = new List<string>();
-            if (r.TryGetProperty("thirdParty", out var tp))
-            {
-                if (tp.ValueKind == JsonValueKind.Array)
+            using var s = DefenderWmi.ReadComputerStatus();
+            if (s is null)
+                return Empty("defender_status_unavailable") with
                 {
-                    foreach (var e in tp.EnumerateArray())
-                        if (e.GetString() is { Length: > 0 } s) third.Add(s);
-                }
-                else if (tp.ValueKind == JsonValueKind.String && tp.GetString() is { Length: > 0 } one)
-                {
-                    third.Add(one);
-                }
-            }
+                    ProductName = third.FirstOrDefault() ?? "",
+                    ThirdPartyProducts = third,
+                    MemoryIntegrityEnabled = memoryIntegrity,
+                    CredentialGuardEnabled = credentialGuard,
+                    SmartScreenEnabled = smartScreen,
+                    ExploitProtectionEnabled = exploit,
+                };
+            var p = DefenderWmi.ReadPrefs();
+            var quarantined = 0;
+            try { quarantined = DefenderWmi.CountThreats(); } catch { /* best-effort */ }
+            var asrConfigured = p.AsrRuleActions.Count(a => a is 1 or 2);
+            var asrBlock = p.AsrRuleActions.Count(a => a == 1);
+            static string Mode(int v) => v switch { 1 => "block", 2 => "audit", _ => "off" };
 
-            var available = Bool(r, "available");
             return new AvStatus(
-                Available: available,
-                ProductName: available ? "Microsoft Defender Antivirus" : (third.FirstOrDefault() ?? ""),
-                RunningMode: Str(r, "runningMode"),
-                ServiceEnabled: Bool(r, "serviceEnabled"),
-                AntivirusEnabled: Bool(r, "antivirusEnabled"),
-                RealTimeEnabled: Bool(r, "realTime"),
-                BehaviorMonitorEnabled: Bool(r, "behavior"),
-                OnAccessEnabled: Bool(r, "onAccess"),
-                IoavEnabled: Bool(r, "ioav"),
-                TamperProtected: Bool(r, "tamper"),
-                CloudEnabled: Bool(r, "cloud"),
-                PuaEnabled: Bool(r, "pua"),
-                NetworkProtectionEnabled: Bool(r, "netProt"),
-                SignatureVersion: Str(r, "sigVersion"),
-                SignatureAgeDays: Int(r, "sigAge"),
-                SignatureUpdatedAt: Date(r, "sigUpdated"),
-                QuickScanAt: Date(r, "quickScan"),
-                FullScanAt: Date(r, "fullScan"),
-                EngineVersion: Str(r, "engine"),
+                Available: true,
+                ProductName: "Microsoft Defender Antivirus",
+                RunningMode: DefenderWmi.S(s, "AMRunningMode"),
+                ServiceEnabled: DefenderWmi.B(s, "AMServiceEnabled"),
+                AntivirusEnabled: DefenderWmi.B(s, "AntivirusEnabled"),
+                RealTimeEnabled: DefenderWmi.B(s, "RealTimeProtectionEnabled"),
+                BehaviorMonitorEnabled: DefenderWmi.B(s, "BehaviorMonitorEnabled"),
+                OnAccessEnabled: DefenderWmi.B(s, "OnAccessProtectionEnabled"),
+                IoavEnabled: DefenderWmi.B(s, "IoavProtectionEnabled"),
+                TamperProtected: DefenderWmi.B(s, "IsTamperProtected"),
+                CloudEnabled: p.MAPSReporting > 0,
+                PuaEnabled: p.PUAProtection == 1,
+                NetworkProtectionEnabled: p.EnableNetworkProtection == 1,
+                SignatureVersion: DefenderWmi.S(s, "AntivirusSignatureVersion"),
+                SignatureAgeDays: DefenderWmi.I(s, "AntivirusSignatureAge"),
+                SignatureUpdatedAt: DefenderWmi.D(s, "AntivirusSignatureLastUpdated"),
+                QuickScanAt: DefenderWmi.D(s, "QuickScanEndTime"),
+                FullScanAt: DefenderWmi.D(s, "FullScanEndTime"),
+                EngineVersion: DefenderWmi.S(s, "AMProductVersion"),
                 ThirdPartyProducts: third,
-                ExclusionCount: Int(r, "exclusions"),
-                AsrConfigured: Int(r, "asrConfigured"),
-                AsrBlock: Int(r, "asrBlock"),
-                ControlledFolderAccess: Str(r, "cfa") is { Length: > 0 } cfa ? cfa : "off",
-                NetworkProtectionMode: Str(r, "netMode") is { Length: > 0 } nm ? nm : "off",
-                SmartScreenEnabled: Bool(r, "smartScreen"),
-                MemoryIntegrityEnabled: Bool(r, "memoryIntegrity"),
-                CredentialGuardEnabled: Bool(r, "credentialGuard"),
-                EmailScanEnabled: Bool(r, "emailScan"),
-                ExploitProtectionEnabled: Bool(r, "exploitProtection"),
-                QuarantinedThreatCount: Int(r, "quarantined"),
-                Error: Str(r, "error"));
+                ExclusionCount: p.ExclusionPath.Count + p.ExclusionProcess.Count + p.ExclusionExtension.Count,
+                AsrConfigured: asrConfigured,
+                AsrBlock: asrBlock,
+                ControlledFolderAccess: Mode(p.EnableControlledFolderAccess),
+                NetworkProtectionMode: Mode(p.EnableNetworkProtection),
+                SmartScreenEnabled: smartScreen,
+                MemoryIntegrityEnabled: memoryIntegrity,
+                CredentialGuardEnabled: credentialGuard,
+                EmailScanEnabled: !p.DisableEmailScanning,
+                ExploitProtectionEnabled: exploit,
+                QuarantinedThreatCount: quarantined,
+                Error: "");
         }
         catch (Exception ex)
         {
-            return Empty("status_parse_failed " + ex.GetType().Name);
+            return Empty("status_wmi_failed " + Trim(ex.Message, 200)) with
+            {
+                ProductName = third.FirstOrDefault() ?? "",
+                ThirdPartyProducts = third,
+            };
         }
+    }
+
+    private static List<string> ReadThirdPartyAv()
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var av in DefenderWmi.Query(@"\.
+oot\SecurityCenter2", "SELECT displayName FROM AntiVirusProduct"))
+            {
+                using (av)
+                {
+                    var name = DefenderWmi.S(av, "displayName");
+                    if (name.Length > 0 &&
+                        !name.Contains("Windows Defender", StringComparison.OrdinalIgnoreCase) &&
+                        !name.Contains("Microsoft Defender", StringComparison.OrdinalIgnoreCase))
+                        list.Add(name);
+                }
+            }
+        }
+        catch { /* Security Center absent (Server SKU) */ }
+        return list;
+    }
+
+    /// <summary>
+    /// System DEP mitigation as Get-ProcessMitigation -System reports it: the low nibble of
+    /// the kernel MitigationOptions value (1 = ON, 2 = OFF, 0 = NOTSET).
+    /// </summary>
+    private static bool ReadSystemDepOn()
+    {
+        try
+        {
+            using var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Session Manager\kernel");
+            return k?.GetValue("MitigationOptions") is byte[] { Length: > 0 } b && (b[0] & 0x0F) == 1;
+        }
+        catch { return false; }
     }
 
     /// <summary>
@@ -290,223 +296,82 @@ internal static class DefenderGuard
 
         var changed = new List<string>();
         var errors = new List<string>();
+        var hardened = new List<string>();
 
         // Group Policy values override Set-MpPreference, so a "Turn off Defender" GPO /
         // registry edit is the strongest bypass. Remove weakening values first.
         RemovePolicyOverrides(changed, errors);
+        EnsureDefenderServiceRunning(changed, errors);
 
         // Product self-exclusions are always ensured (and never removed). IT extras from
         // ALPHA_AV_ALLOWED_EXCLUSIONS stay on the allowlist; everything else is removed.
-        var product = ProductAvExclusions.Build();
-        var allowMerged = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var x in ProductAvExclusions.FlattenAllowlist(product))
-            if (!string.IsNullOrWhiteSpace(x)) allowMerged.Add(ProductAvExclusions.NormalizePath(x));
-        foreach (var x in allowedExclusions)
-        {
-            if (string.IsNullOrWhiteSpace(x) || x.Contains('\n')) continue;
-            var n = ProductAvExclusions.NormalizePath(x.Trim());
-            if (n.Length > 0) allowMerged.Add(n);
-        }
+        var product = ProductAvExclusions.BuildCached();
+        var allowed = DefenderPlan.BuildAllowed(product, allowedExclusions);
 
-        // Newline-joined (not JSON): PS 5.1 ConvertFrom-Json wraps arrays in one object.
-        var allowList = string.Join("\n", allowMerged);
-        var productPaths = string.Join("\n", product.Paths);
-        var productProcs = string.Join("\n", product.Processes);
-        var cfaApps = string.Join("\n", product.CfaAllowedApps);
-
-        var cfa = !hardening.Enabled || !hardening.ControlledFolderAccess
-            ? ""
-            : (hardening.CfaAudit ? "AuditMode" : "Enabled");
-        var script = EnforceScript
-            .Replace("__ALLOWED__", EscapePs(allowList), StringComparison.Ordinal)
-            .Replace("__PRODUCT_PATHS__", EscapePs(productPaths), StringComparison.Ordinal)
-            .Replace("__PRODUCT_PROCS__", EscapePs(productProcs), StringComparison.Ordinal)
-            .Replace("__CFA_APPS__", EscapePs(cfaApps), StringComparison.Ordinal)
-            .Replace("__HARDEN__", hardening.Enabled ? "1" : "0", StringComparison.Ordinal)
-            .Replace("__ASR_ACTION__", hardening.AsrAudit ? "AuditMode" : "Enabled", StringComparison.Ordinal)
-            .Replace("__ASR_IDS__", EscapePs(string.Join("\n", AsrRuleIds)), StringComparison.Ordinal)
-            .Replace("__CFA__", EscapePs(cfa), StringComparison.Ordinal)
-            .Replace("__CPU__", Clamp(hardening.ScanCpuLimit, 0, 100).ToString(), StringComparison.Ordinal)
-            .Replace("__PURGE__", Math.Max(0, hardening.QuarantinePurgeDays).ToString(), StringComparison.Ordinal);
-
-        var (exit, stdout, stderr) = RunPowerShell(script, TimeSpan.FromSeconds(180));
-        var json = LastJsonLine(stdout);
-        if (json is null)
-        {
-            errors.Add($"enforce_probe_failed exit={exit} {Trim(stderr, 200)}");
-            return new EnforceResult(changed, [], errors, []);
-        }
-
-        var drift = new List<string>();
-        var hardened = new List<string>();
+        DefenderWmi.Prefs prefs;
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            changed.AddRange(Strings(doc.RootElement, "changed"));
-            errors.AddRange(Strings(doc.RootElement, "errors"));
-            drift.AddRange(Strings(doc.RootElement, "drift"));
-            hardened.AddRange(Strings(doc.RootElement, "hardened"));
+            prefs = DefenderWmi.ReadPrefs();
         }
         catch (Exception ex)
         {
-            errors.Add("enforce_parse_failed " + ex.GetType().Name);
+            errors.Add("enforce_read_failed " + Trim(ex.Message, 200));
+            return new EnforceResult(changed, [], errors, hardened);
+        }
+
+        // One snapshot drives every decision; only drifted / missing values are written.
+        var ops = new List<DefenderPlan.Op>();
+        ops.AddRange(DefenderPlan.TamperFixes(prefs, allowed));
+        ops.AddRange(DefenderPlan.MissingProductExclusions(prefs, product));
+        ops.AddRange(DefenderPlan.Hardening(prefs, hardening, AsrRuleIds, product.CfaAllowedApps));
+        foreach (var op in ops)
+        {
+            if (Apply(op, errors))
+                (op.Hardening ? hardened : changed).Add(op.Name);
+        }
+
+        var drift = new List<string>();
+        if (changed.Count > 0)
+        {
+            try { drift = DefenderPlan.RemainingDrift(DefenderWmi.ReadPrefs(), allowed); }
+            catch (Exception ex) { errors.Add("drift_read_failed " + Trim(ex.Message, 120)); }
         }
         return new EnforceResult(changed, drift, errors, hardened);
     }
 
-    private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
-
-    // Threat default actions: 1 Clean, 2 Quarantine, 3 Remove, 6 Allow, 8 UserDefined,
-    // 9 NoAction, 10 Block. Only "let it run" values are corrected (6/8/9); 0 = Defender's
-    // recommended default, which already quarantines.
-    private const string EnforceScript = """
-        $ErrorActionPreference = 'Continue'
-        function Norm([string]$s) {
-          if (-not $s) { return '' }
-          $t = $s.Trim().TrimEnd('\','/')
-          try { $t = [System.IO.Path]::GetFullPath($t) } catch { }
-          return $t.TrimEnd('\','/')
-        }
-        function AllowedContains([string]$x) {
-          $n = Norm $x
-          if (-not $n) { return $false }
-          foreach ($a in $allowed) { if ((Norm $a).ToLowerInvariant() -eq $n.ToLowerInvariant()) { return $true } }
-          return $false
-        }
-        $allowed = @('__ALLOWED__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
-        $productPaths = @('__PRODUCT_PATHS__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
-        $productProcs = @('__PRODUCT_PROCS__' -split "`n" | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $cfaApps = @('__CFA_APPS__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
-        $changed = New-Object System.Collections.ArrayList
-        $errors = New-Object System.Collections.ArrayList
-        $hardened = New-Object System.Collections.ArrayList
-        function Fix([string]$name, [scriptblock]$sb) {
-          try { & $sb; [void]$changed.Add($name) } catch { [void]$errors.Add($name + ': ' + $_.Exception.Message) }
-        }
-        function Weak($p) {
-          $d = New-Object System.Collections.ArrayList
-          if ($p.DisableRealtimeMonitoring) { [void]$d.Add('realtime') }
-          if ($p.DisableBehaviorMonitoring) { [void]$d.Add('behavior') }
-          if ($p.DisableIOAVProtection) { [void]$d.Add('download_scan') }
-          if ($p.DisableScriptScanning) { [void]$d.Add('script_scan') }
-          if ($p.DisableBlockAtFirstSeen) { [void]$d.Add('block_at_first_sight') }
-          if ($p.DisableArchiveScanning) { [void]$d.Add('archive_scan') }
-          if ($p.DisableRemovableDriveScanning) { [void]$d.Add('removable_scan') }
-          if ([int]$p.MAPSReporting -ne 2) { [void]$d.Add('cloud_protection') }
-          if ([int]$p.SubmitSamplesConsent -eq 2) { [void]$d.Add('sample_submission') }
-          if ([int]$p.CloudBlockLevel -lt 2) { [void]$d.Add('cloud_block_level') }
-          if ([int]$p.PUAProtection -ne 1) { [void]$d.Add('pua') }
-          if ([int]$p.EnableNetworkProtection -ne 1) { [void]$d.Add('network_protection') }
-          foreach ($a in @($p.LowThreatDefaultAction, $p.ModerateThreatDefaultAction, $p.HighThreatDefaultAction, $p.SevereThreatDefaultAction)) {
-            if (@(6, 8, 9) -contains [int]$a) { [void]$d.Add('threat_action'); break }
-          }
-          if (@($p.ThreatIDDefaultAction_Ids | Where-Object { $_ }).Count -gt 0) { [void]$d.Add('threat_overrides') }
-          foreach ($x in @($p.ExclusionPath) + @($p.ExclusionProcess) + @($p.ExclusionExtension)) {
-            if ($x -and -not (AllowedContains $x)) { [void]$d.Add('exclusions'); break }
-          }
-          return ,$d
-        }
-        try { $svc = Get-Service WinDefend -ErrorAction Stop; if ($svc.Status -ne 'Running') { Fix 'service_start' { Start-Service WinDefend -ErrorAction Stop } } } catch { }
-        $p = Get-MpPreference
-        if ($p.DisableRealtimeMonitoring) { Fix 'realtime' { Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop } }
-        if ($p.DisableBehaviorMonitoring) { Fix 'behavior' { Set-MpPreference -DisableBehaviorMonitoring $false -ErrorAction Stop } }
-        if ($p.DisableIOAVProtection) { Fix 'download_scan' { Set-MpPreference -DisableIOAVProtection $false -ErrorAction Stop } }
-        if ($p.DisableScriptScanning) { Fix 'script_scan' { Set-MpPreference -DisableScriptScanning $false -ErrorAction Stop } }
-        if ($p.DisableBlockAtFirstSeen) { Fix 'block_at_first_sight' { Set-MpPreference -DisableBlockAtFirstSeen $false -ErrorAction Stop } }
-        if ($p.DisableArchiveScanning) { Fix 'archive_scan' { Set-MpPreference -DisableArchiveScanning $false -ErrorAction Stop } }
-        if ($p.DisableRemovableDriveScanning) { Fix 'removable_scan' { Set-MpPreference -DisableRemovableDriveScanning $false -ErrorAction Stop } }
-        if ([int]$p.MAPSReporting -ne 2) { Fix 'cloud_protection' { Set-MpPreference -MAPSReporting Advanced -ErrorAction Stop } }
-        if ([int]$p.SubmitSamplesConsent -eq 2) { Fix 'sample_submission' { Set-MpPreference -SubmitSamplesConsent SendSafeSamples -ErrorAction Stop } }
-        if ([int]$p.CloudBlockLevel -lt 2) { Fix 'cloud_block_level' { Set-MpPreference -CloudBlockLevel High -ErrorAction Stop } }
-        if ([int]$p.CloudExtendedTimeout -lt 50) { Fix 'cloud_timeout' { Set-MpPreference -CloudExtendedTimeout 50 -ErrorAction Stop } }
-        if ([int]$p.PUAProtection -ne 1) { Fix 'pua' { Set-MpPreference -PUAProtection Enabled -ErrorAction Stop } }
-        if ([int]$p.EnableNetworkProtection -ne 1) { Fix 'network_protection' { Set-MpPreference -EnableNetworkProtection Enabled -ErrorAction Stop } }
-        if (@(6, 8, 9) -contains [int]$p.LowThreatDefaultAction) { Fix 'threat_action_low' { Set-MpPreference -LowThreatDefaultAction Quarantine -ErrorAction Stop } }
-        if (@(6, 8, 9) -contains [int]$p.ModerateThreatDefaultAction) { Fix 'threat_action_moderate' { Set-MpPreference -ModerateThreatDefaultAction Quarantine -ErrorAction Stop } }
-        if (@(6, 8, 9) -contains [int]$p.HighThreatDefaultAction) { Fix 'threat_action_high' { Set-MpPreference -HighThreatDefaultAction Remove -ErrorAction Stop } }
-        if (@(6, 8, 9) -contains [int]$p.SevereThreatDefaultAction) { Fix 'threat_action_severe' { Set-MpPreference -SevereThreatDefaultAction Remove -ErrorAction Stop } }
-        $ids = @($p.ThreatIDDefaultAction_Ids | Where-Object { $_ })
-        if ($ids.Count -gt 0) { Fix 'threat_overrides' { Remove-MpPreference -ThreatIDDefaultAction_Ids $ids -ErrorAction Stop } }
-        foreach ($x in @($p.ExclusionPath | Where-Object { $_ -and -not (AllowedContains $_) })) { Fix ('exclusion_path:' + $x) { Remove-MpPreference -ExclusionPath $x -ErrorAction Stop } }
-        foreach ($x in @($p.ExclusionProcess | Where-Object { $_ -and -not (AllowedContains $_) })) { Fix ('exclusion_process:' + $x) { Remove-MpPreference -ExclusionProcess $x -ErrorAction Stop } }
-        foreach ($x in @($p.ExclusionExtension | Where-Object { $_ -and -not (AllowedContains $_) })) { Fix ('exclusion_extension:' + $x) { Remove-MpPreference -ExclusionExtension $x -ErrorAction Stop } }
-
-        # ── Product self-exclusion ensure (never reported as tamper) ──
-        function Harden([string]$name, [scriptblock]$sb) {
-          try { & $sb; [void]$hardened.Add($name) } catch { [void]$errors.Add($name + ': ' + $_.Exception.Message) }
-        }
-        $p2 = Get-MpPreference
-        $curPaths = @($p2.ExclusionPath | ForEach-Object { Norm $_ } | Where-Object { $_ })
-        $curProcs = @($p2.ExclusionProcess | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ })
-        foreach ($xp in $productPaths) {
-          $hit = $false
-          foreach ($c in $curPaths) { if ($c.ToLowerInvariant() -eq $xp.ToLowerInvariant()) { $hit = $true; break } }
-          if (-not $hit) { Harden ('product_exclusion_path:' + $xp) { Add-MpPreference -ExclusionPath $xp -ErrorAction Stop } }
-        }
-        foreach ($xp in $productProcs) {
-          $hit = $false
-          $xn = Norm $xp
-          foreach ($c in $curProcs) {
-            $cn = Norm $c
-            if ($c.Equals($xp, [StringComparison]::OrdinalIgnoreCase) -or ($xn -and $cn -and $cn.ToLowerInvariant() -eq $xn.ToLowerInvariant())) { $hit = $true; break }
-          }
-          if (-not $hit) { Harden ('product_exclusion_process:' + $xp) { Add-MpPreference -ExclusionProcess $xp -ErrorAction Stop } }
-        }
-        # ASR rules (prevalence / ransomware) do not reliably honour plain exclusions —
-        # client.exe is unsigned + rare, so product folders get ASR-only exclusions too.
-        $curAsrEx = @($p2.AttackSurfaceReductionOnlyExclusions | ForEach-Object { Norm $_ } | Where-Object { $_ })
-        foreach ($xp in $productPaths) {
-          $hit = $false
-          foreach ($c in $curAsrEx) { if ($c.ToLowerInvariant() -eq $xp.ToLowerInvariant()) { $hit = $true; break } }
-          if (-not $hit) { Harden ('product_asr_exclusion:' + $xp) { Add-MpPreference -AttackSurfaceReductionOnlyExclusions $xp -ErrorAction Stop } }
-        }
-        if ('__HARDEN__' -eq '1') {
-          $ph = Get-MpPreference
-          if ($ph.DisableEmailScanning) { Harden 'email_scan' { Set-MpPreference -DisableEmailScanning $false -ErrorAction Stop } }
-          if ($ph.DisableCatchupQuickScan) { Harden 'catchup_quick_scan' { Set-MpPreference -DisableCatchupQuickScan $false -ErrorAction Stop } }
-          if ($ph.DisableCatchupFullScan) { Harden 'catchup_full_scan' { Set-MpPreference -DisableCatchupFullScan $false -ErrorAction Stop } }
-          if (-not $ph.CheckForSignaturesBeforeRunningScan) { Harden 'signature_before_scan' { Set-MpPreference -CheckForSignaturesBeforeRunningScan $true -ErrorAction Stop } }
-          $cpu = [int]'__CPU__'
-          if ($cpu -gt 0 -and [int]$ph.ScanAvgCPULoadFactor -ne $cpu) { Harden 'scan_cpu_limit' { Set-MpPreference -ScanAvgCPULoadFactor $cpu -ErrorAction Stop } }
-          $purge = [int]'__PURGE__'
-          if ($purge -gt 0 -and [int]$ph.QuarantinePurgeItemsAfterDelay -ne $purge) { Harden 'quarantine_purge' { Set-MpPreference -QuarantinePurgeItemsAfterDelay $purge -ErrorAction Stop } }
-
-          # Attack Surface Reduction rules — bring each desired rule to the wanted action.
-          $asrAction = '__ASR_ACTION__'
-          $wantAct = if ($asrAction -eq 'AuditMode') { 2 } else { 1 }
-          $asrIds = @('__ASR_IDS__' -split "`n" | Where-Object { $_ })
-          $curIds = @($ph.AttackSurfaceReductionRules_Ids)
-          $curActs = @($ph.AttackSurfaceReductionRules_Actions)
-          $map = @{}
-          for ($i = 0; $i -lt $curIds.Count; $i++) { $map[([string]$curIds[$i]).ToLower()] = [int]$curActs[$i] }
-          foreach ($gid in $asrIds) {
-            if ($map[$gid.ToLower()] -ne $wantAct) {
-              Harden ('asr:' + $gid.Substring(0, 8)) { Add-MpPreference -AttackSurfaceReductionRules_Ids $gid -AttackSurfaceReductionRules_Actions $asrAction -ErrorAction Stop }
+    /// <summary>Execute one plan operation through WMI. Errors are collected, never thrown.</summary>
+    private static bool Apply(DefenderPlan.Op op, List<string> errors)
+    {
+        try
+        {
+            switch (op.Kind)
+            {
+                case DefenderPlan.OpKind.Set: DefenderWmi.Set(op.Param, op.Value); break;
+                case DefenderPlan.OpKind.Add: DefenderWmi.Add(op.Param, op.Value); break;
+                case DefenderPlan.OpKind.Remove: DefenderWmi.Remove(op.Param, op.Value); break;
+                case DefenderPlan.OpKind.AddAsrRule: DefenderWmi.AddAsrRule(op.Param, (byte)op.Value); break;
             }
-          }
-
-          # Controlled Folder Access (anti-ransomware) — only when opted in ('' = leave as-is).
-          $cfa = '__CFA__'
-          if ($cfa -ne '') {
-            $cfaWant = switch ($cfa) { 'Enabled' { 1 } 'AuditMode' { 2 } default { 0 } }
-            if ([int]$ph.EnableControlledFolderAccess -ne $cfaWant) {
-              Harden ('controlled_folder_access:' + $cfa) { Set-MpPreference -EnableControlledFolderAccess $cfa -ErrorAction Stop }
-            }
-            # Keep product EXEs allowed so CFA cannot block tracker / DLP writes.
-            $ph2 = Get-MpPreference
-            $curCfa = @($ph2.ControlledFolderAccessAllowedApplications | ForEach-Object { Norm $_ } | Where-Object { $_ })
-            foreach ($app in $cfaApps) {
-              $hit = $false
-              foreach ($c in $curCfa) { if ($c.ToLowerInvariant() -eq $app.ToLowerInvariant()) { $hit = $true; break } }
-              if (-not $hit) { Harden ('cfa_allow:' + $app) { Add-MpPreference -ControlledFolderAccessAllowedApplications $app -ErrorAction Stop } }
-            }
-          }
+            return true;
         }
+        catch (Exception ex)
+        {
+            errors.Add(op.Name + ": " + Trim(ex.Message, 160));
+            return false;
+        }
+    }
 
-        $drift = @()
-        if ($changed.Count -gt 0) { $drift = Weak (Get-MpPreference) }
-        [ordered]@{ changed = @($changed); errors = @($errors); drift = @($drift); hardened = @($hardened) } | ConvertTo-Json -Compress -Depth 3
-        """;
+    private static void EnsureDefenderServiceRunning(List<string> changed, List<string> errors)
+    {
+        try
+        {
+            using var sc = new System.ServiceProcess.ServiceController("WinDefend");
+            if (sc.Status == System.ServiceProcess.ServiceControllerStatus.Running) return;
+            sc.Start();
+            changed.Add("service_start");
+        }
+        catch (InvalidOperationException) { /* not installed / protected — Windows owns it */ }
+        catch (Exception ex) { errors.Add("service_start: " + ex.GetType().Name); }
+    }
 
     private static void RemovePolicyOverrides(List<string> changed, List<string> errors)
     {
@@ -594,75 +459,65 @@ internal static class DefenderGuard
 
     // ── Signatures / scans ──────────────────────────────────────────────────
 
-    public static (bool Ok, string Detail) UpdateSignatures()
-    {
-        if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
-        var (exit, _, stderr) = RunPowerShell(
-            "Update-MpSignature -ErrorAction Stop; 'ok'", TimeSpan.FromMinutes(15));
-        return (exit == 0, exit == 0 ? "ok" : Trim(stderr, 300));
-    }
+    public static (bool Ok, string Detail) UpdateSignatures() =>
+        Wmi(() => DefenderWmi.UpdateSignatures(TimeSpan.FromMinutes(15)));
 
     /// <summary>Blocking quick scan (hours at most). Run on a background task.</summary>
-    public static (bool Ok, string Detail) QuickScan()
-    {
-        if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
-        var (exit, _, stderr) = RunPowerShell(
-            "Start-MpScan -ScanType QuickScan -ErrorAction Stop; 'ok'", TimeSpan.FromHours(2));
-        return (exit == 0, exit == 0 ? "ok" : Trim(stderr, 300));
-    }
+    public static (bool Ok, string Detail) QuickScan() =>
+        Wmi(() => DefenderWmi.StartScan(1, null, TimeSpan.FromHours(2)));
 
     /// <summary>Blocking full scan (can take hours). Run on a background task.</summary>
-    public static (bool Ok, string Detail) FullScan()
-    {
-        if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
-        var (exit, _, stderr) = RunPowerShell(
-            "Start-MpScan -ScanType FullScan -ErrorAction Stop; 'ok'", TimeSpan.FromHours(12));
-        return (exit == 0, exit == 0 ? "ok" : Trim(stderr, 300));
-    }
+    public static (bool Ok, string Detail) FullScan() =>
+        Wmi(() => DefenderWmi.StartScan(2, null, TimeSpan.FromHours(12)));
 
     /// <summary>
     /// Scan one path on demand (removable drive, download folder, flagged file). The path is
-    /// validated as an existing file/dir and passed as a bound argument (never interpolated).
+    /// validated as an existing file/dir and passed as a typed WMI argument (no script text).
     /// </summary>
     public static (bool Ok, string Detail) CustomScan(string path)
     {
         if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
         if (string.IsNullOrWhiteSpace(path) || !(File.Exists(path) || Directory.Exists(path)))
             return (false, "path_not_found");
-        // Path travels in an environment variable (a distinct process value, never string-
-        // interpolated into the script) so a crafted path cannot inject PowerShell.
-        const string script = """
-            $ErrorActionPreference = 'Stop'
-            $p = $env:ALPHA_AV_SCAN_TARGET
-            Start-MpScan -ScanType CustomScan -ScanPath $p -ErrorAction Stop
-            'ok'
-            """;
-        var (exit, _, stderr) = RunPowerShell(script, TimeSpan.FromHours(4),
-            new Dictionary<string, string> { ["ALPHA_AV_SCAN_TARGET"] = path });
-        return (exit == 0, exit == 0 ? "ok" : Trim(stderr, 300));
+        return Wmi(() => DefenderWmi.StartScan(3, path, TimeSpan.FromHours(4)));
     }
 
     /// <summary>Remove all active threats from quarantine/disk (admin remediate-all).</summary>
     public static (bool Ok, string Detail) RemoveThreats()
     {
         if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
-        const string script = """
-            $ErrorActionPreference = 'Stop'
-            $active = @(Get-MpThreat | Where-Object { $_.IsActive })
-            if ($active.Count -eq 0) { 'ok: no active threats'; return }
-            Remove-MpThreat -ErrorAction Stop
-            'ok: removed ' + $active.Count
-            """;
-        var (exit, stdout, stderr) = RunPowerShell(script, TimeSpan.FromMinutes(30));
-        var ok = exit == 0 && stdout.Contains("ok:", StringComparison.OrdinalIgnoreCase);
-        return (ok, ok ? Trim(stdout, 300) : Trim(stdout + " " + stderr, 300));
+        try
+        {
+            var active = DefenderWmi.CountActiveThreats();
+            if (active == 0) return (true, "ok: no active threats");
+            DefenderWmi.RemoveActiveThreats(TimeSpan.FromMinutes(30));
+            return (true, "ok: removed " + active);
+        }
+        catch (Exception ex)
+        {
+            return (false, Trim(ex.Message, 300));
+        }
+    }
+
+    private static (bool Ok, string Detail) Wmi(Action action)
+    {
+        if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
+        try
+        {
+            action();
+            return (true, "ok");
+        }
+        catch (Exception ex)
+        {
+            return (false, Trim(ex.Message, 300));
+        }
     }
 
     /// <summary>
     /// Fast self-protection pass (no full guard enforce): ensure path / process / ASR-only
-    /// exclusions for every product folder, then restore any product file Defender has
-    /// quarantined (by original file path, so unrelated threats are never restored).
-    /// Safe to call from the pipe (soft-lock ORT load failure) and on self-block events.
+    /// exclusions for every product folder — only the ones actually missing — then restore
+    /// any product file Defender has quarantined (by original file path, so unrelated threats
+    /// are never restored). Native WMI + MpCmdRun; no PowerShell.
     /// </summary>
     public static (bool Ok, IReadOnlyList<string> Added, IReadOnlyList<string> Restored, IReadOnlyList<string> Errors)
         EnsureSelfProtection()
@@ -670,105 +525,64 @@ internal static class DefenderGuard
         if (!OperatingSystem.IsWindows())
             return (false, [], [], ["unsupported_os"]);
 
-        var product = ProductAvExclusions.Build();
-        var script = SelfProtectScript
-            .Replace("__PRODUCT_PATHS__", EscapePs(string.Join("\n", product.Paths)), StringComparison.Ordinal)
-            .Replace("__PRODUCT_PROCS__", EscapePs(string.Join("\n", product.Processes)), StringComparison.Ordinal);
-
-        var (exit, stdout, stderr) = RunPowerShell(script, TimeSpan.FromSeconds(90));
-        var json = LastJsonLine(stdout);
-        if (json is null)
-            return (false, [], [], [$"self_protect_failed exit={exit} {Trim(stderr, 200)}"]);
+        var product = ProductAvExclusions.BuildCached();
+        var added = new List<string>();
+        var restored = new List<string>();
+        var errors = new List<string>();
 
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            var added = Strings(doc.RootElement, "added").ToList();
-            var restored = Strings(doc.RootElement, "restored").ToList();
-            var errors = Strings(doc.RootElement, "errors").ToList();
-            return (errors.Count == 0, added, restored, errors);
+            var prefs = DefenderWmi.ReadPrefs();
+            foreach (var op in DefenderPlan.MissingProductExclusions(prefs, product))
+            {
+                if (Apply(op, errors))
+                    added.Add(op.Name);
+            }
         }
         catch (Exception ex)
         {
-            return (false, [], [], ["self_protect_parse_failed " + ex.GetType().Name]);
-        }
-    }
-
-    private const string SelfProtectScript = """
-        $ErrorActionPreference = 'Continue'
-        function Norm([string]$s) {
-          if (-not $s) { return '' }
-          $t = $s.Trim()
-          if ($t.StartsWith('file:_', [StringComparison]::OrdinalIgnoreCase)) { $t = $t.Substring(6) }
-          $t = $t.TrimEnd('\','/')
-          try { $t = [System.IO.Path]::GetFullPath($t) } catch { }
-          return $t.TrimEnd('\','/')
-        }
-        function Has($list, [string]$v) {
-          foreach ($c in $list) { if ($c -and $c.ToLowerInvariant() -eq $v.ToLowerInvariant()) { return $true } }
-          return $false
-        }
-        function UnderProduct([string]$f) {
-          $n = (Norm $f).ToLowerInvariant()
-          if (-not $n) { return $false }
-          foreach ($r in $productPaths) {
-            $rl = $r.ToLowerInvariant()
-            if ($n -eq $rl -or $n.StartsWith($rl + '\')) { return $true }
-          }
-          return $false
-        }
-        $productPaths = @('__PRODUCT_PATHS__' -split "`n" | Where-Object { $_ } | ForEach-Object { Norm $_ } | Where-Object { $_ })
-        $productProcs = @('__PRODUCT_PROCS__' -split "`n" | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $added = New-Object System.Collections.ArrayList
-        $restored = New-Object System.Collections.ArrayList
-        $errors = New-Object System.Collections.ArrayList
-
-        $p = Get-MpPreference
-        $curPaths = @($p.ExclusionPath | ForEach-Object { Norm $_ })
-        $curProcs = @($p.ExclusionProcess | ForEach-Object { if ($_) { $_.ToString().Trim() } })
-        $curAsr = @($p.AttackSurfaceReductionOnlyExclusions | ForEach-Object { Norm $_ })
-        foreach ($x in $productPaths) {
-          if (-not (Has $curPaths $x)) {
-            try { Add-MpPreference -ExclusionPath $x -ErrorAction Stop; [void]$added.Add('path:' + $x) } catch { [void]$errors.Add('path:' + $x + ': ' + $_.Exception.Message) }
-          }
-          if (-not (Has $curAsr $x)) {
-            try { Add-MpPreference -AttackSurfaceReductionOnlyExclusions $x -ErrorAction Stop; [void]$added.Add('asr:' + $x) } catch { [void]$errors.Add('asr:' + $x + ': ' + $_.Exception.Message) }
-          }
-        }
-        foreach ($x in $productProcs) {
-          if (-not (Has $curProcs $x)) {
-            try { Add-MpPreference -ExclusionProcess $x -ErrorAction Stop; [void]$added.Add('process:' + $x) } catch { [void]$errors.Add('process:' + $x + ': ' + $_.Exception.Message) }
-          }
+            errors.Add("self_protect_read_failed " + Trim(ex.Message, 200));
+            return (false, added, restored, errors);
         }
 
-        # Restore product files Defender quarantined (exclusions above stop a re-detect).
-        $mp = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
-        $files = New-Object System.Collections.ArrayList
-        try {
-          foreach ($d in @(Get-MpThreatDetection -ErrorAction Stop)) {
-            foreach ($r in @($d.Resources)) {
-              if (-not $r) { continue }
-              $s = [string]$r
-              if (-not $s.StartsWith('file:_', [StringComparison]::OrdinalIgnoreCase)) { continue }
-              $f = Norm $s
-              if ((UnderProduct $f) -and -not (Test-Path -LiteralPath $f) -and -not (Has $files $f)) { [void]$files.Add($f) }
+        // Restore product files Defender quarantined (exclusions above stop a re-detect).
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var r in DefenderWmi.ThreatDetectionResources())
+            {
+                if (!r.StartsWith("file:_", StringComparison.OrdinalIgnoreCase)) continue;
+                var f = ProductAvExclusions.NormalizePath(r[6..]);
+                if (ProductAvExclusions.IsProductPath(f, product) && !File.Exists(f))
+                    files.Add(f);
             }
-          }
-        } catch { [void]$errors.Add('threat_list: ' + $_.Exception.Message) }
-        foreach ($f in $files) {
-          if (-not (Test-Path -LiteralPath $mp)) { [void]$errors.Add('mpcmdrun_missing'); break }
-          try {
-            $out = & $mp -Restore -FilePath $f 2>&1 | Out-String
-            if (Test-Path -LiteralPath $f) { [void]$restored.Add($f) } else { [void]$errors.Add('restore:' + $f + ': ' + $out.Trim()) }
-          } catch { [void]$errors.Add('restore:' + $f + ': ' + $_.Exception.Message) }
+        }
+        catch (Exception ex)
+        {
+            errors.Add("threat_list: " + Trim(ex.Message, 160));
         }
 
-        [ordered]@{ added = @($added); restored = @($restored); errors = @($errors) } | ConvertTo-Json -Compress -Depth 3
-        """;
+        if (files.Count > 0)
+        {
+            var mp = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "Windows Defender", "MpCmdRun.exe");
+            foreach (var f in files)
+            {
+                if (!File.Exists(mp)) { errors.Add("mpcmdrun_missing"); break; }
+                var (_, output) = RunProcess(mp, ["-Restore", "-FilePath", f], TimeSpan.FromMinutes(2));
+                if (File.Exists(f)) restored.Add(f);
+                else errors.Add("restore:" + f + ": " + Trim(output, 160));
+            }
+        }
+
+        return (errors.Count == 0, added, restored, errors);
+    }
 
     /// <summary>
     /// Restore one quarantined item (admin false-positive). ThreatID is validated numeric and
-    /// passed through an environment variable (never interpolated into the script).
+    /// passed through an environment variable (never interpolated into the script). Rare,
+    /// admin-triggered — the only Defender action here without a WMI method.
     /// </summary>
     public static (bool Ok, string Detail) RestoreThreat(string threatId)
     {
@@ -788,13 +602,13 @@ internal static class DefenderGuard
 
     /// <summary>
     /// Enable the safe baseline of system-wide exploit-protection mitigations (EMET successor:
-    /// DEP, SEHOP, bottom-up + high-entropy ASLR, Control Flow Guard). Idempotent — re-running
-    /// when already set is a no-op. Not part of the per-tick drift loop (mitigations rarely
-    /// change and re-reading them is expensive); the worker calls this occasionally.
+    /// DEP, SEHOP, bottom-up + high-entropy ASLR, Control Flow Guard). Skipped when system DEP
+    /// is already ON (baseline set), so the 12-hourly refresh normally starts no process.
     /// </summary>
     public static (bool Ok, string Detail) EnsureExploitProtection()
     {
         if (!OperatingSystem.IsWindows()) return (false, "unsupported_os");
+        if (ReadSystemDepOn()) return (true, "ok: already set");
         const string script = """
             $ErrorActionPreference = 'Stop'
             try {
@@ -873,8 +687,10 @@ internal static class DefenderGuard
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Time-boxed PowerShell (absolute path, encoded command, concurrent stream drain,
-    /// tree-kill on timeout) — a hung cmdlet can never wedge the guard loop.
+    /// Time-boxed PowerShell for the two rare admin actions that have no WMI method.
+    /// The script is written to a temp <c>.ps1</c> and run with <c>-File</c> — an
+    /// <c>-EncodedCommand</c> blob is a classic malware pattern that Defender behaviour
+    /// monitoring flags. Concurrent stream drain + tree-kill on timeout.
     /// </summary>
     private static (int Exit, string StdOut, string StdErr) RunPowerShell(string script, TimeSpan timeout)
         => RunPowerShell(script, timeout, null);
@@ -884,16 +700,46 @@ internal static class DefenderGuard
     {
         var exe = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
         if (!File.Exists(exe)) exe = "powershell.exe";
-        var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        string? tmp = null;
+        try
+        {
+            Directory.CreateDirectory(DlpDataPaths.DlpRoot);
+            tmp = Path.Combine(DlpDataPaths.DlpRoot, "av-" + Guid.NewGuid().ToString("n") + ".ps1");
+            File.WriteAllText(tmp, script, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+            return RunProcess(exe, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", tmp], timeout, env);
+        }
+        catch (Exception ex)
+        {
+            return (-1, "", ex.GetType().Name + ": " + ex.Message);
+        }
+        finally
+        {
+            if (tmp is not null)
+            {
+                try { File.Delete(tmp); } catch { /* ignore */ }
+            }
+        }
+    }
+
+    /// <summary>Run a native executable with argument list (no shell parsing).</summary>
+    private static (int Exit, string Output) RunProcess(string exe, string[] args, TimeSpan timeout)
+    {
+        var r = RunProcess(exe, args, timeout, null);
+        return (r.Exit, (r.StdOut + " " + r.StdErr).Trim());
+    }
+
+    private static (int Exit, string StdOut, string StdErr) RunProcess(
+        string exe, string[] args, TimeSpan timeout, IReadOnlyDictionary<string, string>? env)
+    {
         var psi = new ProcessStartInfo
         {
             FileName = exe,
-            Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var a in args) psi.ArgumentList.Add(a);
         if (env is not null)
             foreach (var (k, v) in env)
                 psi.Environment[k] = v;
@@ -919,49 +765,10 @@ internal static class DefenderGuard
         }
     }
 
-    private static string? LastJsonLine(string stdout)
-    {
-        foreach (var line in stdout.Split('\n').Reverse())
-        {
-            var t = line.Trim();
-            if (t.StartsWith('{') && t.EndsWith('}')) return t;
-        }
-        return null;
-    }
-
-    private static string EscapePs(string s) => s.Replace("'", "''", StringComparison.Ordinal);
-
     private static AvStatus Empty(string error) => new(
         false, "", "", false, false, false, false, false, false, false, false, false, false,
         "", 0, null, null, null, "", [], 0,
         0, 0, "off", "off", false, false, false, false, false, 0, error);
-
-    private static bool Bool(JsonElement r, string n) =>
-        r.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.True;
-
-    private static int Int(JsonElement r, string n) =>
-        r.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : 0;
-
-    private static string Str(JsonElement r, string n) =>
-        r.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-
-    private static DateTimeOffset? Date(JsonElement r, string n) =>
-        DateTimeOffset.TryParse(Str(r, n), System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal, out var d) ? d : null;
-
-    private static IEnumerable<string> Strings(JsonElement r, string n)
-    {
-        if (!r.TryGetProperty(n, out var v)) yield break;
-        if (v.ValueKind == JsonValueKind.String)
-        {
-            if (v.GetString() is { Length: > 0 } s) yield return s;
-            yield break;
-        }
-        if (v.ValueKind != JsonValueKind.Array) yield break;
-        foreach (var e in v.EnumerateArray())
-            if (e.ValueKind == JsonValueKind.String && e.GetString() is { Length: > 0 } s)
-                yield return s;
-    }
 
     private static string Trim(string s, int max)
     {

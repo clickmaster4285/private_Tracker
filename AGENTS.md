@@ -3,6 +3,28 @@
 > **Last audited:** 2026-11-19
 > **Changelog:**
 >
+> - 2026-11-19: **Antivirus guard CPU spike / Defender self-detection loop (3.0.5).** Lab PC
+> showed MsMpEng up to 255% CPU: DefenderGuard ran `powershell -ExecutionPolicy Bypass
+> -EncodedCommand` (Add-MpPreference exclusions) every 30 s, Defender blocked it as
+> `Trojan:Win32/PowExcEnv.ZB!MTB` (332/day), and the guard treated that event (process =
+> product service) as "Defender hit the product" and re-ran the same PowerShell. Fix:
+> new `DefenderWmi` (System.Management → `root\Microsoft\Windows\Defender`
+> MSFT_MpPreference/MpComputerStatus/MpScan/MpSignature/MpThreat) replaces every recurring
+> PowerShell; `DefenderPlan` holds the same rules as pure, unit-tested functions (only
+> drifted/missing values are written). `CmdLine:_` detections by a product process are
+> `ProductCommand` → audit only, never self-protection. `AvSelfProtection` cooldown 60 min,
+> ×2 per consecutive failure (cap 24 h), persisted in `dlp\av_self_protection.json`; pipe
+> repair keeps its 30 s floor. Profile discovery uses ProfileList (S-1-5-21-* only) — no more
+> `C:\Windows\system32\config\…` exclusions; ASR-only exclusions are now audited and broad
+> paths (drive roots, Windows dir, Users/profile roots, any Temp) are never added or
+> allowlisted. Status sync adds `guardMethod`/`selfProtection*`/`selfCommandDetections24h`
+> and surfaces self-protection failures in `error`. Restore-by-ThreatID and the exploit-
+> protection baseline (skipped when DEP already ON) use `-File`, not `-EncodedCommand`.
+> Tracker inventory: Start Menu read in-process (WScript.Shell COM) because AppLocker blocks
+> user-session powershell under lockdown — Windows built-ins (cmd, PowerShell, Task Manager…)
+> tagged `WindowsBuiltIn`. Client **VERSION 3.0.5**. Installer-Parity: rebuild Windows Setup
+> (no `config.enc` re-bake); restart DLP service.
+>
 > - 2026-11-19: **App allowlist picker lists built-in Windows apps with icons (2.9.9).** The
 > client inventory now includes packaged (Store/MSIX) apps such as Calculator, Photos, Paint,
 > Notepad, Settings, Snipping Tool, Terminal and Store. The source is the per-user AppModel

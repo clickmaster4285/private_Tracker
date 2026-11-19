@@ -51,6 +51,9 @@ public sealed class AntivirusGuardWorker : BackgroundService
     private DateTimeOffset _lastExploitProtection = DateTimeOffset.MinValue;
     private int _backgroundJob; // 0 idle, 1 signature/scan running
     private readonly Dictionary<string, DateTimeOffset> _recentThreats = new(StringComparer.OrdinalIgnoreCase);
+    // Defender detections of command lines the product itself launched (loop guard telemetry).
+    private int _selfCommandDetections24h;
+    private DateTimeOffset _lastSelfCommandLog = DateTimeOffset.MinValue;
 
     public AntivirusGuardWorker(
         DlpConfig cfg, PolicyStore store, IHttpClientFactory httpFactory, ILogger<AntivirusGuardWorker> logger)
@@ -83,7 +86,8 @@ public sealed class AntivirusGuardWorker : BackgroundService
 
         // Product self-protection first: exclusions + restore any of our own files Defender
         // quarantined (e.g. after an upgrade) before the soft-lock needs them.
-        await RunSelfProtectionAsync("startup", force: true, stoppingToken);
+        // Persisted cooldown: a restart inside the cooldown window does not re-run it.
+        await RunSelfProtectionAsync("startup", AvSelfProtection.Trigger.Startup, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -112,6 +116,7 @@ public sealed class AntivirusGuardWorker : BackgroundService
         {
             _tamperWindowStart = now;
             _tamperCount24h = 0;
+            _selfCommandDetections24h = 0;
         }
 
         // 1. Status (cheap enough at the guard cadence when stale; always before first enforce).
@@ -360,19 +365,38 @@ public sealed class AntivirusGuardWorker : BackgroundService
         var id = StableGuid("defender:" + ev.RecordId + ":" + ev.EventId).ToString();
         string D(string k) => ev.Data.TryGetValue(k, out var v) ? v : "";
 
-        // Defender acted on one of our own files (detection, quarantine, ASR block) —
-        // heal immediately instead of raising a malware alert against the product itself.
-        if (ev.EventId is 1006 or 1007 or 1008 or 1116 or 1117 or 1118 or 1119 or 1121
-            && IsProductEvent(ev))
+        if (ev.EventId is 1006 or 1007 or 1008 or 1116 or 1117 or 1118 or 1119 or 1121)
         {
-            _logger.LogWarning(
-                "Defender event {EventId} hit the product itself ({Path}) — re-applying self-protection",
-                ev.EventId, D("Path"));
-            await _store.AuditAsync("av_self_block",
-                $"event={ev.EventId} threat={D("Threat Name")} rule={D("ID")} path={D("Path")} process={D("Process Name")}",
-                ct);
-            await RunSelfProtectionAsync("event_" + ev.EventId, force: true, ct);
-            return;
+            switch (DefenderPlan.ClassifySelfEvent(ev.Data, ProductAvExclusions.BuildCached()))
+            {
+                // Defender acted on one of our own files (detection, quarantine, ASR block) —
+                // heal (cooldown-limited) instead of raising a malware alert against the product.
+                case DefenderPlan.SelfEventKind.ProductFile:
+                    _logger.LogWarning(
+                        "Defender event {EventId} hit a product file ({Path}) — self-protection (cooldown-limited)",
+                        ev.EventId, D("Path"));
+                    await _store.AuditAsync("av_self_block",
+                        $"event={ev.EventId} threat={D("Threat Name")} rule={D("ID")} path={D("Path")} process={D("Process Name")}",
+                        ct);
+                    await RunSelfProtectionAsync("event_" + ev.EventId, AvSelfProtection.Trigger.Event, ct);
+                    return;
+
+                // Defender flagged a command line the product launched. Re-running the guard
+                // would launch it again (the old detect → heal → detect loop); record only.
+                case DefenderPlan.SelfEventKind.ProductCommand:
+                    _selfCommandDetections24h++;
+                    if (ev.At - _lastSelfCommandLog >= TimeSpan.FromMinutes(10))
+                    {
+                        _lastSelfCommandLog = ev.At;
+                        _logger.LogWarning(
+                            "Defender event {EventId} flagged a command launched by the product ({Threat}) — not re-running self-protection",
+                            ev.EventId, D("Threat Name"));
+                    }
+                    if (ev.EventId is 1116 or 1006)
+                        await _store.AuditAsync("av_self_command_detected",
+                            $"event={ev.EventId} threat={D("Threat Name")} process={D("Process Name")}", ct);
+                    return;
+            }
         }
 
         switch (ev.EventId)
@@ -441,25 +465,16 @@ public sealed class AntivirusGuardWorker : BackgroundService
         }
     }
 
-    private static bool IsProductEvent(DefenderGuard.DefenderEvent ev)
-    {
-        var set = ProductAvExclusions.Build();
-        foreach (var key in new[] { "Path", "Process Name" })
-        {
-            if (!ev.Data.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw)) continue;
-            // Path can hold several resources separated by ';'.
-            foreach (var part in raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                if (ProductAvExclusions.IsProductPath(part, set))
-                    return true;
-        }
-        return false;
-    }
-
-    private async Task RunSelfProtectionAsync(string reason, bool force, CancellationToken ct)
+    private async Task RunSelfProtectionAsync(string reason, AvSelfProtection.Trigger trigger, CancellationToken ct)
     {
         try
         {
-            var r = await AvSelfProtection.RunAsync(force, ct);
+            var r = await AvSelfProtection.RunAsync(trigger, ct);
+            if (r.Skipped)
+            {
+                _logger.LogDebug("Antivirus self-protection skipped ({Reason}): {Skip}", reason, r.SkipReason);
+                return;
+            }
             if (r.Added.Count > 0 || r.Restored.Count > 0)
             {
                 var detail = $"reason={reason} added=[{string.Join(", ", r.Added.Take(20))}] " +
@@ -558,7 +573,10 @@ public sealed class AntivirusGuardWorker : BackgroundService
             return;
 
         var health = DefenderGuard.Health(st);
+        var self = AvSelfProtection.CurrentState();
+        var selfError = self is { LastOk: false } ? "self_protection: " + self.LastErrors : "";
         var fingerprint = string.Join("|", health, st.RealTimeEnabled, st.SignatureVersion, st.TamperProtected,
+            self?.LastOk, self?.ConsecutiveFailures, _selfCommandDetections24h,
             st.QuickScanAt, st.FullScanAt, st.ExclusionCount, _lastTamperAt,
             st.AsrBlock, st.ControlledFolderAccess, st.NetworkProtectionMode, st.MemoryIntegrityEnabled,
             st.CredentialGuardEnabled, st.ExploitProtectionEnabled, st.SmartScreenEnabled, st.QuarantinedThreatCount);
@@ -606,7 +624,15 @@ public sealed class AntivirusGuardWorker : BackgroundService
             ["lastTamperAt"] = _lastTamperAt?.UtcDateTime.ToString("o"),
             ["tamperCount24h"] = _tamperCount24h,
             ["agentVersion"] = AgentVersion,
-            ["error"] = st.Error,
+            ["error"] = string.IsNullOrEmpty(st.Error) ? selfError : st.Error,
+            // Guard health / troubleshooting (older servers ignore unknown fields).
+            ["guardMethod"] = "wmi",
+            ["selfProtectionOk"] = self?.LastOk,
+            ["selfProtectionLastRunAt"] = self?.LastRunUtc.UtcDateTime.ToString("o"),
+            ["selfProtectionNextAllowedAt"] = self?.NextAllowedUtc.UtcDateTime.ToString("o"),
+            ["selfProtectionFailures"] = self?.ConsecutiveFailures ?? 0,
+            ["selfProtectionErrors"] = self?.LastErrors ?? "",
+            ["selfCommandDetections24h"] = _selfCommandDetections24h,
             ["reportedAt"] = now.UtcDateTime.ToString("o"),
         };
 
