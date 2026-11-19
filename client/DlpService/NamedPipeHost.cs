@@ -460,6 +460,7 @@ public sealed class NamedPipeHost : BackgroundService
             appBlock = _cfg.AppBlock,
             deleteBlock = _cfg.DeleteBlock,
             fileTransferBlock = _cfg.FileTransferBlock,
+            startupBlock = _cfg.StartupBlock,
             loginReboot = _cfg.LoginReboot,
             avEnforce = _cfg.AvEnforce,
             update = _updateState.Snapshot(),
@@ -609,6 +610,10 @@ public sealed class NamedPipeHost : BackgroundService
                     _logger.LogWarning(
                         "Teardown cleared file-transfer browser policies (changed={Changed}, detail={Detail})",
                         ft.Changed, ft.Detail);
+                    var su = StartupAppEnforcer.Clear();
+                    _logger.LogWarning(
+                        "Teardown restored startup apps (changed={Changed}, detail={Detail})",
+                        su.Changed, su.Detail);
                     ServiceAclHardener.TryApplyOpen(_logger);
                 }
 

@@ -144,10 +144,24 @@ public class DefaultDenyV291Tests
         Assert.True(ok.Ok);
         Assert.Contains("last_ip", ok.Detail);
 
-        var failed = LockdownNetworkEnforcer.EvaluateBehavioralEgress(
+        var offlineLast = LockdownNetworkEnforcer.EvaluateBehavioralEgress(
             publicConnected: false, managementConnected: false, usedLastSavedIp: true);
-        Assert.False(failed.Ok);
-        Assert.Equal("egress_probe_mgmt_last_ip_failed", failed.Detail);
+        Assert.True(offlineLast.Ok);
+        Assert.Equal("egress_probe_ok;mgmt=offline_last_ip", offlineLast.Detail);
+    }
+
+    [Fact]
+    public void ManagementUnreachable_IsOfflineFirstPass()
+    {
+        var offline = LockdownNetworkEnforcer.EvaluateBehavioralEgress(
+            publicConnected: false, managementConnected: false, usedLastSavedIp: false);
+        Assert.True(offline.Ok);
+        Assert.Equal("egress_probe_ok;mgmt=offline", offline.Detail);
+
+        // Public reachable still fails even when offline from management.
+        var leak = LockdownNetworkEnforcer.EvaluateBehavioralEgress(true, false, false);
+        Assert.False(leak.Ok);
+        Assert.Equal("egress_probe_public_reachable", leak.Detail);
     }
 
     [Fact]

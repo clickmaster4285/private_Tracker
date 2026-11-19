@@ -54,6 +54,11 @@ public sealed class DlpConfig
     /// </summary>
     public bool FileTransferBlock { get; init; } = true;
     /// <summary>
+    /// Startup apps (Run keys + Startup folders) default OFF; only product, Windows
+    /// components and published allow.apps stay on. false = restore what we turned off.
+    /// </summary>
+    public bool StartupBlock { get; private set; } = true;
+    /// <summary>
     /// After tracker login (credentials appear mid-run): pre-kill non-allowlisted apps,
     /// force-apply blockers, then reboot once. Off = no reboot (still polls policy).
     /// </summary>
@@ -151,6 +156,7 @@ public sealed class DlpConfig
             PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true),
             DeleteBlock = GetBool("ALPHA_DLP_DELETE_BLOCK", true),
             FileTransferBlock = GetBool("ALPHA_DLP_FILE_TRANSFER_BLOCK", true),
+            StartupBlock = GetBool("ALPHA_DLP_STARTUP_BLOCK", true),
             LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
             LoginRebootDelaySec = Math.Clamp(GetInt("ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC", 5), 5, 120),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
@@ -232,6 +238,7 @@ public sealed class DlpConfig
         NetworkLockdown = GetBool("ALPHA_DLP_NETWORK_LOCKDOWN", true);
         AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true);
         PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true);
+        StartupBlock = GetBool("ALPHA_DLP_STARTUP_BLOCK", true);
         var poll = GetInt("ALPHA_DLP_POLICY_POLL_SEC", PolicyPollSec);
         if (poll > 0) PolicyPollSec = poll;
         var enforce = GetInt("ALPHA_DLP_ENFORCE_TICK_SEC", EnforceTickSec);

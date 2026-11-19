@@ -571,7 +571,7 @@ func (s *DlpService) ListAllowHosts(ctx context.Context, q dto.AllowListQuery) (
 }
 
 func (s *DlpService) CreateAllowHost(ctx context.Context, req dto.CreateAllowHostRequest, userID string) (*dto.AllowHostRow, error) {
-	host := NormalizeDomain(req.Host)
+	host := NormalizeAllowHost(req.Host)
 	if host == "" {
 		return nil, fmt.Errorf("host is required")
 	}
@@ -643,7 +643,7 @@ func ptrAllowHost(r dto.AllowHostRow) *dto.AllowHostRow { return &r }
 func (s *DlpService) UpdateAllowHost(ctx context.Context, id int64, req dto.UpdateAllowHostRequest, userID string) (*dto.AllowHostRow, error) {
 	var hostPtr *string
 	if req.Host != nil {
-		n := NormalizeDomain(*req.Host)
+		n := NormalizeAllowHost(*req.Host)
 		if n == "" {
 			return nil, fmt.Errorf("host is required")
 		}
@@ -919,7 +919,7 @@ func (s *DlpService) UpdateLockdownDraft(ctx context.Context, req dto.UpdateLock
 	if req.AllowHosts != nil {
 		normalized := make([]string, 0, len(*req.AllowHosts))
 		for _, h := range *req.AllowHosts {
-			if n := NormalizeDomain(h); n != "" {
+			if n := NormalizeAllowHost(h); n != "" {
 				normalized = append(normalized, n)
 			}
 		}

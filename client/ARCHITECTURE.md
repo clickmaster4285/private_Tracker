@@ -2,6 +2,11 @@
 
 > **Last audited:** 2026-11-14 (plain HTTP only — TLS removed)
 > **Changelog:**
+> - 2026-11-19: **Startup apps default OFF (DlpService `StartupAppEnforcer`).** Run keys and
+>   Startup folders are disabled through `Explorer\StartupApproved` unless the target is the
+>   product, a Windows component, or on published `allow.apps`. The marker
+>   `dlp\startup_disabled.json` drives exact restore. `EnforceWorker.ApplyStartupAppsAsync`
+>   runs every tick; `ALPHA_DLP_STARTUP_BLOCK`; `Health.startupBlock`. **VERSION 2.9.9**.
 > - 2026-11-14: **TLS/HTTPS removed.** Deleted `TlsCertificateTrust`; HttpClient/WebSocket
 >   use default handlers. DlpService no longer applies fleet CA callbacks. Installer no
 >   longer bakes/`InstallOrgTlsCa` for `rootCA.pem`. `ALPHA_SERVER_URL` is `http://…`.

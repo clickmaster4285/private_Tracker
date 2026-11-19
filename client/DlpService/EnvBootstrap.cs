@@ -21,6 +21,7 @@ internal static class EnvBootstrap
         ("ALPHA_DLP_PORT_BLOCK", "true"),
         ("ALPHA_DLP_DELETE_BLOCK", "true"),
         ("ALPHA_DLP_FILE_TRANSFER_BLOCK", "true"),
+        ("ALPHA_DLP_STARTUP_BLOCK", "true"),
         ("ALPHA_DLP_LOGIN_REBOOT", "true"),
         ("ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC", "5"),
         ("ALPHA_DLP_POLICY_POLL_SEC", "300"),

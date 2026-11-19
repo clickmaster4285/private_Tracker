@@ -39,6 +39,8 @@ internal static class LockdownNetworkEnforcer
     private const string AllowDotBase = RulePrefix + "ALLOW-DOT";
     internal const string AllowMgmtTcpBase = RulePrefix + "ALLOW-MGMT-TCP";
     internal const string AllowWebTcpBase = RulePrefix + "ALLOW-WEB-TCP";
+    /// <summary>Allow-list entries with an explicit port (<c>host:3000</c>) → that one TCP port.</summary>
+    internal const string AllowWebPortBase = RulePrefix + "ALLOW-WEBPORT-TCP";
     internal const string AllowSysTcpBase = RulePrefix + "ALLOW-SYS-TCP";
     /// <summary>Lifecycle name. Display name is <see cref="QuicBlockDisplayName"/>.</summary>
     internal const string QuicBlockRuleName = RulePrefix + "BLOCK-QUIC";
@@ -130,10 +132,21 @@ internal static class LockdownNetworkEnforcer
             hostIps.Add((bootstrapHost, bootstrapIps));
 
         var hostSet = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        // host:port entries (e.g. an intranet app on 192.168.1.10:3000) open only that TCP port.
+        var portHosts = new SortedDictionary<int, SortedSet<string>>();
         foreach (var raw in policyHosts)
         {
-            var h = NormalizeHost(raw);
-            if (h is not null && !h.Equals(bootstrapHost, StringComparison.OrdinalIgnoreCase))
+            var (h, port) = ParseAllowHost(raw);
+            if (h is null)
+                continue;
+            if (port is int p)
+            {
+                if (!portHosts.TryGetValue(p, out var set))
+                    portHosts[p] = set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                set.Add(h);
+                continue;
+            }
+            if (!h.Equals(bootstrapHost, StringComparison.OrdinalIgnoreCase))
                 hostSet.Add(h);
         }
 
@@ -151,6 +164,25 @@ internal static class LockdownNetworkEnforcer
             }
         }
         webIps.Sort((a, b) => string.CompareOrdinal(a.ToString(), b.ToString()));
+
+        var portIps = new SortedDictionary<int, List<IPAddress>>();
+        foreach (var (port, hosts) in portHosts)
+        {
+            var list = new List<IPAddress>();
+            foreach (var h in hosts)
+            {
+                var ips = Resolve(h);
+                if (ips.Count > 0 && !hostIps.Any(x => x.Host.Equals(h, StringComparison.OrdinalIgnoreCase)))
+                    hostIps.Add((h, ips));
+                foreach (var ip in ips)
+                {
+                    if (!list.Contains(ip))
+                        list.Add(ip);
+                }
+            }
+            if (list.Count > 0)
+                portIps[port] = list;
+        }
 
         // Protective DNS stays on 53/853 only. System hosts get TCP 80+443.
         // Management IPs are not also opened on those wider sets.
@@ -174,6 +206,8 @@ internal static class LockdownNetworkEnforcer
         Take(dnsAllow);
         Take(systemOnly);
         Take(webOnly);
+        foreach (var list in portIps.Values)
+            Take(list);
 
         var overflow = false;
         if (ordered.Count > MaxAllowIps)
@@ -189,8 +223,11 @@ internal static class LockdownNetworkEnforcer
             mgmtPort,
             webOnly.Where(kept.Contains).ToList(),
             systemOnly.Where(kept.Contains).ToList(),
-            dnsAllow.Where(kept.Contains).ToList());
-        var fp = "v291-activestore-quic\n" +
+            dnsAllow.Where(kept.Contains).ToList(),
+            portIps.ToDictionary(
+                kv => kv.Key,
+                kv => (IReadOnlyList<IPAddress>)kv.Value.Where(kept.Contains).ToList()));
+        var fp = "v299-web80-ports\n" +
                  string.Join("\n", desired.OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                      .Select(kv => kv.Key + "=" + kv.Value));
 
@@ -359,15 +396,18 @@ internal static class LockdownNetworkEnforcer
     /// </summary>
     /// <summary>
     /// Explicit ALLOW carve-outs. Management is one TCP port. Published web hosts are
-    /// TCP 443. The system-update/CRL set is TCP 80 and 443. Protective DNS is 53/853
-    /// only. There is no all-port dest UDP rule (that re-opened QUIC).
+    /// TCP 80 + 443 (plain-HTTP intranet sites are common); a published <c>host:port</c>
+    /// opens exactly that TCP port to that host. The system-update/CRL set is TCP 80 and
+    /// 443. Protective DNS is 53/853 only. There is no all-port dest rule and no UDP web
+    /// rule (that re-opened QUIC).
     /// </summary>
     internal static Dictionary<string, string> BuildDesiredAllowRules(
         IReadOnlyList<IPAddress> mgmtIps,
         int mgmtPort,
         IReadOnlyList<IPAddress> webIps,
         IReadOnlyList<IPAddress> systemIps,
-        IReadOnlyList<IPAddress> dnsIps)
+        IReadOnlyList<IPAddress> dnsIps,
+        IReadOnlyDictionary<int, IReadOnlyList<IPAddress>>? webPortIps = null)
     {
         if (mgmtPort is < 1 or > 65535)
             throw new ArgumentOutOfRangeException(nameof(mgmtPort));
@@ -398,6 +438,15 @@ internal static class LockdownNetworkEnforcer
         AddChunks(AllowMgmtTcpBase + "-" + mgmtPort, mgmtIps);
         AddChunks(AllowWebTcpBase, webIps);
         AddChunks(AllowSysTcpBase, systemIps);
+        if (webPortIps is not null)
+        {
+            foreach (var (port, ips) in webPortIps)
+            {
+                if (port is < 1 or > 65535)
+                    throw new ArgumentOutOfRangeException(nameof(webPortIps));
+                AddChunks(AllowWebPortBase + "-" + port, ips);
+            }
+        }
         return rules;
     }
 
@@ -437,7 +486,16 @@ internal static class LockdownNetworkEnforcer
         if (name.StartsWith(AllowDotBase, StringComparison.OrdinalIgnoreCase))
             return ("tcp", "853", "");
         if (name.StartsWith(AllowWebTcpBase, StringComparison.OrdinalIgnoreCase))
-            return ("tcp", "443", "");
+            return ("tcp", "80,443", "");
+        if (name.StartsWith(AllowWebPortBase + "-", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = name[(AllowWebPortBase.Length + 1)..];
+            var dash = rest.IndexOf('-');
+            var portToken = dash >= 0 ? rest[..dash] : rest;
+            if (!int.TryParse(portToken, out var port) || port is < 1 or > 65535)
+                throw new InvalidOperationException("web_tcp_port:" + name);
+            return ("tcp", portToken, "");
+        }
         if (name.StartsWith(AllowSysTcpBase, StringComparison.OrdinalIgnoreCase))
             return ("tcp", "80,443", "");
         if (name.StartsWith(AllowMgmtTcpBase + "-", StringComparison.OrdinalIgnoreCase))
@@ -556,9 +614,12 @@ internal static class LockdownNetworkEnforcer
             return (true, usedLastSavedIp
                 ? "egress_probe_ok;mgmt=last_ip"
                 : "egress_probe_ok;mgmt=resolved");
+        // Offline-first: public egress is already proven blocked, so an unreachable
+        // management server (PC offline / server down) must not hold the policy gate.
+        // Enforcement keeps running from the last good bundle; sync resumes later.
         if (usedLastSavedIp)
-            return (false, "egress_probe_mgmt_last_ip_failed");
-        return (false, "egress_probe_mgmt_unreachable");
+            return (true, "egress_probe_ok;mgmt=offline_last_ip");
+        return (true, "egress_probe_ok;mgmt=offline");
     }
 
     /// <summary>
@@ -817,6 +878,44 @@ internal static class LockdownNetworkEnforcer
         return Uri.TryCreate(s, UriKind.Absolute, out var u) && !string.IsNullOrEmpty(u.Host)
             ? u.Host.Trim('[', ']').ToLowerInvariant()
             : null;
+    }
+
+    /// <summary>
+    /// Allow-list entry → host (or IP) plus an explicit port when one was published
+    /// (<c>192.168.1.10:3000</c>, <c>http://intranet:8080/x</c>, <c>[fd00::1]:8443</c>).
+    /// Ports 80/443 are folded into the default web rule (null port).
+    /// </summary>
+    internal static (string? Host, int? Port) ParseAllowHost(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return (null, null);
+        var s = raw.Trim().ToLowerInvariant();
+        var scheme = s.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0) s = s[(scheme + 3)..];
+        var cut = s.IndexOfAny(new[] { '/', '?', '#' });
+        if (cut >= 0) s = s[..cut];
+
+        int? port = null;
+        if (s.StartsWith('['))
+        {
+            var close = s.IndexOf(']');
+            if (close > 0 && close + 1 < s.Length && s[close + 1] == ':' &&
+                int.TryParse(s[(close + 2)..], out var p6))
+                port = p6;
+            if (close > 0) s = s[1..close];
+        }
+        else if (s.Count(c => c == ':') == 1)
+        {
+            var colon = s.IndexOf(':');
+            if (int.TryParse(s[(colon + 1)..], out var p4))
+                port = p4;
+            s = s[..colon];
+        }
+
+        if (port is < 1 or > 65535 or 80 or 443)
+            port = null;
+        var host = NormalizeHost(s);
+        return (host, host is null ? null : port);
     }
 
     /// <summary>Strip scheme/path/port and a leading <c>*.</c>; null when not a host or IP.</summary>

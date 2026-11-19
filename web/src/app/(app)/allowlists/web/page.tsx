@@ -425,9 +425,13 @@ function WebAllowListsInner() {
               <Input
                 value={host}
                 onChange={(e) => setHost(e.target.value)}
-                placeholder="contoso.sharepoint.com"
+                placeholder="contoso.sharepoint.com or 192.168.1.10:3000"
                 className="mt-1 font-mono text-sm"
               />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Opens HTTP (80) and HTTPS (443). For an app on another port, add it after a colon,
+                e.g. <span className="font-mono">192.168.1.10:3000</span>.
+              </p>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Note (optional)</label>

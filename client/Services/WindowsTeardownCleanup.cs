@@ -423,6 +423,64 @@ internal static class WindowsTeardownCleanup
         }
 
         TryClearFileTransferPoliciesDirect(steps);
+        TryRestoreStartupAppsDirect(steps);
+    }
+
+    /// <summary>
+    /// Startup apps the DlpService <c>StartupAppEnforcer</c> switched off. Reads its marker
+    /// (<c>ProgramData\&lt;folder&gt;\dlp\startup_disabled.json</c>) and puts each
+    /// <c>StartupApproved</c> value back as it was — only while it is still disabled.
+    /// </summary>
+    private static void TryRestoreStartupAppsDirect(List<string> steps)
+    {
+        var marker = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            AppInfo.DataFolderName, "dlp", "startup_disabled.json");
+        if (!File.Exists(marker))
+            return;
+        const string approvedRoot = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved";
+        var pending = 0;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(marker));
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                var keyLabel = item.GetProperty("Key").GetString() ?? "";
+                var sub = item.GetProperty("Sub").GetString() ?? "";
+                var name = item.GetProperty("Name").GetString() ?? "";
+                var prior = item.TryGetProperty("Prior", out var pr) && pr.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? pr.GetString()
+                    : null;
+                try
+                {
+                    using var baseKey = keyLabel == "HKLM"
+                        ? RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64)
+                        : keyLabel.StartsWith("HKU\\", StringComparison.Ordinal)
+                            ? Registry.Users.OpenSubKey(keyLabel[4..], writable: true)
+                            : null;
+                    if (baseKey is null) { pending++; continue; }
+                    using var approved = baseKey.OpenSubKey(approvedRoot + "\\" + sub, writable: true);
+                    if (approved?.GetValue(name) is not byte[] cur || cur.Length == 0 || (cur[0] & 1) == 0)
+                        continue; // already enabled / gone
+                    if (prior is null)
+                        approved.DeleteValue(name, throwOnMissingValue: false);
+                    else
+                        approved.SetValue(name, Convert.FromBase64String(prior), RegistryValueKind.Binary);
+                    steps.Add($"startup app restored {keyLabel}\\{sub}\\{name}");
+                }
+                catch (Exception ex)
+                {
+                    pending++;
+                    steps.Add($"startup app {name} error=" + ex.Message);
+                }
+            }
+            if (pending == 0)
+                File.Delete(marker);
+        }
+        catch (Exception ex)
+        {
+            steps.Add("startup apps restore error=" + ex.Message);
+        }
     }
 
     /// <summary>

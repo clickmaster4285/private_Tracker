@@ -29,6 +29,7 @@ public sealed class EnforceWorker : BackgroundService
     private string _lastAppSweepAllowFp = "\0";
     private string? _lastDeleteBlockState;
     private string? _lastFileTransferState;
+    private string? _lastStartupState;
     private DateTimeOffset _lastFileTransferTamperAlert = DateTimeOffset.MinValue;
     private static readonly TimeSpan FileTransferTamperAlertEvery = TimeSpan.FromMinutes(10);
     private string _lastPortFingerprint = "\0";
@@ -104,6 +105,16 @@ public sealed class EnforceWorker : BackgroundService
             }
             try
             {
+                var suClear = await Task.Run(StartupAppEnforcer.Clear, stoppingToken);
+                if (suClear.Changed)
+                    _logger.LogWarning("Parked: restored startup apps ({Detail})", suClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Startup-app restore on park failed");
+            }
+            try
+            {
                 var portClear = await Task.Run(PortDeviceEnforcer.Clear, stoppingToken);
                 if (portClear.Changed)
                     _logger.LogWarning("Parked: cleared port control ({Detail})", portClear.Detail);
@@ -117,9 +128,9 @@ public sealed class EnforceWorker : BackgroundService
 
         await _store.InitializeAsync(stoppingToken);
         _logger.LogInformation(
-            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App}, deleteBlock={Del}, portBlock={Port}, fileTransferBlock={Ft})",
+            "EnforceWorker running (usbBlock={Usb}, webBlock={Web}, networkLockdown={Net}, appBlock={App}, deleteBlock={Del}, portBlock={Port}, fileTransferBlock={Ft}, startupBlock={Su})",
             _cfg.UsbBlock, _cfg.WebBlock, _cfg.NetworkLockdown, _cfg.AppBlock, _cfg.DeleteBlock, _cfg.PortBlock,
-            _cfg.FileTransferBlock);
+            _cfg.FileTransferBlock, _cfg.StartupBlock);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -243,6 +254,7 @@ public sealed class EnforceWorker : BackgroundService
         await ApplyAppLockdownAsync(bundle, ct);
         await ApplyDeleteBlockAsync(bundle, ct);
         await ApplyFileTransferAsync(bundle, version, ct);
+        await ApplyStartupAppsAsync(bundle, ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
         await ApplyPortControlAsync(bundle, version, ct);
     }
@@ -426,6 +438,45 @@ public sealed class EnforceWorker : BackgroundService
         }
         _lastFileTransferState = state;
         Report("filetransfer", "ok", state);
+    }
+
+    /// <summary>
+    /// Startup apps: every Run-key / Startup-folder entry is OFF unless it is this product,
+    /// a Windows component, or published on <c>allow.apps</c> (/allowlists/apps). Independent
+    /// of network lockdown; honours machine pause and ALPHA_DLP_STARTUP_BLOCK. Runs every
+    /// tick so a re-enabled entry is switched off again (audited as tamper).
+    /// </summary>
+    private async Task ApplyStartupAppsAsync(PolicyBundle bundle, CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var active = _cfg.StartupBlock && !paused;
+        var state = !_cfg.StartupBlock ? "disabled_local" : paused ? "paused" : "on";
+
+        var result = active
+            ? await Task.Run(() => StartupAppEnforcer.Apply(bundle.AllowApps), ct)
+            : await Task.Run(StartupAppEnforcer.Clear, ct);
+
+        if (result.Changed || (!result.Applied && _lastStartupState != "failed"))
+        {
+            var written = string.Join(", ", result.Written.Take(20));
+            await _store.AuditAsync(
+                !result.Applied ? "startup_apps_apply_failed"
+                : active ? "startup_apps_apply" : "startup_apps_clear",
+                $"state={state} {result.Detail} values=[{written}]", ct);
+            _logger.LogInformation(
+                "Startup apps {Action} (state={State}, {Detail})",
+                active ? "ENFORCED" : "RESTORED", state, result.Detail);
+            if (result.Tampered > 0)
+                await _store.AuditAsync("startup_apps_tamper",
+                    $"re-enabled={result.Tampered} values=[{written}]", ct);
+        }
+        _lastStartupState = result.Applied ? state : "failed";
+        // Not a gate layer: a startup entry we cannot write never holds the policy screen.
+        Report("startup", result.Applied ? (active ? "ok" : "off") : "failed", result.Detail ?? "");
     }
 
     /// <summary>

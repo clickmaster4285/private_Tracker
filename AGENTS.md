@@ -1,7 +1,33 @@
 # Alpha AI Tracker — Project Map
 
-> **Last audited:** 2026-11-18
+> **Last audited:** 2026-11-19
 > **Changelog:**
+>
+> - 2026-11-19: **Web allowlist hosts reachable over HTTP + custom ports (2.9.9).** An allowed host
+> (e.g. `192.168.88.35`) got a firewall carve-out on **TCP 443 only**, so a plain-HTTP
+> intranet site stayed blocked. `ALLOW-WEB-TCP` now opens **TCP 80 and 443**. A published
+> `host:port` (e.g. `192.168.1.10:3000`) opens exactly that TCP port through a new
+> `AlphaAI-DLP-LOCK-ALLOW-WEBPORT-TCP-<port>` rule. There is still no all-port rule and no
+> UDP web rule. Server: `NormalizeAllowHost` keeps explicit ports on create, update and
+> lockdown PUT, and `ExpandRelatedDomains` no longer expands IP literals into junk such as
+> `88.35` / `www.88.35`. The web Host field explains the `host:port` form.
+> Installer-Parity: restart the API, rebuild Windows Setup, restart the DLP service.
+>
+> - 2026-11-19: **Startup apps OFF by default (2.9.9).** New DlpService `StartupAppEnforcer`
+> turns off every logon auto-start entry: `Run` keys (HKLM, HKLM WOW6432Node, every loaded
+> user hive) and the Startup folders (common and per user). It writes the same
+> `Explorer\StartupApproved` "disabled" flag Task Manager uses, so nothing is deleted. An entry
+> stays on only when its target is this product, a Windows component under `%WINDIR%`
+> (script hosts such as rundll32, cmd, powershell and wscript are judged by what they run),
+> or an app published on **/allowlists/apps**. That allowlist is the admin's allow switch,
+> with no new server, web or migration change. A per-entry marker
+> `dlp\startup_disabled.json` records the prior value, so allow, switch-off, pause, park and
+> teardown (pipe plus tracker `WindowsTeardownCleanup`) restore exactly what was there.
+> Re-enabled entries are switched off again every enforce tick (audit `startup_apps_tamper`).
+> The change applies at the next sign-in. RunOnce, logon scheduled tasks and services are not
+> covered; AppLocker still blocks non-allowlisted EXEs. Local switch
+> `ALPHA_DLP_STARTUP_BLOCK` (default true). It is not a policy-gate layer. Client
+> **VERSION 2.9.9**. Installer-Parity: re-bake `config.enc`, rebuild Windows Setup, restart DLP.
 >
 > - 2026-11-18: **Dev skip for topmost policy gate (2.9.3).** `ALPHA_DLP_POLICY_GATE`
 > (default true) — set `false` in client `.env` to skip the full-screen post-login

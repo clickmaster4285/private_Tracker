@@ -159,6 +159,21 @@ internal static class AppProcessGuard
     }
 
     /// <summary>
+    /// Matchers for the admin-published <c>allow.apps</c> paths only (no bootstrap A).
+    /// Used by startup-app control: bootstrap shell paths must not auto-allow a Run entry.
+    /// </summary>
+    internal static List<PathMatcher> BuildPublishedMatchers(IReadOnlyList<AllowAppEntry> allowApps)
+    {
+        var raw = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in allowApps)
+        {
+            if (!string.IsNullOrWhiteSpace(a.Path))
+                AddExpandedPaths(raw, a.Path.Trim());
+        }
+        return raw.Select(PathMatcher.Parse).ToList();
+    }
+
+    /// <summary>
     /// Expand AppLocker-style macros to concrete filesystem paths. AppLocker's
     /// %PROGRAMFILES% covers both Program Files roots — emit matchers for both so the
     /// sweeper agrees with AppLocker (Edge typically lives under Program Files (x86)).

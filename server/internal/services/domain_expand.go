@@ -3,8 +3,55 @@ package services
 import (
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 )
+
+// NormalizeAllowHost normalizes a web allow-list entry. Like NormalizeDomain, but an
+// explicit port is KEPT ("192.168.1.10:3000", "intranet.local:8080", "[fd00::1]:8443")
+// so Windows lockdown can open exactly that TCP port. No port → plain host / IP
+// (the client then opens TCP 80 + 443 to it).
+func NormalizeAllowHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	s := raw
+	lower := strings.ToLower(s)
+	switch {
+	case strings.HasPrefix(lower, "https://"):
+		s = s[len("https://"):]
+	case strings.HasPrefix(lower, "http://"):
+		s = s[len("http://"):]
+	case strings.HasPrefix(lower, "//"):
+		s = s[2:]
+	}
+	if idx := strings.IndexAny(s, "/?#"); idx >= 0 {
+		s = s[:idx]
+	}
+	if h, p, err := net.SplitHostPort(s); err == nil {
+		port, perr := strconv.Atoi(p)
+		host := NormalizeDomain(h)
+		if perr == nil && port >= 1 && port <= 65535 && host != "" {
+			if port == 80 || port == 443 {
+				return host // default web ports are always opened
+			}
+			return net.JoinHostPort(host, strconv.Itoa(port))
+		}
+	}
+	return NormalizeDomain(raw)
+}
+
+// isLiteralOrPorted reports entries that must not get www./m./apex expansion:
+// IP literals ("192.168.88.35" would otherwise expand to "88.35", "www.88.35") and
+// explicit host:port entries.
+func isLiteralOrPorted(h string) bool {
+	if net.ParseIP(strings.Trim(h, "[]")) != nil {
+		return true
+	}
+	_, _, err := net.SplitHostPort(h)
+	return err == nil
+}
 
 // NormalizeDomain strips scheme/path/port and lowercases a host for hosts-file matching.
 // Keeps www./m. prefixes — those are distinct block entries.
@@ -166,6 +213,13 @@ func ExpandRelatedDomains(domains []string) []string {
 	}
 
 	for _, raw := range domains {
+		if n := NormalizeAllowHost(raw); n != "" && isLiteralOrPorted(n) {
+			if _, ok := seen[n]; !ok {
+				seen[n] = struct{}{}
+				out = append(out, n)
+			}
+			continue
+		}
 		d := NormalizeDomain(raw)
 		if d == "" {
 			continue
