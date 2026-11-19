@@ -7,18 +7,18 @@ namespace AlphaAITracker.Service;
 
 /// <summary>
 /// Startup-app control (Windows). Every entry that would auto-start at logon — the
-/// <c>Run</c> keys (HKLM, HKLM WOW6432Node, each loaded user hive) and the Startup folders
-/// (common + per user) — is turned OFF by default, the same way Task Manager's Startup
-/// tab does it: a disabled marker under <c>Explorer\StartupApproved\{Run|Run32|StartupFolder}</c>.
-/// Nothing is deleted; the original Run value / shortcut stays where it is.
+/// <c>Run</c> keys (HKLM, HKLM WOW6432Node, each loaded user hive), the Startup folders
+/// (common + per user) and Store / MSIX app startup tasks — is turned OFF by default, the
+/// same way Task Manager's Startup tab does it (a disabled marker under
+/// <c>Explorer\StartupApproved\{Run|Run32|StartupFolder}</c>, or startup-task
+/// <c>State = 1</c>). Nothing is deleted; the original Run value / shortcut stays in place.
 ///
 /// An entry stays ON only when its target is:
 /// <list type="bullet">
-/// <item>this product (install dir / product data roots),</item>
-/// <item>a Windows component under the Windows directory (Security tray, drivers' helpers)
-/// that is not a generic script / launcher host (rundll32, cmd, powershell, wscript…),</item>
-/// <item>published on the admin app allowlist (<c>/allowlists/apps</c> → <c>allow.apps</c>).</item>
+/// <item>this product (install dir / product data roots), or</item>
+/// <item>Microsoft Defender (Windows Security tray / Defender platform folders).</item>
 /// </list>
+/// Apps on the admin allowlist may run, but they do not auto-start.
 ///
 /// Every value we disable is recorded in <c>dlp\startup_disabled.json</c> with its prior
 /// data, so allow / Clear / teardown restore exactly what was there (a user's own earlier
@@ -76,8 +76,8 @@ internal static class StartupAppEnforcer
             var disabled = 0;
 
             var marker = LoadMarker();
-            var product = ProductAvExclusions.Build();
-            var allow = AppProcessGuard.BuildPublishedMatchers(allowApps);
+            var product = ProductAvExclusions.BuildCached();
+            // allowApps is intentionally not consulted: allowed to run ≠ allowed to auto-start.
 
             var entries = Enumerate(errors);
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -89,7 +89,7 @@ internal static class StartupAppEnforcer
                 seen.Add(id);
                 try
                 {
-                    var allowed = IsAllowedTarget(e.Target, e.Args, product, allow);
+                    var allowed = IsAllowedTarget(e.Target, e.Args, product);
                     using var baseKey = OpenHive(e.Hive, e.Sid);
                     if (baseKey is null)
                         continue;
@@ -148,6 +148,10 @@ internal static class StartupAppEnforcer
                 }
             }
 
+            // Store / MSIX app startup tasks (Teams, Phone Link, Microsoft 365…) — the part of
+            // Task Manager's Startup tab that is not a Run value or a Startup-folder shortcut.
+            ApplyPackagedStartupTasks(marker, seen, written, errors, ref tampered, ref disabled);
+
             // Entries we disabled whose Run value / shortcut is gone (app uninstalled):
             // put the StartupApproved value back as it was and forget it.
             foreach (var stale in marker.Values.Where(m => !seen.Contains(MarkerId(m.Key, m.Sub, m.Name))).ToList())
@@ -199,41 +203,61 @@ internal static class StartupAppEnforcer
 
     // ── decision ───────────────────────────────────────────────────────────
 
-    internal static bool IsAllowedTarget(
-        string target, string args, ProductAvExclusions.Set product, List<AppProcessGuard.PathMatcher> allow)
+    /// <summary>
+    /// Only two things may auto-start: this product and Microsoft Defender (Windows Security
+    /// tray). Everything else — third-party apps, apps on the admin allowlist (allowed to RUN
+    /// is not allowed to AUTO-START), and other Windows helpers — is off by default.
+    /// </summary>
+    internal static bool IsAllowedTarget(string target, string args, ProductAvExclusions.Set product)
     {
         if (string.IsNullOrWhiteSpace(target))
             return false; // unresolvable → fail-closed (off)
 
         if (ProductAvExclusions.IsProductPath(target, product))
             return true;
-        if (AppProcessGuard.IsPathAllowed(target, allow))
+        if (IsDefenderStartup(target))
             return true;
 
-        var file = Path.GetFileName(target);
-        if (IsUnderWindowsDir(target))
+        // A launcher host (rundll32 / powershell / wscript …) is judged by what it runs:
+        // on only when it starts the product itself.
+        if (LauncherHosts.Contains(Path.GetFileName(target)))
         {
-            if (!LauncherHosts.Contains(file))
-                return true;
-            // A host (rundll32 / powershell / wscript …) is judged by what it runs.
             foreach (Match m in ArgPathRx.Matches(args ?? ""))
             {
-                var p = m.Value.Trim();
-                if (ProductAvExclusions.IsProductPath(p, product) || AppProcessGuard.IsPathAllowed(p, allow))
+                if (ProductAvExclusions.IsProductPath(m.Value.Trim(), product))
                     return true;
             }
-            return false;
         }
         return false;
     }
 
-    private static bool IsUnderWindowsDir(string path)
+    /// <summary>
+    /// Microsoft Defender's own startup program, identified by its OS-owned locations:
+    /// the Windows Security tray (<c>System32\SecurityHealthSystray.exe</c>), and the
+    /// Defender platform folders (<c>Program Files\Windows Defender</c>,
+    /// <c>ProgramData\Microsoft\Windows Defender\Platform</c>). Only SYSTEM / TrustedInstaller
+    /// can write there, so a look-alike name elsewhere is never kept.
+    /// </summary>
+    internal static bool IsDefenderStartup(string target)
     {
-        var windir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        if (string.IsNullOrEmpty(windir))
-            return false;
-        var p = ProductAvExclusions.NormalizePath(path);
-        return p.StartsWith(windir.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase);
+        var p = ProductAvExclusions.NormalizePath(target);
+        if (p.Length == 0) return false;
+
+        bool Under(string? root) =>
+            !string.IsNullOrEmpty(root) &&
+            p.StartsWith(ProductAvExclusions.NormalizePath(root) + "\\", StringComparison.OrdinalIgnoreCase);
+
+        var system = SafeFolder(Environment.SpecialFolder.System);
+        if (!string.IsNullOrEmpty(system) &&
+            p.Equals(ProductAvExclusions.NormalizePath(Path.Combine(system, "SecurityHealthSystray.exe")),
+                StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var pf = SafeFolder(Environment.SpecialFolder.ProgramFiles);
+        if (!string.IsNullOrEmpty(pf) && Under(Path.Combine(pf, "Windows Defender")))
+            return true;
+        var pd = SafeFolder(Environment.SpecialFolder.CommonApplicationData);
+        return !string.IsNullOrEmpty(pd) && Under(Path.Combine(pd, "Microsoft", "Windows Defender", "Platform"));
     }
 
     /// <summary>StartupApproved: first byte odd (0x03 / 0x07) = disabled; even (0x02 / 0x06) or missing = enabled.</summary>
@@ -245,6 +269,108 @@ internal static class StartupAppEnforcer
         buf[0] = 0x03;
         BitConverter.GetBytes(DateTime.UtcNow.ToFileTimeUtc()).CopyTo(buf, 4);
         return buf;
+    }
+
+    // ── packaged (Store / MSIX) startup tasks ──────────────────────────────
+
+    internal const string AppTaskSub = "AppTask";
+    private const string SystemAppDataPath =
+        @"Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData";
+
+    /// <summary>
+    /// windows.startupTask State: 0 Disabled, 1 DisabledByUser, 2 Enabled, 3 DisabledByPolicy,
+    /// 4 EnabledByPolicy. Task Manager's "Disable" writes 1; we do the same.
+    /// </summary>
+    internal static bool IsAppTaskEnabled(int state) => state is 2 or 4;
+    internal const int AppTaskDisabledByUser = 1;
+
+    private static void ApplyPackagedStartupTasks(
+        Dictionary<string, MarkerItem> marker, HashSet<string> seen, List<string> written,
+        List<string> errors, ref int tampered, ref int disabled)
+    {
+        string[] sids;
+        try { sids = Registry.Users.GetSubKeyNames(); }
+        catch (Exception ex) { errors.Add("hku_tasks:" + ex.GetType().Name); return; }
+
+        foreach (var sid in sids)
+        {
+            // Packaged-app state lives in the user's classes hive (S-1-5-21-…_Classes).
+            if (!sid.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase) ||
+                !sid.EndsWith("_Classes", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var keyLabel = "HKU\\" + sid;
+            try
+            {
+                using var root = Registry.Users.OpenSubKey(sid + "\\" + SystemAppDataPath, writable: true);
+                if (root is null) continue;
+                foreach (var pkg in root.GetSubKeyNames())
+                {
+                    using var pkgKey = root.OpenSubKey(pkg, writable: true);
+                    if (pkgKey is null) continue;
+                    foreach (var task in pkgKey.GetSubKeyNames())
+                    {
+                        using var taskKey = pkgKey.OpenSubKey(task, writable: true);
+                        if (taskKey?.GetValue("State") is not int state) continue; // not a startup task
+                        var name = pkg + "\\" + task;
+                        var id = MarkerId(keyLabel, AppTaskSub, name);
+                        seen.Add(id);
+                        if (!IsAppTaskEnabled(state)) continue; // already off (ours or the user's)
+
+                        marker.TryGetValue(id, out var mine);
+                        if (mine is null)
+                        {
+                            marker[id] = new MarkerItem
+                            {
+                                Key = keyLabel,
+                                Sub = AppTaskSub,
+                                Name = name,
+                                Prior = Convert.ToBase64String(BitConverter.GetBytes(state)),
+                                Target = pkg,
+                            };
+                        }
+                        else
+                        {
+                            tampered++; // we had it off and it was switched back on
+                        }
+                        taskKey.SetValue("State", AppTaskDisabledByUser, RegistryValueKind.DWord);
+                        disabled++;
+                        written.Add($"HKU\\{AppTaskSub}\\{name}=disabled");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{keyLabel}\\{AppTaskSub}:{ex.GetType().Name}");
+            }
+        }
+    }
+
+    /// <summary>Put a packaged startup task back to its recorded State (only if still ours/off).</summary>
+    private static bool TryRestoreAppTask(MarkerItem item, List<string> errors)
+    {
+        try
+        {
+            if (!item.Key.StartsWith("HKU\\", StringComparison.Ordinal))
+                return true;
+            using var root = Registry.Users.OpenSubKey(item.Key[4..] + "\\" + SystemAppDataPath, writable: true);
+            if (root is null)
+                return false; // classes hive not loaded (user signed out) — keep for later
+            using var taskKey = root.OpenSubKey(item.Name, writable: true);
+            if (taskKey is null)
+                return true; // package removed
+            if (taskKey.GetValue("State") is int cur && !IsAppTaskEnabled(cur) &&
+                item.Prior is not null)
+            {
+                var prior = BitConverter.ToInt32(Convert.FromBase64String(item.Prior), 0);
+                taskKey.SetValue("State", prior, RegistryValueKind.DWord);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"restore:{item.Name}:{ex.GetType().Name}");
+            return false;
+        }
     }
 
     // ── enumeration ────────────────────────────────────────────────────────
@@ -495,6 +621,8 @@ internal static class StartupAppEnforcer
     /// <summary>False when the user hive is not loaded right now (keep the row for later).</summary>
     private static bool TryRestoreItem(MarkerItem item, List<string> errors)
     {
+        if (item.Sub == AppTaskSub)
+            return TryRestoreAppTask(item, errors);
         try
         {
             RegistryKey? baseKey = item.Key == "HKLM"

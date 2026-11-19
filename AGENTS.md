@@ -3,6 +3,18 @@
 > **Last audited:** 2026-11-19
 > **Changelog:**
 >
+> - 2026-11-19: **Startup apps: everything off except the product and Defender (3.0.6).**
+> `StartupAppEnforcer` keeps an entry ON only for the product or Microsoft Defender
+> (`System32\SecurityHealthSystray.exe`, `Program Files\Windows Defender`,
+> `ProgramData\Microsoft\Windows Defender\Platform`). Allowlisted apps may run but no longer
+> auto-start (Edge auto-launch was kept on because Edge was allowlisted), and other Windows
+> helpers are off too. New: Store / MSIX startup tasks (Phone Link, Microsoft 365, Teams…)
+> under `HKU\<sid>_Classes\…\AppModel\SystemAppData\<pkg>\<task>\State` are set to 1
+> (DisabledByUser, as Task Manager does), recorded in `startup_disabled.json` (sub
+> `AppTask`) and restored by Clear / pause / teardown. Re-enabled entries are forced off
+> every enforce tick. Client **VERSION 3.0.6**. Installer-Parity: rebuild Windows Setup
+> (no `config.enc` re-bake). Takes effect at the next sign-in.
+>
 > - 2026-11-19: **Antivirus guard CPU spike / Defender self-detection loop (3.0.5).** Lab PC
 > showed MsMpEng up to 255% CPU: DefenderGuard ran `powershell -ExecutionPolicy Bypass
 > -EncodedCommand` (Add-MpPreference exclusions) every 30 s, Defender blocked it as
