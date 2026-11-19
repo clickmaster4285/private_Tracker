@@ -122,6 +122,10 @@ export default function DeviceSpecsPorts() {
         title="Ports Control"
         subtitle="Every port and device on the employee's computer. Block, monitor or allow each one."
         icon={Usb}
+        // Load the employee's machines so the shell scopes to exactly one (active first).
+        // Without it ?deviceId= stays empty and every reinstall's machine id was listed
+        // together — the same physical port appeared once per old machine id.
+        fetchDetail
         bodySchema={{ tab: {}, q: {}, status: {}, disconnected: {} }}
         bodyInitial={{ tab: 'external', q: '', status: 'all', disconnected: '' }}
       >

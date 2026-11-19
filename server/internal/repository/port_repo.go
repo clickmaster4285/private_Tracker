@@ -73,12 +73,26 @@ func (r *PortRepo) SyncPorts(ctx context.Context, employeeID, machineID string, 
 }
 
 // ListPorts returns the inventory for one employee (optionally one machine).
+//
+// With no machineID, only the employee's ACTIVE machine(s) are returned. Every reinstall /
+// re-login mints a new machine id for the same physical PC, and the retired ids keep their
+// last port snapshot (Retired-Device History Rule) — listing them together showed each
+// physical port once per old machine id. A retired machine is still readable by passing
+// its machineID explicitly. When no machine is active, all rows are returned as before.
 func (r *PortRepo) ListPorts(ctx context.Context, employeeID, machineID string) ([]dto.PortInventoryRow, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, machine_id, instance_id, category, pnp_class, class_guid, bus_type,
 		       friendly_name, manufacturer, present, status, blockable, last_seen_at
-		FROM machine_ports
-		WHERE employee_id=$1 AND ($2='' OR machine_id=$2)
+		FROM machine_ports mp
+		WHERE mp.employee_id=$1
+		  AND (
+		    ($2 <> '' AND mp.machine_id=$2)
+		    OR ($2 = '' AND (
+		      mp.machine_id IN (SELECT em.machine_id FROM employee_machines em
+		                        WHERE em.employee_id=$1 AND em.status='active')
+		      OR NOT EXISTS (SELECT 1 FROM employee_machines em
+		                     WHERE em.employee_id=$1 AND em.status='active')))
+		  )
 		ORDER BY category, pnp_class, friendly_name`, employeeID, machineID)
 	if err != nil {
 		return nil, err
