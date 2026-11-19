@@ -3,6 +3,15 @@
 > **Last audited:** 2026-11-19
 > **Changelog:**
 >
+> - 2026-11-19: **Night-shift attendance is one record (server).** `attendanceForDay` counted
+> only calendar-day events, so a 22:00–06:00 shift showed ~2 h on the start date and a
+> separate early-morning visit on the next. New `workWindow`: for a shift that crosses
+> midnight, a work date's events span a 24 h window centred on the shift (half the off-time
+> before start, half after end — 22:00–06:00 → 14:00 to 14:00), so windows still tile with
+> no overlap. `workDateFor` makes `/attendance/today` and the dashboard card pick last
+> night's shift at 03:00. Day shifts and no-schedule employees keep the calendar day.
+> `DaySessionEvents` uses the same window. Restart API; no migration, no client change.
+>
 > - 2026-11-19: **Startup apps: everything off except the product and Defender (3.0.6).**
 > `StartupAppEnforcer` keeps an entry ON only for the product or Microsoft Defender
 > (`System32\SecurityHealthSystray.exe`, `Program Files\Windows Defender`,

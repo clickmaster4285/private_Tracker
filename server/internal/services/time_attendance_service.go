@@ -98,7 +98,7 @@ func (s *TimeAttendanceService) AttendanceToday(ctx context.Context, employeeID 
 	if err != nil {
 		return dto.AttendanceResponse{}, fmt.Errorf("invalid schedule timezone: %w", err)
 	}
-	return s.attendanceForDay(ctx, employeeID, time.Now().In(location), location, schedule)
+	return s.attendanceForDay(ctx, employeeID, workDateFor(time.Now().In(location), location, schedule), location, schedule)
 }
 
 // AttendanceDayCounts buckets TODAY's attendance status across employeeIDs.
@@ -127,7 +127,7 @@ func (s *TimeAttendanceService) AttendanceDayCounts(
 				location = loaded
 			}
 		}
-		record, err := s.attendanceForDay(ctx, employeeID, now.In(location), location, schedule)
+		record, err := s.attendanceForDay(ctx, employeeID, workDateFor(now.In(location), location, schedule), location, schedule)
 		if err != nil {
 			return out, err
 		}
@@ -233,8 +233,8 @@ func (s *TimeAttendanceService) DaySessionEvents(
 		return nil, fmt.Errorf("date must be YYYY-MM-DD")
 	}
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, location)
-	dayEnd := dayStart.AddDate(0, 0, 1)
-	events, err := s.repo.ListDaySessionEvents(ctx, employeeID, dayStart.UTC(), dayEnd.UTC())
+	windowStart, windowEnd := workWindow(dayStart, location, schedule)
+	events, err := s.repo.ListDaySessionEvents(ctx, employeeID, windowStart.UTC(), windowEnd.UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -291,8 +291,11 @@ func (s *TimeAttendanceService) attendanceForDay(
 	schedule *repository.ScheduleRecord,
 ) (dto.AttendanceResponse, error) {
 	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, location)
-	dayEnd := dayStart.AddDate(0, 0, 1)
-	events, err := s.repo.ListSessionEvents(ctx, employeeID, dayStart.UTC(), dayEnd.UTC())
+	// windowStart/windowEnd bound the events that belong to this work date. For a
+	// normal shift that is the calendar day; for a shift that crosses midnight the
+	// window follows the shift so 22:00–06:00 is one record, not two half days.
+	windowStart, windowEnd := workWindow(dayStart, location, schedule)
+	events, err := s.repo.ListSessionEvents(ctx, employeeID, windowStart.UTC(), windowEnd.UTC())
 	if err != nil {
 		return dto.AttendanceResponse{}, err
 	}
@@ -303,7 +306,7 @@ func (s *TimeAttendanceService) attendanceForDay(
 
 	var first *time.Time
 	for _, event := range events {
-		if event.EventAt.Before(dayStart.UTC()) || !isActiveMarker(event.EventType) {
+		if event.EventAt.Before(windowStart.UTC()) || !isActiveMarker(event.EventType) {
 			continue
 		}
 		at := event.FirstAt
@@ -317,7 +320,7 @@ func (s *TimeAttendanceService) attendanceForDay(
 	if first != nil {
 		for _, event := range events {
 			at := event.LastAt
-			if at.Before(*first) || !at.Before(dayEnd.UTC()) {
+			if at.Before(*first) || !at.Before(windowEnd.UTC()) {
 				continue
 			}
 			if last == nil || at.After(*last) {
@@ -333,13 +336,13 @@ func (s *TimeAttendanceService) attendanceForDay(
 		if heartbeatErr != nil {
 			return dto.AttendanceResponse{}, heartbeatErr
 		}
-		extendLastActive(&last, heartbeat, dayStart.UTC(), dayEnd.UTC())
+		extendLastActive(&last, heartbeat, windowStart.UTC(), windowEnd.UTC())
 
 		deviceSeen, deviceErr := s.repo.GetLastDeviceSeen(ctx, employeeID)
 		if deviceErr != nil {
 			return dto.AttendanceResponse{}, deviceErr
 		}
-		extendLastActive(&last, deviceSeen, dayStart.UTC(), dayEnd.UTC())
+		extendLastActive(&last, deviceSeen, windowStart.UTC(), windowEnd.UTC())
 	}
 
 	presence := 0.0
@@ -409,6 +412,57 @@ func (s *TimeAttendanceService) attendanceForDay(
 		ActiveSeconds: int(math.Round(active)), IdleSeconds: int(math.Round(idle)),
 		OffShiftSeconds: int(math.Round(offShift)), Status: status, LateMinutes: lateMinutes,
 	}, nil
+}
+
+// shiftBounds returns the shift start/end on the given work date. ok is false when
+// there is no schedule or its times cannot be parsed. A shift whose end is not after
+// its start (22:00–06:00) ends on the next day.
+func shiftBounds(dayStart time.Time, location *time.Location, schedule *repository.ScheduleRecord) (start, end time.Time, ok bool) {
+	if schedule == nil {
+		return time.Time{}, time.Time{}, false
+	}
+	startClock, err1 := time.ParseInLocation("15:04", shortTime(schedule.StartTime), location)
+	endClock, err2 := time.ParseInLocation("15:04", shortTime(schedule.EndTime), location)
+	if err1 != nil || err2 != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	start = time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), startClock.Hour(), startClock.Minute(), 0, 0, location)
+	end = time.Date(dayStart.Year(), dayStart.Month(), dayStart.Day(), endClock.Hour(), endClock.Minute(), 0, 0, location)
+	if !end.After(start) {
+		end = end.AddDate(0, 0, 1)
+	}
+	return start, end, true
+}
+
+// workWindow is the span of time whose session events belong to one work date.
+// Normally that is the calendar day. For a shift that crosses midnight it is a
+// 24-hour window centred on the shift: half the off-time before the start and half
+// after the end (22:00–06:00 → 14:00 to 14:00 next day). The whole night then
+// belongs to the date it started, and consecutive windows still tile without gaps
+// or overlap, so no event is counted on two dates.
+func workWindow(dayStart time.Time, location *time.Location, schedule *repository.ScheduleRecord) (time.Time, time.Time) {
+	calendarEnd := dayStart.AddDate(0, 0, 1)
+	start, end, ok := shiftBounds(dayStart, location, schedule)
+	if !ok || !end.After(calendarEnd) {
+		return dayStart, calendarEnd
+	}
+	gap := 24*time.Hour - end.Sub(start)
+	if gap < 0 {
+		gap = 0
+	}
+	windowStart := start.Add(-gap / 2)
+	return windowStart, windowStart.Add(24 * time.Hour)
+}
+
+// workDateFor returns the work date that "now" belongs to. At 03:00 during a
+// 22:00–06:00 shift that is yesterday's date, not today's.
+func workDateFor(now time.Time, location *time.Location, schedule *repository.ScheduleRecord) time.Time {
+	local := now.In(location)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
+	if windowStart, _ := workWindow(day, location, schedule); local.Before(windowStart) {
+		return day.AddDate(0, 0, -1)
+	}
+	return day
 }
 
 func weeklyPattern(schedule *repository.ScheduleRecord) map[string]string {
