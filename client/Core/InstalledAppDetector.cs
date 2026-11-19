@@ -493,8 +493,14 @@ public partial class InstalledAppDetector : Abstractions.IInstalledAppDetector
     {
         try
         {
-            // Base64-encoded UTF-16LE -EncodedCommand: avoids every quoting/escaping issue
-            // when embedding PowerShell with single/double quotes and tabs.
+            // In-process first. Under DLP lockdown AppLocker allows powershell.exe for SYSTEM
+            // only, so a PowerShell probe from the (user-session) tracker is blocked and the
+            // whole Start Menu inventory silently came back empty — which then marked every
+            // shortcut app as uninstalled. WScript.Shell COM loads in-process: no new exe.
+            var output = ReadStartMenuShortcutsInProcess();
+            if (output == null)
+            {
+            // Fallback: base64-encoded UTF-16LE -EncodedCommand (no quoting issues).
             var script = @"
 $ws = New-Object -ComObject WScript.Shell
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -521,7 +527,8 @@ foreach ($d in $dirs) {
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            var output = ProcessFilter.RunProbe(psi, 20000);
+            output = ProcessFilter.RunProbe(psi, 20000);
+            }
             if (output == null) return;
 
             foreach (var line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
@@ -605,6 +612,66 @@ foreach ($d in $dirs) {
         }
         catch (UnauthorizedAccessException) { }
         catch { }
+    }
+
+    /// <summary>
+    /// Resolve every Start Menu .lnk (user + all users) via the WScript.Shell COM object,
+    /// in-process. Returns "name\ttarget" lines (same shape as the PowerShell probe), or
+    /// null when COM is unavailable so the caller can fall back.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    internal static string? ReadStartMenuShortcutsInProcess()
+    {
+        object? shell = null;
+        try
+        {
+            var type = Type.GetTypeFromProgID("WScript.Shell");
+            if (type == null) return null;
+            shell = Activator.CreateInstance(type);
+            if (shell == null) return null;
+            dynamic ws = shell;
+
+            var dirs = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "Microsoft", "Windows", "Start Menu", "Programs"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "Microsoft", "Windows", "Start Menu", "Programs"),
+            };
+            var sb = new StringBuilder();
+            var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true };
+            foreach (var dir in dirs)
+            {
+                if (!Directory.Exists(dir)) continue;
+                foreach (var lnk in Directory.EnumerateFiles(dir, "*.lnk", opts))
+                {
+                    object? sc = null;
+                    try
+                    {
+                        sc = ws.CreateShortcut(lnk);
+                        string? target = ((dynamic)sc).TargetPath as string;
+                        if (!string.IsNullOrWhiteSpace(target))
+                            sb.Append(Path.GetFileNameWithoutExtension(lnk)).Append('\t').Append(target).Append('\n');
+                    }
+                    catch { /* unreadable shortcut */ }
+                    finally
+                    {
+                        if (sc != null && System.Runtime.InteropServices.Marshal.IsComObject(sc))
+                            System.Runtime.InteropServices.Marshal.ReleaseComObject(sc);
+                    }
+                }
+            }
+            return sb.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            if (shell != null && System.Runtime.InteropServices.Marshal.IsComObject(shell))
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(shell);
+        }
     }
 
     private static string? ExtractBinaryFromShortcutTarget(string target)
