@@ -326,6 +326,7 @@ func Setup(
 	monitoring.DELETE("/categories/:id", monitoringHandler.DeleteCategory)
 	monitoring.GET("/apps", monitoringHandler.ListApps)
 	monitoring.PATCH("/apps/:id", monitoringHandler.UpdateAppClassification)
+	monitoring.GET("/apps/:id/icon", monitoringHandler.GetAppIcon)
 	monitoring.GET("/websites", monitoringHandler.ListWebsites)
 	monitoring.POST("/websites", monitoringHandler.CreateWebsite)
 	monitoring.PATCH("/websites/:id", monitoringHandler.UpdateSiteClassification)

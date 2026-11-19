@@ -189,6 +189,13 @@ type MonitoredAppInfo struct {
 	TypeColor    string `json:"typeColor"`
 	CategoryID   *int   `json:"categoryId,omitempty"`
 	CategoryName string `json:"categoryName"`
+	// IconVersion > 0 when GET /monitoring/apps/:id/icon serves a PNG (cache-buster).
+	IconVersion int64 `json:"iconVersion"`
+}
+
+// GetAppIcon returns the catalog app's PNG icon, or nil when none is stored.
+func (s *MonitoringService) GetAppIcon(ctx context.Context, id string) ([]byte, error) {
+	return s.repo.GetAppIcon(ctx, id)
 }
 
 // ListApps returns the paginated detected-app catalog with classification.
@@ -228,6 +235,7 @@ func toAppInfos(apps []repository.MonitoredApp) []MonitoredAppInfo {
 			TypeColor:    a.TypeColor,
 			CategoryID:   a.CategoryID,
 			CategoryName: a.CategoryName,
+			IconVersion:  a.IconVersion,
 		}
 	}
 	return info

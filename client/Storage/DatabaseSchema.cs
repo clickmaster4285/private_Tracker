@@ -522,6 +522,7 @@ internal static class DatabaseSchema
         ALTER TABLE installed_applications ADD COLUMN is_browser INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE installed_applications ADD COLUMN desktop_id TEXT NOT NULL DEFAULT '';
         ALTER TABLE installed_applications ADD COLUMN categories TEXT NOT NULL DEFAULT '';
+        ALTER TABLE installed_applications ADD COLUMN icon_png TEXT NOT NULL DEFAULT '';
         ALTER TABLE app_items ADD COLUMN url TEXT NOT NULL DEFAULT '';
         ALTER TABLE app_items ADD COLUMN domain TEXT NOT NULL DEFAULT '';
         ALTER TABLE app_items ADD COLUMN object_type TEXT NOT NULL DEFAULT '';
@@ -645,11 +646,11 @@ internal static class DatabaseSchema
         INSERT INTO installed_applications
             (id, machine_id, app_name, binary_name, app_version, publisher, install_path, install_date,
              uninstall_string, change_type, is_installed, uninstall_date,
-             is_browser, desktop_id, categories, detected_at)
+             is_browser, desktop_id, categories, icon_png, detected_at)
         VALUES
             ($id, COALESCE((SELECT machine_id FROM machine_identity WHERE id = 1), ''), $app_name, $binary_name, $app_version, $publisher, $install_path, $install_date,
              $uninstall_string, $change_type, $is_installed, $uninstall_date,
-             $is_browser, $desktop_id, $categories, $detected_at)
+             $is_browser, $desktop_id, $categories, $icon_png, $detected_at)
         -- NOTE: app_name is NOT unique (rows-per-cycle model). Upsert-vs-insert is decided in
         -- SqliteLogStore.StoreInstalledApplicationsAsync: an open cycle (uninstall_date IS NULL)
         -- is updated in place; otherwise a NEW cycle row is inserted.

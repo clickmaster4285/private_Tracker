@@ -40,6 +40,7 @@ type InstalledApplication struct {
 	DesktopID       string     `json:"desktopId,omitempty" db:"desktop_id"`
 	Categories      string     `json:"categories,omitempty" db:"categories"`
 	AppFingerprint  string     `json:"-" db:"app_fingerprint"`
+	IconPNG         []byte     `json:"-" db:"icon_png"`
 }
 
 type NetworkInfo struct {

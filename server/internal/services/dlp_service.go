@@ -1059,15 +1059,21 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 	if err != nil {
 		return nil, err
 	}
+	hash := latest.BundleHash
 	if len(scoped) > 0 {
 		if merged, mErr := mergeDeviceControl(bundle, scoped); mErr == nil {
 			bundle = merged
+			// The published hash covers the global snapshot only. Clients verify the
+			// exact bytes they receive, so a per-device overlay needs its own digest —
+			// otherwise every scoped device rejects every policy ("SHA-256 mismatch").
+			sum := sha256.Sum256(bundle)
+			hash = "sha256:" + hex.EncodeToString(sum[:])
 		}
 	}
 	if sinceVersion > 0 && sinceVersion >= latest.Version {
 		return &dto.DlpPolicyPullResponse{
 			PolicyVersion:       latest.Version,
-			Hash:                latest.BundleHash,
+			Hash:                hash,
 			PublishedAt:         &pub,
 			Bundle:              bundle,
 			Unchanged:           true,
@@ -1076,7 +1082,7 @@ func (s *DlpService) PullPolicy(ctx context.Context, sinceVersion int64, employe
 	}
 	return &dto.DlpPolicyPullResponse{
 		PolicyVersion:       latest.Version,
-		Hash:                latest.BundleHash,
+		Hash:                hash,
 		PublishedAt:         &pub,
 		Bundle:              bundle,
 		LockdownPausedUntil: pauseUntil,

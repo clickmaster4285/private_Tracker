@@ -151,6 +151,7 @@ internal static class AppProcessGuard
             if (!string.IsNullOrWhiteSpace(a.Path))
                 AddExpandedPaths(raw, a.Path.Trim());
         }
+        AddPackageVersionWildcards(raw);
 
         var list = new List<PathMatcher>();
         foreach (var p in raw)
@@ -170,6 +171,7 @@ internal static class AppProcessGuard
             if (!string.IsNullOrWhiteSpace(a.Path))
                 AddExpandedPaths(raw, a.Path.Trim());
         }
+        AddPackageVersionWildcards(raw);
         return raw.Select(PathMatcher.Parse).ToList();
     }
 
@@ -215,6 +217,29 @@ internal static class AppProcessGuard
         }
 
         raw.Add(p);
+    }
+
+    // …\WindowsApps\Name_Version_Arch_ResourceId_PublisherId\… (packaged app install folder)
+    private static readonly Regex PackageFolderRx = new(
+        @"\\WindowsApps\\(?<name>[^\\_]+)_\d+(?:\.\d+){1,3}_[^\\]*_(?<pub>[a-z0-9]{13})(?=\\)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A Store update moves a packaged app to a new versioned folder. Add a version-wildcard
+    /// twin of every published WindowsApps path so the sweeper keeps an allowed app alive
+    /// across updates (AppLocker already allows it by package family).
+    /// </summary>
+    internal static void AddPackageVersionWildcards(SortedSet<string> raw)
+    {
+        foreach (var p in raw.ToList())
+        {
+            var m = PackageFolderRx.Match(p);
+            if (!m.Success)
+                continue;
+            var wild = p[..m.Index] + @"\WindowsApps\" + m.Groups["name"].Value + "_*_" +
+                       m.Groups["pub"].Value + p[(m.Index + m.Length)..];
+            raw.Add(wild);
+        }
     }
 
     private static bool StartsWithMacro(string path, string macro) =>

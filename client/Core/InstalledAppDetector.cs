@@ -14,6 +14,12 @@ namespace client.Core;
 /// </summary>
 public partial class InstalledAppDetector : Abstractions.IInstalledAppDetector
 {
+    /// <summary>
+    /// Categories marker for OS-shipped Start Menu apps (target under the Windows dir).
+    /// Lets console built-ins (Command Prompt, PowerShell) stay in installed_applications.
+    /// </summary>
+    public const string WindowsBuiltInCategory = "WindowsBuiltIn";
+
     private readonly HashSet<string> _knownApps = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _binaryToDisplayName = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _missingPerms = new();
@@ -462,6 +468,13 @@ public partial class InstalledAppDetector : Abstractions.IInstalledAppDetector
                 @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall");
             ScanRegistryUninstallNode(Microsoft.Win32.Registry.CurrentUser,
                 @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
+
+            // 4. Packaged (Store / MSIX) apps — Calculator, Photos, Paint, Settings… have no
+            //    .lnk, so only the package repository + manifest can list them.
+            ScanPackagedApps();
+
+            // 5. Icons for the admin allowlist picker (EXE icon for desktop rows).
+            FillDesktopAppIcons();
         }
         catch (UnauthorizedAccessException) { }
         catch { }
@@ -516,7 +529,8 @@ foreach ($d in $dirs) {
                 var parts = line.Split('\t');
                 if (parts.Length < 2) continue;
                 var lnkName = parts[0].Trim();
-                var target = parts[1].Trim().Trim('"', '\'');
+                // OS shortcuts often carry %windir% / %SystemRoot% — expand before path checks.
+                var target = Environment.ExpandEnvironmentVariables(parts[1].Trim().Trim('"', '\''));
                 if (string.IsNullOrWhiteSpace(lnkName) || string.IsNullOrWhiteSpace(target)) continue;
 
                 // Skip non-application shortcuts: URLs, AppX/Store launchers, installer
@@ -540,11 +554,34 @@ foreach ($d in $dirs) {
                     ExecutableMetadata.IsInstallerFileName(binaryName)) continue;
                 var lnkLower = lnkName.ToLowerInvariant();
                 if (lnkLower == "uninstall" || lnkLower.StartsWith("uninstall ", StringComparison.Ordinal)) continue;
-                // Skip ONLY confirmed console-subsystem targets (node, git-bash, cmd…). An
-                // unreadable/unknown subsystem (0) is kept — err on inclusion for real apps.
+                // Windows built-in apps: a Start Menu shortcut whose target lives under the
+                // Windows directory was placed there by the OS itself (Command Prompt,
+                // Windows PowerShell, Notepad, Task Manager, Paint, Event Viewer…). They are
+                // user-facing apps an admin must be able to allowlist — console or GUI alike.
+                // Structural signal only (Windows dir + Start Menu), no product names.
+                var isWindowsBuiltIn = ExecutableMetadata.IsWindowsSystemTree(target);
+
+                // Skip ONLY confirmed console-subsystem targets outside the Windows dir
+                // (node, git-bash…) — those are packages. An unreadable/unknown subsystem (0)
+                // is kept — err on inclusion for real apps.
                 var subsystem = ExecutableMetadata.GetSubsystem(target);
-                if (subsystem != 0 && subsystem != ExecutableMetadata.SubsystemWindowsGui)
+                if (!isWindowsBuiltIn && subsystem != 0 && subsystem != ExecutableMetadata.SubsystemWindowsGui)
                     continue;
+
+                // Several shortcuts can launch one OS exe (Command Prompt, Anaconda Prompt and
+                // Developer Command Prompt all target cmd.exe). An allow covers the whole exe,
+                // so name the row from the exe's own FileDescription (OS metadata) instead of
+                // whichever shortcut happened to be scanned first.
+                if (isWindowsBuiltIn)
+                {
+                    try
+                    {
+                        var desc = FileVersionInfo.GetVersionInfo(target).FileDescription?.Trim();
+                        if (!string.IsNullOrWhiteSpace(desc))
+                            lnkName = desc;
+                    }
+                    catch { /* keep the shortcut name */ }
+                }
 
                 _knownApps.Add(lnkName);
                 _knownApps.Add(binaryName);
@@ -557,7 +594,8 @@ foreach ($d in $dirs) {
                     AppName = lnkName,
                     BinaryName = binaryName,
                     DesktopId = lnkName, // stable identity; registry rows for the same binary merge onto this name
-                    Categories = isBrowser ? "WebBrowser" : "",
+                    Categories = isBrowser ? "WebBrowser"
+                        : isWindowsBuiltIn ? WindowsBuiltInCategory : "",
                     InstallPath = target,
                     ChangeType = "installed",
                     IsBrowser = isBrowser,
@@ -699,6 +737,8 @@ foreach ($d in $dirs) {
                             if (string.IsNullOrEmpty(existing.InstallPath)) existing.InstallPath = installPath;
                             existing.UninstallString = uninstallString;
                             existing.IsBrowser |= isBrowser;
+                            if (string.IsNullOrEmpty(existing.IconPng))
+                                existing.IconPng = WindowsAppIcons.FromExe(exePath);
                             if (isBrowser && !existing.Categories.Contains("WebBrowser", StringComparison.OrdinalIgnoreCase))
                                 existing.Categories = "WebBrowser";
                             continue; // shortcut row already added — no duplicate row
@@ -724,6 +764,7 @@ foreach ($d in $dirs) {
                         UninstallString = uninstallString,
                         ChangeType = "installed",
                         IsBrowser = isBrowser,
+                        IconPng = WindowsAppIcons.FromExe(exePath),
                         DetectedAt = DateTime.UtcNow,
                     });
                 }

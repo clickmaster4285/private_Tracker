@@ -118,6 +118,8 @@ type InstalledApplicationEntry struct {
 	IsBrowser       bool    `json:"isBrowser"`
 	DesktopID       string  `json:"desktopId"`
 	Categories      string  `json:"categories"`
+	// IconPng is a base64 PNG (≤ 64 KB decoded) extracted by the Windows client. Optional.
+	IconPng string `json:"iconPng,omitempty"`
 }
 
 type SyncInstalledAppsRequest struct {

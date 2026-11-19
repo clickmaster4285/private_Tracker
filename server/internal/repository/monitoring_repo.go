@@ -260,11 +260,15 @@ type MonitoredApp struct {
 	TypeColor    string `json:"typeColor"`
 	CategoryID   *int   `json:"categoryId,omitempty"`
 	CategoryName string `json:"categoryName"`
+	// IconVersion is the icon's last-update time (unix seconds); 0 = no icon.
+	IconVersion int64 `json:"iconVersion"`
 }
 
 // MonitoredAppListParams paginates/filters the app catalog.
 type MonitoredAppListParams struct {
 	Search       string
+	// OS narrows the catalog to one platform ("windows"); empty = all.
+	OS string
 	TypeID       int
 	CategoryID   int
 	Unclassified bool
@@ -315,6 +319,12 @@ func (r *MonitoringRepo) ListApps(ctx context.Context, params MonitoredAppListPa
 	if params.Unclassified {
 		conditions = append(conditions, "(ia.type_id IS NULL OR ia.category_id IS NULL)")
 	}
+	if strings.EqualFold(params.OS, "windows") {
+		// Structural: Linux catalog rows carry .desktop Categories ("A;B;") or a POSIX
+		// install path; macOS rows a bundle path. Windows rows have neither.
+		conditions = append(conditions,
+			"COALESCE(ia.categories, '') NOT LIKE '%;%' AND COALESCE(ia.install_path, '') NOT LIKE '/%'")
+	}
 
 	whereClause := "WHERE " + strings.Join(conditions, " AND ")
 
@@ -332,7 +342,9 @@ func (r *MonitoringRepo) ListApps(ctx context.Context, params MonitoredAppListPa
 		SELECT ia.id, ia.app_name, COALESCE(ia.binary_name, '') AS binary_name,
 		       COALESCE(ia.categories, '') AS categories, ia.is_browser,
 		       t.id AS type_id, COALESCE(t.name, '') AS type_name, COALESCE(t.color, '') AS type_color,
-		       c.id AS category_id, COALESCE(c.name, '') AS category_name
+		       c.id AS category_id, COALESCE(c.name, '') AS category_name,
+		       CASE WHEN ia.icon_png IS NULL THEN 0
+		            ELSE COALESCE(EXTRACT(EPOCH FROM ia.icon_updated_at)::BIGINT, 1) END AS icon_version
 		FROM installed_applications ia
 		LEFT JOIN monitoring_types t ON t.id = ia.type_id AND t.deleted_at IS NULL
 		LEFT JOIN monitoring_categories c ON c.id = ia.category_id AND c.deleted_at IS NULL
@@ -354,7 +366,7 @@ func (r *MonitoringRepo) ListApps(ctx context.Context, params MonitoredAppListPa
 		if err := rows.Scan(
 			&a.ID, &a.AppName, &a.BinaryName, &a.Categories, &a.IsBrowser,
 			&a.TypeID, &a.TypeName, &a.TypeColor,
-			&a.CategoryID, &a.CategoryName,
+			&a.CategoryID, &a.CategoryName, &a.IconVersion,
 		); err != nil {
 			return nil, fmt.Errorf("scan monitored app row: %w", err)
 		}
@@ -368,6 +380,20 @@ func (r *MonitoringRepo) ListApps(ctx context.Context, params MonitoredAppListPa
 		PerPage:    params.PerPage,
 		TotalPages: totalPages,
 	}, nil
+}
+
+// GetAppIcon returns the stored PNG icon (nil when the app has none).
+func (r *MonitoringRepo) GetAppIcon(ctx context.Context, id string) ([]byte, error) {
+	var png []byte
+	err := r.pool.QueryRow(ctx,
+		`SELECT icon_png FROM installed_applications WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&png)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get app icon: %w", err)
+	}
+	return png, nil
 }
 
 // UpdateAppClassification sets (or clears) an app's type/category assignment.

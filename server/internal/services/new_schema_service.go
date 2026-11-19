@@ -1,7 +1,9 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -143,6 +145,11 @@ func (s *NewSchemaService) SyncInstalledApps(ctx context.Context, req *dto.SyncI
 		if err != nil {
 			return nil, err
 		}
+		if icon := decodeAppIcon(e.IconPng); icon != nil {
+			if err := s.repo.SetApplicationIcon(ctx, tx, catalogID, icon); err != nil {
+				return nil, err
+			}
+		}
 
 		err = s.repo.UpsertEmployeeAppLink(ctx, tx, models.EmployeeInstalledApplication{
 			EmployeeID:             req.EmployeeID,
@@ -164,6 +171,28 @@ func (s *NewSchemaService) SyncInstalledApps(ctx context.Context, req *dto.SyncI
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 	return &dto.SyncBatchResponse{Synced: inserted, Message: fmt.Sprintf("Synced %d of %d entries", inserted, len(req.Entries))}, nil
+}
+
+// maxAppIconBytes caps a stored catalog icon (decoded PNG).
+const maxAppIconBytes = 64 * 1024
+
+var pngSignature = []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+
+// decodeAppIcon returns the PNG bytes of a base64 icon, or nil when absent, malformed,
+// oversized, or not a PNG (signature check — the bytes are served back as image/png).
+func decodeAppIcon(b64 string) []byte {
+	b64 = strings.TrimSpace(b64)
+	if b64 == "" || len(b64) > maxAppIconBytes*4/3+8 {
+		return nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil || len(raw) < 8 || len(raw) > maxAppIconBytes {
+		return nil
+	}
+	if !bytes.HasPrefix(raw, pngSignature) {
+		return nil
+	}
+	return raw
 }
 
 // appFingerprint builds the catalog natural key for applications.

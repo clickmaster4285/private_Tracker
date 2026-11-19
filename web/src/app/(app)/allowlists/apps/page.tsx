@@ -24,6 +24,7 @@ import {
 } from '@/lib/api';
 import { formatDateTime } from '@/lib/format';
 import { useUrlQueryState } from '@/hooks/use-url-query-state';
+import { AppIcon } from '@/components/apps/AppIcon';
 
 const PER_PAGE = 30;
 
@@ -100,6 +101,7 @@ function AppAllowListInner() {
     queryFn: ({ pageParam }) =>
       monitoringApi.apps.list({
         search: catalogSearch || undefined,
+        os: 'windows',
         page: pageParam,
         perPage: CATALOG_PER_PAGE,
       }),
@@ -423,12 +425,22 @@ function AppAllowListInner() {
                   className="border-b border-border last:border-0 hover:bg-muted/30"
                 >
                   <td className="px-4 py-3 text-sm font-medium">
-                    {row.appName || row.product || '—'}
-                    {row.note ? (
-                      <div className="text-xs text-muted-foreground font-normal mt-0.5 truncate max-w-[16rem]">
-                        {row.note}
+                    <div className="flex items-center gap-2.5">
+                      <AppIcon
+                        appId={row.installedApplicationId}
+                        name={row.appName || row.product || '?'}
+                        size={24}
+                        tryWithoutVersion
+                      />
+                      <div className="min-w-0">
+                        {row.appName || row.product || '—'}
+                        {row.note ? (
+                          <div className="text-xs text-muted-foreground font-normal mt-0.5 truncate max-w-[16rem]">
+                            {row.note}
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-[11px] font-mono break-all max-w-[18rem] text-muted-foreground">
                     {identitySummary(row)}
@@ -517,16 +529,10 @@ function AppAllowListInner() {
                     <Check className={`w-4 h-4 mr-2 ${useWindowsSettingsPreset ? '' : 'opacity-0'}`} />
                     Windows Settings (Win10/11)
                   </Button>
-                  <p className="text-[11px] text-muted-foreground mt-1.5 leading-snug">
-                    Use this for Windows Settings. Catalog rows named Settings / Accessibility with{' '}
-                    <span className="font-mono">cinnamon-settings</span> or{' '}
-                    <span className="font-mono">gnome-control-center</span> are <strong>Linux</strong>, not
-                    Windows.
-                  </p>
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">
-                    Or pick from inventory catalog
+                    Or pick a Windows app (built-in and installed)
                   </label>
                   <div className="mt-1 flex items-center border border-border rounded-lg px-3 py-2 gap-2">
                     <Search className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -537,7 +543,7 @@ function AppAllowListInner() {
                       className="bg-transparent border-none outline-none text-sm flex-1 text-foreground placeholder:text-muted-foreground"
                     />
                   </div>
-                  <div className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+                  <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-border divide-y divide-border">
                     {catalogQuery.isLoading && (
                       <div className="flex justify-center py-6">
                         <Loader2 className="w-4 h-4 animate-spin text-primary" />
@@ -562,7 +568,7 @@ function AppAllowListInner() {
                             setUseWindowsSettingsPreset(false);
                             if (!pathOverride.trim()) setPathOverride('');
                           }}
-                          className={`w-full text-left px-3 py-2 text-sm flex items-start gap-2 transition-colors ${
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2.5 transition-colors ${
                             taken
                               ? 'opacity-40 cursor-not-allowed'
                               : selected
@@ -570,16 +576,17 @@ function AppAllowListInner() {
                                 : 'hover:bg-muted/40'
                           }`}
                         >
-                          <span className="mt-0.5 w-4 shrink-0">
-                            {selected ? <Check className="w-4 h-4 text-primary" /> : null}
-                          </span>
-                          <span className="min-w-0">
+                          <AppIcon appId={app.id} name={app.appName} iconVersion={app.iconVersion} />
+                          <span className="min-w-0 flex-1">
                             <span className="font-medium block truncate">{app.appName}</span>
                             <span className="text-[11px] text-muted-foreground font-mono truncate block">
                               {app.binaryName || app.id}
                               {taken ? ' · already allowed' : ''}
                               {linux ? ' · Linux (not Win10 Settings)' : ''}
                             </span>
+                          </span>
+                          <span className="w-4 shrink-0">
+                            {selected ? <Check className="w-4 h-4 text-primary" /> : null}
                           </span>
                         </button>
                       );

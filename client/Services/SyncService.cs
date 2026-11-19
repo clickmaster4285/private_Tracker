@@ -681,6 +681,7 @@ public class SyncService : BackgroundService
                 isBrowser = e.IsBrowser,
                 desktopId = e.DesktopId,
                 categories = e.Categories,
+                iconPng = string.IsNullOrEmpty(e.IconPng) ? null : e.IconPng,
             },
             (ids, token) => _store.MarkInstalledApplicationsSentAsync(ids, token),
             e => e.Id,

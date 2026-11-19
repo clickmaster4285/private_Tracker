@@ -3,6 +3,22 @@
 > **Last audited:** 2026-11-19
 > **Changelog:**
 >
+> - 2026-11-19: **App allowlist picker lists built-in Windows apps with icons (2.9.9).** The
+> client inventory now includes packaged (Store/MSIX) apps such as Calculator, Photos, Paint,
+> Notepad, Settings, Snipping Tool, Terminal and Store. The source is the per-user AppModel
+> package repository plus each `AppxManifest.xml`: apps with an Executable whose
+> `AppListEntry` is not `none`. Names resolve through `SHLoadIndirectString`. Every Windows app
+> carries a ≤64 KB PNG icon: a packaged app's `targetsize-32` logo, or a desktop EXE icon read
+> via `ExtractIconEx` and `GetDIBits` with an in-process PNG encoder (no System.Drawing, no
+> PowerShell, which is SYSTEM-only under lockdown). Lab PC: 35 packaged apps, 122/131 with icons.
+> Client SQLite `installed_applications.icon_png`, sync field `iconPng`. Server migration
+> **077** adds `icon_png` + `icon_updated_at`, with a PNG signature check and size cap on sync.
+> JWT `GET /monitoring/apps/:id/icon`, list `iconVersion`, and `?os=windows` filter. Web
+> `AppIcon` appears in the `/allowlists/apps` picker (Windows-only) and the allowed-apps table.
+> DlpService sweeper matches published `WindowsApps\Name_<ver>_…_<pub>` paths version-agnostic,
+> so an allowed Store app survives updates. Installer-Parity: restart API (**077**), rebuild
+> Windows Setup; icons appear after each PC's next inventory scan (startup).
+>
 > - 2026-11-19: **Web allowlist hosts reachable over HTTP + custom ports (2.9.9).** An allowed host
 > (e.g. `192.168.88.35`) got a firewall carve-out on **TCP 443 only**, so a plain-HTTP
 > intranet site stayed blocked. `ALLOW-WEB-TCP` now opens **TCP 80 and 443**. A published

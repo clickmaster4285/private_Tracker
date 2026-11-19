@@ -108,7 +108,10 @@ public static class SoftwareClassifier
             // executable (node, git-bash, cmd…), it is a CLI tool, not an app. The detectors
             // already enforce this at discovery; this catches stragglers structurally via the
             // PE Subsystem — no product names.
-            if (!string.IsNullOrEmpty(app.InstallPath) &&
+            // OS-shipped Start Menu apps (Command Prompt, PowerShell) are kept on purpose.
+            var builtIn = string.Equals(app.Categories, InstalledAppDetector.WindowsBuiltInCategory,
+                StringComparison.OrdinalIgnoreCase);
+            if (!builtIn && !string.IsNullOrEmpty(app.InstallPath) &&
                 ExecutableMetadata.GetSubsystem(app.InstallPath) == ExecutableMetadata.SubsystemWindowsCui)
                 continue;
 

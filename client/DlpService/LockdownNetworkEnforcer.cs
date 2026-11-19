@@ -358,6 +358,7 @@ internal static class LockdownNetworkEnforcer
             try { DomainBlockEnforcer.ClearChromiumTransportLockdown(); }
             catch { /* firewall clear still runs */ }
             RemoveQuicBlock();
+            RestoreForeignOutboundAllows();
 
             var now = DateTimeOffset.UtcNow;
             if (!_rulesMaybePresent && !hostsCleared && now - _cleanVerifiedUtc < CleanVerifyEvery
@@ -799,6 +800,9 @@ internal static class LockdownNetworkEnforcer
         IReadOnlyList<(string Host, IReadOnlyList<IPAddress> Ips)> hostIps,
         IReadOnlyList<IPAddress> allowList)
     {
+        // Only admin-allowed ports may leave the PC: switch off Windows/app outbound
+        // Allow rules that would otherwise reach any port (Allow beats default Block).
+        SweepForeignOutboundAllows(force: changed);
         var hosts = ApplyAllowHosts(hostIps);
         MaybeKillWeb(allowList, force: true);
         var hostsOk = hosts is "hosts_allow_updated" or "hosts_allow_cleared"
@@ -1112,6 +1116,128 @@ internal static class LockdownNetworkEnforcer
         }
         return list;
     }
+
+    // ---------------------------------------------------------------- foreign outbound allows
+
+    internal const string ForeignDisabledMarker = "ALPHA_FOREIGN_DISABLED:";
+    private static readonly TimeSpan ForeignSweepEvery = TimeSpan.FromMinutes(5);
+    private static DateTimeOffset _foreignSweepUtc = DateTimeOffset.MinValue;
+
+    private static string ForeignDisabledPath =>
+        Path.Combine(DlpDataPaths.DlpRoot, "foreign-outbound-disabled.txt");
+
+    /// <summary>
+    /// Disable local (PersistentStore) outbound Allow rules that are not product rules and
+    /// have no remote-port limit. Core Networking (DNS/DHCP/IPv6) and non TCP/UDP protocols
+    /// stay on. Names are remembered so <see cref="RestoreForeignOutboundAllows"/> re-enables
+    /// exactly what we turned off. Throttled; Windows/app installs can add rules later.
+    /// </summary>
+    private static void SweepForeignOutboundAllows(bool force)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!force && now - _foreignSweepUtc < ForeignSweepEvery)
+            return;
+        _foreignSweepUtc = now;
+        try
+        {
+            var run = RunPowerShellDetailed(DisableForeignAllowsScript);
+            var names = ParseForeignDisabled(run.Stdout);
+            if (names.Count == 0)
+                return;
+            Directory.CreateDirectory(DlpDataPaths.DlpRoot);
+            var known = File.Exists(ForeignDisabledPath)
+                ? new HashSet<string>(File.ReadAllLines(ForeignDisabledPath)
+                    .Select(l => l.Trim()).Where(l => l.Length > 0), StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var n in names)
+                known.Add(n);
+            File.WriteAllLines(ForeignDisabledPath, known.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            /* best-effort: default Block + product rules still apply */
+        }
+    }
+
+    internal static List<string> ParseForeignDisabled(string? stdout)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrEmpty(stdout))
+            return list;
+        foreach (var line in stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var t = line.Trim();
+            if (!t.StartsWith(ForeignDisabledMarker, StringComparison.Ordinal))
+                continue;
+            var name = t[ForeignDisabledMarker.Length..].Trim();
+            if (name.Length > 0 && !name.StartsWith(DomainBlockEnforcer.FirewallRulePrefix, StringComparison.OrdinalIgnoreCase))
+                list.Add(name);
+        }
+        return list;
+    }
+
+    /// <summary>Re-enable every rule the sweep disabled, then forget them.</summary>
+    private static void RestoreForeignOutboundAllows()
+    {
+        _foreignSweepUtc = DateTimeOffset.MinValue;
+        try
+        {
+            if (!File.Exists(ForeignDisabledPath))
+                return;
+            var names = File.ReadAllLines(ForeignDisabledPath)
+                .Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+            if (names.Count > 0)
+            {
+                var path = Path.Combine(Path.GetTempPath(), "alpha-dlp-restore-" + Guid.NewGuid().ToString("n") + ".txt");
+                File.WriteAllLines(path, names);
+                try
+                {
+                    var run = RunPowerShellDetailed(
+                        "$ErrorActionPreference = 'Continue'\n" +
+                        "Get-Content -LiteralPath '" + path.Replace("'", "''") + "' | ForEach-Object {\n" +
+                        "  Enable-NetFirewallRule -Name $_ -ErrorAction SilentlyContinue }\n");
+                    if (!run.Ok)
+                        return; // keep the list; next Clear retries
+                }
+                finally
+                {
+                    try { File.Delete(path); } catch { /* ignore */ }
+                }
+            }
+            File.Delete(ForeignDisabledPath);
+        }
+        catch
+        {
+            /* keep the list for the next Clear */
+        }
+    }
+
+    private const string DisableForeignAllowsScript = """
+        $ErrorActionPreference = 'Continue'
+        $core = '@FirewallAPI.dll,-25000'
+        $ports = @{}
+        Get-NetFirewallPortFilter -PolicyStore PersistentStore -All -ErrorAction SilentlyContinue |
+          ForEach-Object { $ports[[string]$_.InstanceID] = $_ }
+        Get-NetFirewallRule -PolicyStore PersistentStore -Direction Outbound -Action Allow -Enabled True -ErrorAction SilentlyContinue |
+          Where-Object {
+            # netsh-created product rules get a GUID Name; the prefix is the DisplayName.
+            $_.Name -notlike 'AlphaAI-DLP-*' -and
+            [string]$_.DisplayName -notlike 'AlphaAI-DLP-*' -and
+            [string]$_.Description -notlike 'AlphaAI-DLP-*' -and
+            [string]$_.Group -ne $core
+          } |
+          ForEach-Object {
+            $pf = $ports[[string]$_.Name]
+            $proto = if ($pf) { [string]$pf.Protocol } else { 'Any' }
+            $rp = if ($pf) { ((@($pf.RemotePort) | ForEach-Object { "$_" }) -join ',') } else { 'Any' }
+            if (($proto -eq 'TCP' -or $proto -eq 'UDP' -or $proto -eq 'Any') -and ($rp -eq 'Any' -or $rp -eq '')) {
+              try {
+                Disable-NetFirewallRule -Name $_.Name -ErrorAction Stop
+                Write-Output ('ALPHA_FOREIGN_DISABLED:' + $_.Name)
+              } catch { }
+            }
+          }
+        """;
 
     private static (bool Ok, string Output) EnsureQuicBlock()
     {

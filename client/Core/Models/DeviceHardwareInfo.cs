@@ -59,6 +59,11 @@ public class InstalledApplication
     /// instead of hardcoded name lists. Empty on Windows.
     /// </summary>
     public string Categories { get; set; } = string.Empty;
+    /// <summary>
+    /// Base64 PNG (normally 32×32, ≤ 64 KB) of the app's own icon — Windows only, read from
+    /// the EXE / packaged-app logo. Shown in the admin app allowlist picker. Empty = none.
+    /// </summary>
+    public string IconPng { get; set; } = string.Empty;
     public DateTime DetectedAt { get; set; } = DateTime.UtcNow;
     public bool IsSynced { get; set; }
     public string? SyncedAt { get; set; }

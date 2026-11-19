@@ -165,6 +165,16 @@ public class DefaultDenyV291Tests
     }
 
     [Fact]
+    public void ForeignDisabled_ParsesMarkersAndNeverProductRules()
+    {
+        var names = LockdownNetworkEnforcer.ParseForeignDisabled(
+            "noise\r\nALPHA_FOREIGN_DISABLED:{ABC-123}\nALPHA_FOREIGN_DISABLED:SPOOLSV-Out\n" +
+            "ALPHA_FOREIGN_DISABLED:AlphaAI-DLP-LOCK-ALLOW-DHCP\nALPHA_FOREIGN_DISABLED:   \n");
+        Assert.Equal(new[] { "{ABC-123}", "SPOOLSV-Out" }, names);
+        Assert.Empty(LockdownNetworkEnforcer.ParseForeignDisabled(null));
+    }
+
+    [Fact]
     public void PublicIpProbe_IsNotSuccess()
     {
         var bad = LockdownNetworkEnforcer.EvaluateBehavioralEgress(true, true, false);

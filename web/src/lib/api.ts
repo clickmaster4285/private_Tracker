@@ -987,6 +987,8 @@ export interface MonitoredApp {
   typeColor: string;
   categoryId?: number;
   categoryName: string;
+  /** > 0 when the server holds an icon (unix seconds of last change — cache-buster). */
+  iconVersion?: number;
 }
 
 export interface MonitoredSite {
@@ -1063,9 +1065,15 @@ export const monitoringApi = {
   apps: {
     list: (params?: {
       search?: string; typeId?: number; categoryId?: number; unclassified?: boolean;
+      /** 'windows' hides Linux/macOS catalog rows. */
+      os?: 'windows';
       page?: number; perPage?: number;
     }) =>
       request<MonitoredAppListResponse>('/monitoring/apps', { params: params as Record<string, string | number | boolean | undefined> }),
+
+    /** PNG icon URL for a catalog app (cookie-authenticated; same-site proxy). */
+    iconSrc: (id: string, version?: number) =>
+      `${API_BASE}/monitoring/apps/${encodeURIComponent(id)}/icon${version ? `?v=${version}` : ''}`,
 
     classify: (id: string, data: ClassificationPayload) =>
       request<{ message: string }>('/monitoring/apps/' + id, { method: 'PATCH', body: data }),

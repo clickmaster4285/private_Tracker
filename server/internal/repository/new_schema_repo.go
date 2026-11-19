@@ -1793,6 +1793,18 @@ func (r *NewSchemaRepo) UpsertApplicationCatalog(ctx context.Context, tx pgx.Tx,
 	return id, nil
 }
 
+// SetApplicationIcon stores the catalog icon when it differs from the current one.
+func (r *NewSchemaRepo) SetApplicationIcon(ctx context.Context, tx pgx.Tx, id string, png []byte) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE installed_applications
+		SET icon_png = $2, icon_updated_at = NOW()
+		WHERE id = $1 AND (icon_png IS NULL OR icon_png <> $2)`, id, png)
+	if err != nil {
+		return fmt.Errorf("set application icon: %w", err)
+	}
+	return nil
+}
+
 // normalizeAppName produces the cross-OS merge key for an app display name:
 // lowercase, strip every non-alphanumeric character.
 func normalizeAppName(name string) string {

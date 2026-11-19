@@ -77,3 +77,19 @@ public class StartupAppEnforcerTests
         Assert.False(StartupAppEnforcer.IsDisabled(null));
     }
 }
+
+public class PackagedAppSweepTests
+{
+    [Fact]
+    public void AllowedPackagedApp_SurvivesStoreVersionUpdate()
+    {
+        var published = @"C:\Program Files\WindowsApps\Microsoft.WindowsCalculator_11.2607.0.0_x64__8wekyb3d8bbwe\CalculatorApp.exe";
+        var matchers = AppProcessGuard.BuildPublishedMatchers([new AllowAppEntry { Path = published }]);
+        Assert.True(AppProcessGuard.IsPathAllowed(published, matchers));
+        Assert.True(AppProcessGuard.IsPathAllowed(
+            @"C:\Program Files\WindowsApps\Microsoft.WindowsCalculator_11.2700.3.0_x64__8wekyb3d8bbwe\CalculatorApp.exe", matchers));
+        // Another package (same exe name, different family) is still not allowed.
+        Assert.False(AppProcessGuard.IsPathAllowed(
+            @"C:\Program Files\WindowsApps\Evil.Calculator_1.0.0.0_x64__abcdefghijklm\CalculatorApp.exe", matchers));
+    }
+}

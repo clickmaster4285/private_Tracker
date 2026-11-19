@@ -298,6 +298,7 @@ public class SqliteLogStore : ILogStore, IDisposable
                     is_browser       INTEGER NOT NULL DEFAULT 0,
                     desktop_id       TEXT NOT NULL DEFAULT '',
                     categories       TEXT NOT NULL DEFAULT '',
+                    icon_png         TEXT NOT NULL DEFAULT '',
                     detected_at      TEXT NOT NULL,
                     is_synced        INTEGER NOT NULL DEFAULT 0,
                     synced_at        TEXT,
@@ -518,6 +519,7 @@ public class SqliteLogStore : ILogStore, IDisposable
                     is_browser = MAX(is_browser, $is_browser),
                     desktop_id = COALESCE(NULLIF($desktop_id, ''), desktop_id),
                     categories = COALESCE(NULLIF($categories, ''), categories),
+                    icon_png = COALESCE(NULLIF($icon_png, ''), icon_png),
                     detected_at = $detected_at,
                     is_synced = 0
                 WHERE app_name = $app_name AND uninstall_date IS NULL";
@@ -531,6 +533,7 @@ public class SqliteLogStore : ILogStore, IDisposable
             var pDesktopU = updCmd.Parameters.Add("$desktop_id", SqliteType.Text);
             var pCatsU = updCmd.Parameters.Add("$categories", SqliteType.Text);
             var pDetectedU = updCmd.Parameters.Add("$detected_at", SqliteType.Text);
+            var pIconU = updCmd.Parameters.Add("$icon_png", SqliteType.Text);
 
             var insCmd = _connection.CreateCommand();
             insCmd.CommandText = DatabaseSchema.InsertInstalledApplicationSql;
@@ -549,6 +552,7 @@ public class SqliteLogStore : ILogStore, IDisposable
             var pIsBrowser = insCmd.Parameters.Add("$is_browser", SqliteType.Integer);
             var pDesktopId = insCmd.Parameters.Add("$desktop_id", SqliteType.Text);
             var pCategories = insCmd.Parameters.Add("$categories", SqliteType.Text);
+            var pIcon = insCmd.Parameters.Add("$icon_png", SqliteType.Text);
 
             var findCmd = _connection.CreateCommand();
             findCmd.CommandText = "SELECT id FROM installed_applications WHERE app_name = $app_name AND uninstall_date IS NULL LIMIT 1";
@@ -577,6 +581,7 @@ public class SqliteLogStore : ILogStore, IDisposable
                     pDesktopU.Value = e.DesktopId;
                     pCatsU.Value = e.Categories;
                     pDetectedU.Value = e.DetectedAt.ToString("O");
+                    pIconU.Value = e.IconPng ?? string.Empty;
                     await updCmd.ExecuteNonQueryAsync(ct);
                     continue;
                 }
@@ -600,6 +605,7 @@ public class SqliteLogStore : ILogStore, IDisposable
                 pIsBrowser.Value = e.IsBrowser ? 1 : 0;
                 pDesktopId.Value = e.DesktopId;
                 pCategories.Value = e.Categories;
+                pIcon.Value = e.IconPng ?? string.Empty;
                 await insCmd.ExecuteNonQueryAsync(ct);
             }
             await tx.CommitAsync(ct);
@@ -3472,6 +3478,7 @@ public class SqliteLogStore : ILogStore, IDisposable
             IsBrowser = r.GetInt32(r.GetOrdinal("is_browser")) == 1,
             DesktopId = r.IsDBNull(r.GetOrdinal("desktop_id")) ? string.Empty : r.GetString(r.GetOrdinal("desktop_id")),
             Categories = r.IsDBNull(r.GetOrdinal("categories")) ? string.Empty : r.GetString(r.GetOrdinal("categories")),
+            IconPng = TryGetString(r, "icon_png") ?? string.Empty,
             DetectedAt = DateTime.Parse(r.GetString(r.GetOrdinal("detected_at"))),
             IsSynced = r.GetInt32(r.GetOrdinal("is_synced")) == 1,
             SyncedAt = r.IsDBNull(r.GetOrdinal("synced_at")) ? null : r.GetString(r.GetOrdinal("synced_at")),

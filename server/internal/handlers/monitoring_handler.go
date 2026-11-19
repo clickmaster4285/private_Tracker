@@ -172,6 +172,25 @@ func (h *MonitoringHandler) ListApps(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
+// GetAppIcon handles GET /api/v1/monitoring/apps/:id/icon — the app's PNG icon.
+// The list carries iconVersion, which the web appends as ?v= so this can cache long.
+func (h *MonitoringHandler) GetAppIcon(c echo.Context) error {
+	id := c.Param("id")
+	if id == "" {
+		return errorResponse(c, http.StatusBadRequest, "Invalid application ID", nil)
+	}
+	png, err := h.monitoringService.GetAppIcon(c.Request().Context(), id)
+	if err != nil {
+		return errorResponse(c, http.StatusInternalServerError, "Failed to load icon", err)
+	}
+	if len(png) == 0 {
+		return c.NoContent(http.StatusNotFound)
+	}
+	c.Response().Header().Set("Cache-Control", "private, max-age=86400")
+	c.Response().Header().Set("X-Content-Type-Options", "nosniff")
+	return c.Blob(http.StatusOK, "image/png", png)
+}
+
 // UpdateAppClassification handles PATCH /api/v1/monitoring/apps/:id
 func (h *MonitoringHandler) UpdateAppClassification(c echo.Context) error {
 	id := c.Param("id")
@@ -280,6 +299,7 @@ func normalizeDomain(raw string) string {
 func parseListParams(c echo.Context) (repository.MonitoredAppListParams, error) {
 	params := repository.MonitoredAppListParams{
 		Search: c.QueryParam("search"),
+		OS:     c.QueryParam("os"),
 	}
 	if v := c.QueryParam("typeId"); v != "" {
 		id, err := strconv.Atoi(v)
