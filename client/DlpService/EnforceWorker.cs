@@ -30,6 +30,7 @@ public sealed class EnforceWorker : BackgroundService
     private string? _lastDeleteBlockState;
     private string? _lastFileTransferState;
     private string? _lastStartupState;
+    private string? _lastSessionGuardState;
     private DateTimeOffset _lastFileTransferTamperAlert = DateTimeOffset.MinValue;
     private static readonly TimeSpan FileTransferTamperAlertEvery = TimeSpan.FromMinutes(10);
     private string _lastPortFingerprint = "\0";
@@ -108,10 +109,23 @@ public sealed class EnforceWorker : BackgroundService
                 var suClear = await Task.Run(StartupAppEnforcer.Clear, stoppingToken);
                 if (suClear.Changed)
                     _logger.LogWarning("Parked: restored startup apps ({Detail})", suClear.Detail);
+                var lhClear = await Task.Run(LogonHoursEnforcer.RestoreAll, stoppingToken);
+                if (lhClear.Changed)
+                    _logger.LogWarning("Parked: restored Windows logon hours ({Detail})", lhClear.Detail);
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Startup-app restore on park failed");
+            }
+            try
+            {
+                var sgClear = await Task.Run(SessionGuardEnforcer.Clear, stoppingToken);
+                if (sgClear.Changed)
+                    _logger.LogWarning("Parked: restored Switch user ({Detail})", sgClear.Detail);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Switch-user restore on park failed");
             }
             try
             {
@@ -255,6 +269,7 @@ public sealed class EnforceWorker : BackgroundService
         await ApplyDeleteBlockAsync(bundle, ct);
         await ApplyFileTransferAsync(bundle, version, ct);
         await ApplyStartupAppsAsync(bundle, ct);
+        await ApplySessionGuardAsync(ct);
         await ApplyWebAsync(bundle, version, wantDomains, webFp, ct);
         await ApplyPortControlAsync(bundle, version, ct);
     }
@@ -446,6 +461,43 @@ public sealed class EnforceWorker : BackgroundService
     /// of network lockdown; honours machine pause and ALPHA_DLP_STARTUP_BLOCK. Runs every
     /// tick so a re-enabled entry is switched off again (audited as tamper).
     /// </summary>
+    /// <summary>
+    /// Shift-account PCs: one employee Windows session at a time (Switch user hidden, a
+    /// stale disconnected session of another user signed out). Honours machine pause and
+    /// ALPHA_DLP_SINGLE_SESSION. Not a gate layer.
+    /// </summary>
+    private async Task ApplySessionGuardAsync(CancellationToken ct)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var pausedUntil = await _store.GetLockdownPausedUntilAsync(ct);
+        var paused = pausedUntil is { } p && p > DateTimeOffset.UtcNow;
+        var active = _cfg.SingleSession && !paused;
+        SessionGuardEnforcer.Armed = active;
+        var state = !_cfg.SingleSession ? "disabled_local" : paused ? "paused" : "on";
+
+        var result = active
+            ? await Task.Run(() => SessionGuardEnforcer.Apply(
+                TimeSpan.FromSeconds(_cfg.SingleSessionGraceSec), _cfg.SingleSessionExemptUsers,
+                _cfg.HideSwitchUser), ct)
+            : await Task.Run(SessionGuardEnforcer.Clear, ct);
+
+        if (result.LoggedOff.Count > 0)
+        {
+            var who = string.Join(", ", result.LoggedOff);
+            _logger.LogWarning("Single-session guard signed out disconnected session(s): {Who}", who);
+            await _store.AuditAsync("session_guard_signout", $"{result.Detail} users=[{who}]", ct);
+        }
+        else if (result.Changed || (!result.Applied && _lastSessionGuardState != "failed"))
+        {
+            await _store.AuditAsync(
+                !result.Applied ? "session_guard_failed" : active ? "session_guard_apply" : "session_guard_clear",
+                $"state={state} {result.Detail}", ct);
+        }
+        _lastSessionGuardState = result.Applied ? state : "failed";
+        Report("session", result.Applied ? (active ? "ok" : "off") : "failed", result.Detail ?? "");
+    }
+
     private async Task ApplyStartupAppsAsync(PolicyBundle bundle, CancellationToken ct)
     {
         if (!OperatingSystem.IsWindows())

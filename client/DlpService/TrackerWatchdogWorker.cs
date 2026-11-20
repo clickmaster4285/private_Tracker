@@ -60,8 +60,11 @@ internal sealed class TrackerWatchdogWorker : BackgroundService
                 _log.LogWarning(ex, "Watchdog tick failed");
             }
 
-            try { await Task.Delay(poll, stoppingToken); }
+            bool woken;
+            try { woken = await DlpSignals.WaitTrackerLaunchAsync(poll, stoppingToken); }
             catch (OperationCanceledException) { break; }
+            if (woken)
+                _lastLaunchAttempt = DateTimeOffset.MinValue; // user switch: skip the 15 s cooldown
         }
     }
 

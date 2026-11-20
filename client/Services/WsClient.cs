@@ -198,7 +198,13 @@ public sealed class WsClient : BackgroundService
                         var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
                         _logger.LogDebug("WsClient recv: {Json}", json);
                         if (IsPolicyChanged(json))
+                        {
                             _ = ForwardPolicyChangedAsync();
+                            // The server also sends this after a shift edit / reassignment:
+                            // re-pull the shift now so the face lock and end-of-shift sign-out
+                            // use the new hours immediately.
+                            ScheduleCacheService.Current?.RequestImmediatePull();
+                        }
                     }
                 }
             }

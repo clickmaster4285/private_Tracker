@@ -35,7 +35,8 @@ public static class FacePaths
 
     public static string ExpectedModelId => FaceModelIds.BuffaloL;
 
-    public static string MutexName => $@"Global\{client.Core.AppInfo.AppMutex}-face-verify";
+    /// <summary>Per sign-in: each Windows user who signs in (incl. Switch user) gets their own lock.</summary>
+    public static string MutexName => client.Core.SingleInstanceService.PerSessionName("-face-verify");
 
     /// <summary>Soft-lock process / window branding (not Windows Credential Provider).</summary>
     public const string LockerWindowTitle = "alpha-ai-tracker-face-verification";

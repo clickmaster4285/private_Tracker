@@ -271,10 +271,11 @@ if (args.Contains("--celebrate-update") && !args.Contains("--background"))
 if (args.Contains("--timedatewarning") && !args.Contains("--background"))
 {
     client.Services.CliConsole.DetachForGui();
-    var warnMutex = new Mutex(true, client.Services.TimeDateWarning.TimeDateWarningState.MutexName, out var warnCreated);
-    if (!warnCreated)
+    if (SingleInstanceService.TryAcquire(
+            client.Services.TimeDateWarning.TimeDateWarningState.MutexName, out var warnMutex)
+        != SingleInstanceService.Acquire.Acquired || warnMutex == null)
     {
-        try { warnMutex.Dispose(); } catch { /* ignore */ }
+        try { warnMutex?.Dispose(); } catch { /* ignore */ }
         return;
     }
 
@@ -320,10 +321,10 @@ if (args.Contains("--face-verify") && !args.Contains("--background"))
     client.Services.CliConsole.DetachForGui();
     if (!OperatingSystem.IsWindows())
         return;
-    var faceMutex = new Mutex(true, client.Services.FaceVerify.FacePaths.MutexName, out var faceCreated);
-    if (!faceCreated)
+    if (SingleInstanceService.TryAcquire(client.Services.FaceVerify.FacePaths.MutexName, out var faceMutex)
+        != SingleInstanceService.Acquire.Acquired || faceMutex == null)
     {
-        try { faceMutex.Dispose(); } catch { /* ignore */ }
+        try { faceMutex?.Dispose(); } catch { /* ignore */ }
         return;
     }
 
@@ -387,9 +388,26 @@ if (isGuiAgent)
 
 // Tracker uses Global\<mutex>; GUI uses a sibling mutex so both can run.
 var mutexName = isGuiAgent
-    ? $@"Global\{AppInfo.AppMutex}-gui"
+    ? SingleInstanceService.PerSessionName("-gui")
     : SingleInstanceService.MutexName;
-var appMutex = new Mutex(true, mutexName, out var mutexCreated);
+var acquire = SingleInstanceService.TryAcquire(mutexName, out var appMutexOrNull);
+if (acquire == SingleInstanceService.Acquire.HeldByAnotherUser || appMutexOrNull == null)
+{
+    // Shift PC: the previous employee's session is still signed in (Switch user / locked)
+    // and its tracker owns the machine-wide lock. One employee is tracked at a time; the DLP
+    // service signs that stale session out after its grace period and then starts this
+    // user's tracker. Explain instead of crashing.
+    const string busy =
+        "Another employee is still signed in on this PC and their tracker is running.\n\n" +
+        "They will be signed out automatically in about 2 minutes, and Alpha AI Tracker " +
+        "will then start for you by itself.";
+    Console.Error.WriteLine("Another user's tracker holds the machine-wide lock; exiting.");
+    if (isUserLaunch && OperatingSystem.IsWindows())
+        client.Core.NativeMessageBox.ShowInfo(AppInfo.DisplayName, busy);
+    return;
+}
+var appMutex = appMutexOrNull;
+var mutexCreated = acquire == SingleInstanceService.Acquire.Acquired;
 // When the CLI kills a stuck tracker and takes over, skip re-approve (code already used).
 var coldCodeAlreadyApproved = false;
 if (!mutexCreated)
@@ -654,6 +672,11 @@ builder.Services.AddHostedService(sp =>
 // ────────────────────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<client.Services.ScheduleCacheService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<client.Services.ScheduleCacheService>());
+
+// Shift PCs: sign the employee out of Windows the moment their shift ends (tracker only —
+// never the separate --gui window process). See ShiftEndEnforcer.
+if (!isGuiAgent)
+    builder.Services.AddHostedService<client.Services.ShiftEndEnforcer>();
 
 // ────────────────────────────────────────────────────────────────────────────
 // Time & Attendance (Phase 1, A.8): AttendanceAggregator rolls up today's

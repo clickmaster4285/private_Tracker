@@ -19,6 +19,18 @@ type ShiftListQuery = repository.ShiftListParams
 type ShiftService struct {
 	repo                 *repository.ShiftRepo
 	defaultShiftTimezone string
+	// changeNotifier pokes connected PCs (presence socket "policy_changed") so trackers
+	// re-pull /schedules/me now — the face lock and end-of-shift sign-out act on it.
+	changeNotifier func() int
+}
+
+// SetChangeNotifier attaches the push sent after a shift is created / edited / deleted.
+func (s *ShiftService) SetChangeNotifier(fn func() int) { s.changeNotifier = fn }
+
+func (s *ShiftService) notifyChanged() {
+	if s.changeNotifier != nil {
+		s.changeNotifier()
+	}
 }
 
 // NewShiftService creates a new ShiftService.
@@ -74,6 +86,7 @@ func (s *ShiftService) Create(ctx context.Context, req *ShiftInput) (*models.Shi
 	if err != nil {
 		return nil, fmt.Errorf("create shift: %w", err)
 	}
+	s.notifyChanged()
 	return created, nil
 }
 
@@ -103,6 +116,7 @@ func (s *ShiftService) Update(ctx context.Context, id int, req *ShiftInput) (*mo
 	if err != nil {
 		return nil, fmt.Errorf("update shift: %w", err)
 	}
+	s.notifyChanged()
 	return updated, nil
 }
 

@@ -154,6 +154,10 @@ func main() {
 	// Push "policy_changed" over the presence socket on every DLP publish so PCs pull now
 	// instead of waiting for ALPHA_DLP_POLICY_POLL_SEC (was: rules looked "restart-only").
 	dlpService.SetPolicyNotifier(presenceHub.BroadcastPolicyChanged)
+	// Shift edits / reassignments: same push, so trackers re-pull the shift right away and the
+	// face lock / end-of-shift sign-out use the new hours (not the 5-minute schedule timer).
+	shiftService.SetChangeNotifier(presenceHub.BroadcastPolicyChanged)
+	employeeService.SetShiftChangeNotifier(presenceHub.BroadcastPolicyChanged)
 
 	// Phase 2: when Redis is up, share presence + watch tickets + publisher routing.
 	if redisClient != nil {

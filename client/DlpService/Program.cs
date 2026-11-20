@@ -62,6 +62,9 @@ builder.Services.AddHostedService<AntivirusGuardWorker>();
 builder.Services.AddHostedService<DnsBlockPinWorker>();
 builder.Services.AddHostedService<AppLaunchWatcher>();
 builder.Services.AddHostedService<TrackerWatchdogWorker>();
+builder.Services.AddHostedService<SessionSwitchWorker>();
+builder.Services.AddHostedService<LogonHoursWorker>();
+builder.Services.AddHostedService<LogonEventWatcher>();
 
 var host = builder.Build();
 var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("DlpService");

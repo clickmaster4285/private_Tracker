@@ -335,6 +335,28 @@ func (h *AuthHandler) EmployeeLogin(c echo.Context) error {
 		})
 	}
 
+	// Shift-account PCs: an employee is bound to the Windows account (SID) that first
+	// logged them in on this PC. A different Windows account on the same PC cannot reuse
+	// that employee until an admin removes the current device (revokes the binding).
+	if h.deviceRepo != nil && req.WindowsSid != "" && req.DeviceName != "" {
+		boundTo, berr := h.deviceRepo.FindWindowsAccountConflict(
+			c.Request().Context(), emp.EmployeeID, req.DeviceName, req.WindowsSid)
+		if berr != nil {
+			return c.JSON(http.StatusInternalServerError, dto.APIError{
+				Code:    http.StatusInternalServerError,
+				Message: "Failed to check Windows account binding",
+				Detail:  berr.Error(),
+			})
+		}
+		if boundTo != "" {
+			return c.JSON(http.StatusConflict, dto.APIError{
+				Code: http.StatusConflict,
+				Message: "This employee is already signed in from Windows account '" + boundTo +
+					"' on this PC. Use that account, or ask an admin to remove the current device first.",
+			})
+		}
+	}
+
 	// Generate JWT for employee session
 	token, err := h.authService.GenerateEmployeeToken(emp)
 	if err != nil {
@@ -414,6 +436,10 @@ func (h *AuthHandler) EmployeeLogin(c echo.Context) error {
 			if err == nil && device != nil {
 				resp.DeviceToken = rawDeviceToken
 				resp.DeviceID = device.ID
+				if serr := h.deviceRepo.SetDeviceWindowsAccount(
+					c.Request().Context(), device.ID, req.WindowsSid, req.WindowsUser); serr != nil {
+					c.Logger().Errorf("failed to record windows account binding: %v", serr)
+				}
 			}
 
 			// R3/R7: record the machine in the canonical lifecycle registry. A machine

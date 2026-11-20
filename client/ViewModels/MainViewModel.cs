@@ -844,6 +844,7 @@ public partial class MainViewModel : ViewModelBase
             // device record under the same synthetic key, and any other live client
             // (or a manual curl re-login) can revoke the token this client just got
             // back — the next sync then 401s with a token whose server row is gone.
+            var (windowsSid, windowsUser) = client.Core.WindowsAccount.Current();
             var payload = new
             {
                 employeeId = EmployeeId.Trim(),
@@ -854,6 +855,10 @@ public partial class MainViewModel : ViewModelBase
                 // Hostname is the human label the web Device Specs dropdown shows as
                 // "{employee name} ({hostname})" — without it a fresh device reads as unnamed.
                 deviceName = System.Environment.MachineName,
+                // Shift-account PCs: the server binds this employee to this Windows account
+                // and refuses the same employee from another account on the same PC.
+                windowsSid,
+                windowsUser,
             };
             var json = JsonSerializer.Serialize(payload);
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");

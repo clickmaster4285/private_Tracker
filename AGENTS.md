@@ -3,6 +3,131 @@
 > **Last audited:** 2026-11-19
 > **Changelog:**
 >
+> - 2026-11-20: **Shift changed while the employee is away — checked at every sign-in (3.0.15).**
+> Scenario: morning-shift employee signed out, admin moves them to Night Shift, they come back
+> at 22:00. **DlpService:** `LogonHoursWorker` re-downloads every account's shift each **1 min**
+> (was 5) with that profile's saved device token — nobody needs to be signed in. New
+> `LogonEventWatcher` (3 s poll) wakes it the moment Windows refuses a sign-in for logon hours
+> (Security 4625, SubStatus 0xC000006F → extended shift opens on the next click) or a new user
+> session starts (shortened shift closes; the tracker signs the session out). Max one wake per
+> 10 s. **Client:** the face lock re-checks every 3 s for the first ~30 s after sign-in (fresh
+> shift download in flight), and `ShiftEndEnforcer` never signs out on a stale copy — it waits
+> for a server pull newer than the tracker start (`ta_last_schedule_pull_at`), or 2 min when
+> offline. Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **Logon hours close at the shift end, not the hour (3.0.14, DlpService).** Lab:
+> Day Shift edited to end 15:39; Windows hours are whole hours, so 15:39–16:00 stayed open and
+> Testing could sign in (the tracker then signed them out). `LogonHoursPlan.Compute` now
+> decides the current hour by "is the shift open right now"; the worker's 60 s pass opens the
+> hour at the shift start and shuts it at the shift end to within ~1 min. Tests
+> `CurrentHour_*`. Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **Windows logon hours follow each employee's shift (3.0.13, DlpService).** With
+> the face lock off, an employee account could still be opened at any time. New
+> `LogonHoursWorker` (every 60 s, and at once on the shift-change push via `RequestPolicyPull` →
+> `DlpSignals.RequestLogonHours`) walks ProfileList (local S-1-5-21-* accounts), reads which
+> employee is logged into that profile's tracker SQLite, downloads that employee's shift from
+> `GET /schedules/me` with the profile's own device token (cached `employee_schedule` when
+> offline), and writes the account's logon hours (`LogonHoursEnforcer`, NetUserSetInfo 1020).
+> No times are hard-coded: pure `LogonHoursPlan` builds the next 168 h from the shift's start /
+> end / working days / timezone and approved holidays (UTC Sunday-based bits, hour granularity,
+> overnight shifts). Outside the hours Windows refuses the sign-in; ShiftEndEnforcer still signs
+> a running session out at the exact end. Skips local Administrators,
+> `ALPHA_DLP_SINGLE_SESSION_EXEMPT_USERS`, and accounts with no tracker login / no shift (prior
+> value restored). Prior hours kept in `dlp\logon_hours.json`; pause / park / protected
+> teardown restore them. Switch `ALPHA_DLP_LOGON_HOURS` (default true). Tests
+> `LogonHoursPlanTests`. Client **VERSION 3.0.13**. Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **Shift edits reach the PC in minutes (3.0.12, client).** Lab: Day Shift edited
+> to end 10:47 on the web, but the PC kept the 09:00–17:00 copy pulled at 10:45, so nothing
+> locked. `ScheduleCacheService` re-pulls every `ALPHA_TA_SCHEDULE_SYNC_SEC` (default **300 s**,
+> was a fixed 6 h); the face lock and `ShiftEndEnforcer` read that cache. **Instant edits:**
+> server `ShiftService.SetChangeNotifier` / `EmployeeService.SetShiftChangeNotifier` push the
+> existing presence-socket `policy_changed` after a shift create/update or an employee shift
+> change; the tracker's `WsClient` then calls `ScheduleCacheService.Current.RequestImmediatePull()`.
+> `ShiftEndEnforcer` polls every 5 s (was 15 s), so the PC locks and signs out within seconds of
+> the shift end. Restart API (server half); Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **Shift handover: instant switch + sign-out at shift end (3.0.10).**
+> **DlpService:** new `SessionSwitchWorker` polls WTS sessions every 2 s; once another user is
+> active, the previous user's disconnected session is signed out immediately
+> (`ALPHA_DLP_SWITCH_IMMEDIATE`, default true; false = old `…_GRACE_SEC` wait), any leftover
+> `client.exe` in that session is ended after 10 s, and `DlpSignals.RequestTrackerLaunch` wakes
+> the watchdog (cooldown skipped) to start the new user's tracker. `SessionGuardEnforcer.Armed`
+> is set by EnforceWorker (switch on, not paused); `DecideLogoffs` with zero grace signs out on
+> first sighting. Exempt users / the active account are never signed out. **Client:** new
+> `ShiftEndEnforcer` (tracker only, not `--gui`): the employee is tracked for the whole shift
+> (locked screen included); the moment the shift ends it locks and force-signs-out the Windows
+> session (`ExitWindowsEx(EWX_LOGOFF|EWX_FORCE)`), so `client.exe` and every app close and the
+> PC returns to the sign-in screen. Signed in outside the shift → face lock refuses and the
+> session is signed out after 60 s. Never without a cached shift, never on a local
+> Administrators member (checked via `NetUserGetLocalGroups`, UAC-safe). Switch
+> `ALPHA_SHIFT_END_SIGNOUT` (default true). Schedule loading shared via `Core/ShiftScheduleReader`.
+> Unsaved documents are lost at sign-out (by design). Tests `ShiftEndEnforcerTests`,
+> `SessionGuardImmediateTests`. Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **Switch user no longer crashes the tracker (3.0.10, client).** Lab PC: after a
+> Switch user from Amir to Testing, clicking the tracker died with
+> `UnauthorizedAccessException: Access to the path 'Global\AlphaAITracker' is denied` — a
+> `Global\` mutex created in another user's session can't be opened by this user.
+> `SingleInstanceService.TryAcquire` returns `HeldByAnotherUser` instead of throwing; a user
+> launch then shows "Another employee is still signed in … the tracker will start for you by
+> itself" (`Core/NativeMessageBox`) and exits; the DLP service signs the stale session out
+> (120 s) and the watchdog starts this user's tracker (verified on the lab PC: 09:53). The
+> face lock, GUI and clock-warning mutexes are now per sign-in (`PerSessionName` →
+> `Local\` on Windows), so a switched-in user always gets their own face lock instead of
+> none. Tracker mutex stays `Global\` (one tracked employee per PC). Tests
+> `SingleInstanceMutexTests`. Client **VERSION 3.0.10**. Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **"Switch user" shown again on shift PCs (3.0.9, DlpService).** With
+> `HideFastUserSwitching=1` a forgotten sign-out left only that user on the lock screen, so the
+> next shift could not sign in without a restart. New `ALPHA_DLP_HIDE_SWITCH_USER` (default
+> **false**, seeded by `EnvBootstrap`): the session guard now restores the pre-guard value and
+> removes a leftover `1` (e.g. from the old ops script), while the disconnected-session
+> sign-out (`ALPHA_DLP_SINGLE_SESSION_GRACE_SEC`, 120 s) still keeps one tracked employee at a
+> time — the previous user is signed out 2 min after someone switches in. `ops/shift-accounts`
+> setup/verify scripts and README updated. Installer-Parity: rebuild Windows Setup.
+>
+> - 2026-11-20: **Face lock unlocks only inside the employee's shift (3.0.9, client).** New pure
+> `Core/ShiftUnlockGate` evaluates the locally mirrored `employee_schedule` (weekly pattern +
+> IANA timezone) and `company_holidays`: unlock is allowed from shift start (minus
+> `ALPHA_FACE_SHIFT_EARLY_MIN`, default 0) until shift end; overnight shifts (22:00–06:00) stay
+> open after midnight; days off and holidays stay locked. `FaceVerifyController` checks it
+> before loading face data or the camera; when closed the soft-lock shows "Your shift starts
+> today/tomorrow at HH:MM (in …). This PC unlocks then." and re-checks every 30 s (re-reading
+> the cache). No schedule cached → waits up to ~60 s for the tracker's pull, then does not
+> block (employees without a shift are never locked out). Switch `ALPHA_FACE_SHIFT_GATE`
+> (default true). Shift edits reach a PC on its next schedule pull (login / every 6 h). Tests
+> `ShiftUnlockGateTests`. Client **VERSION 3.0.9**. Installer-Parity: rebuild Windows Setup;
+> code defaults apply without a `config.enc` re-bake (re-bake only to ship non-default values).
+>
+> - 2026-11-19: **Remote admin PowerShell works on locked PCs (3.0.8, DlpService).**
+> `Invoke-Command` / `Enter-PSSession` to a lockdown PC authenticated but failed with WinRM
+> error 1260: remoting starts `%SYSTEM32%\wsmprovhost.exe` as the connecting admin and Exe
+> default-deny blocked it. `AppAllowEnforcer.AdminOnlyBootstrapPaths` adds one path rule for
+> **BUILTIN\Administrators (S-1-5-32-544)** only; AppLocker fingerprint `v10` forces re-apply.
+> Standard users gain nothing (WinRM already requires an admin); powershell.exe / cmd.exe stay
+> LocalSystem-only for interactive use. Test `AppLockerAdminRemotingTests`. Client
+> **VERSION 3.0.8**. Installer-Parity: rebuild Windows Setup (no `config.enc` re-bake).
+>
+> - 2026-11-19: **Shared shift PC — three Windows accounts (3.0.7, server + DlpService + client + web).**
+> Runbook + scripts in [`ops/shift-accounts/`](ops/shift-accounts/README.md)
+> (`setup-shift-accounts.ps1`: Standard users Shift-Morning/-Evening/-Night, no AutoAdminLogon,
+> old ShiftLogon tasks removed, Switch user hidden; `verify-shift-setup.ps1`: read-only
+> PASS/FAIL). **Server:** migration **078** `employee_devices.windows_sid/windows_user`;
+> employee login records the Windows account and returns **409** when the same employee is
+> already bound to a different Windows account on the same PC (admin releases via Remove
+> Current Device). Attendance arrival = first `face_verify_events.result='verified'` in the
+> work window when present (`arrivalSource=face_verified`, `verifiedArrivalAt`), else first
+> activity as before. **DlpService:** `SessionGuardEnforcer` sets `HideFastUserSwitching=1`
+> (prior value restored on pause/park/teardown) and signs out another user's session left
+> disconnected > `ALPHA_DLP_SINGLE_SESSION_GRACE_SEC` (120) while a session is active — never
+> the active session, never `ALPHA_DLP_SINGLE_SESSION_EXEMPT_USERS`; switch
+> `ALPHA_DLP_SINGLE_SESSION` (default true). **Client:** login sends `windowsSid`/`windowsUser`.
+> **Web:** attendance shows a face icon when arrival is face-verified. Known limit: the face
+> screen is not a credential provider / secure desktop. Client **VERSION 3.0.7**.
+> Installer-Parity: rebuild Windows Setup; restart API for **078**.
+>
 > - 2026-11-19: **Night-shift attendance is one record (server).** `attendanceForDay` counted
 > only calendar-day events, so a 22:00–06:00 shift showed ~2 h on the start date and a
 > separate early-morning visit on the next. New `workWindow`: for a shift that crosses

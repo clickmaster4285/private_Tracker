@@ -47,7 +47,7 @@ public sealed class TimeDateWarningState
 
     public static string StatePath => Path.Combine(DataDirectory, "state.json");
 
-    public static string MutexName => $@"Global\{client.Core.AppInfo.AppMutex}-timedatewarning";
+    public static string MutexName => client.Core.SingleInstanceService.PerSessionName("-timedatewarning");
 
     public static void Write(TimeDateWarningState state)
     {

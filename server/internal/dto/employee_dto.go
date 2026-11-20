@@ -35,6 +35,10 @@ type EmployeeLoginRequest struct {
 	Platform      string `json:"platform,omitempty"`
 	ClientVersion string `json:"clientVersion,omitempty"`
 	DeviceName    string `json:"deviceName,omitempty"`
+	// Windows account the tracker runs under (shift-account PCs). Older clients omit
+	// both; then no binding is recorded or checked.
+	WindowsSid  string `json:"windowsSid,omitempty"`
+	WindowsUser string `json:"windowsUser,omitempty"`
 }
 
 // GenerateSecretResponse is returned when generating a login secret.

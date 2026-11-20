@@ -16,6 +16,16 @@ internal static class DlpSignals
 {
     private static readonly SemaphoreSlim Pull = new(0, 1);
     private static readonly SemaphoreSlim Enforce = new(0, 1);
+    private static readonly SemaphoreSlim TrackerLaunch = new(0, 1);
+    private static readonly SemaphoreSlim LogonHours = new(0, 1);
+
+    /// <summary>Re-download every account's shift and rewrite logon hours now (shift edited on the web).</summary>
+    public static void RequestLogonHours() => Release(LogonHours);
+    public static Task<bool> WaitLogonHoursAsync(TimeSpan max, CancellationToken ct) => LogonHours.WaitAsync(max, ct);
+
+    /// <summary>Wake the tracker watchdog now (e.g. after a user switch freed the tracker lock).</summary>
+    public static void RequestTrackerLaunch() => Release(TrackerLaunch);
+    public static Task<bool> WaitTrackerLaunchAsync(TimeSpan max, CancellationToken ct) => TrackerLaunch.WaitAsync(max, ct);
 
     public static void RequestPull() => Release(Pull);
     public static void RequestEnforce() => Release(Enforce);

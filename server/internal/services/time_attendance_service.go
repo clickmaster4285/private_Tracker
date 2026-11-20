@@ -316,6 +316,19 @@ func (s *TimeAttendanceService) attendanceForDay(
 		}
 	}
 
+	// Verified arrival: when the employee passed face verification inside this work
+	// window, that is the arrival — a Windows sign-in / tracker start before the face
+	// check (shared shift-account PCs) must not count as being at work.
+	arrivalSource := "activity"
+	verified, err := s.repo.GetFirstVerifiedAt(ctx, employeeID, windowStart.UTC(), windowEnd.UTC())
+	if err != nil {
+		return dto.AttendanceResponse{}, err
+	}
+	if verified != nil {
+		first = verified
+		arrivalSource = "face_verified"
+	}
+
 	var last *time.Time
 	if first != nil {
 		for _, event := range events {
@@ -411,6 +424,7 @@ func (s *TimeAttendanceService) attendanceForDay(
 		FirstActiveAt: first, LastActiveAt: last,
 		ActiveSeconds: int(math.Round(active)), IdleSeconds: int(math.Round(idle)),
 		OffShiftSeconds: int(math.Round(offShift)), Status: status, LateMinutes: lateMinutes,
+		ArrivalSource: arrivalSource, VerifiedArrivalAt: verified,
 	}, nil
 }
 

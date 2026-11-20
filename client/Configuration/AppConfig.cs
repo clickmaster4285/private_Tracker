@@ -76,6 +76,12 @@ public class AppConfig
     // Idle thresholds (A.4): when does "idle" start, and how often to poll the OS
     // idle source. The away threshold is reserved for A.8's status computation.
     public bool TaEnabled { get; init; } = true;
+    /// <summary>
+    /// How often the tracker re-pulls the employee's shift (ALPHA_TA_SCHEDULE_SYNC_SEC, 60–21600).
+    /// Short by default: the face lock and end-of-shift sign-out act on this cache, so a shift edit
+    /// on the web must reach the PC within minutes, not hours. The request is one small GET.
+    /// </summary>
+    public int ScheduleSyncSec { get; init; } = 300;
     public int IdleThresholdSeconds { get; init; } = 120;   // when does "idle" start
     public int IdleAwayThresholdSeconds { get; init; } = 600; // when does "away" start (A.8)
     public int IdlePollSeconds { get; init; } = 30;         // poll cadence
@@ -102,6 +108,12 @@ public class AppConfig
     /// Never kills shell / DLP / tracker. Default true.
     /// </summary>
     public bool FaceVerifyKillApps { get; init; } = true;
+    /// <summary>Face soft-lock only unlocks inside the employee's shift (ALPHA_FACE_SHIFT_GATE).</summary>
+    public bool FaceShiftGate { get; init; } = true;
+    /// <summary>Minutes before shift start that unlock is allowed (ALPHA_FACE_SHIFT_EARLY_MIN, 0–240).</summary>
+    public int FaceShiftEarlyMinutes { get; init; }
+    /// <summary>Sign the employee out of Windows when their shift ends (ALPHA_SHIFT_END_SIGNOUT).</summary>
+    public bool ShiftEndSignOut { get; init; } = true;
     /// <summary>
     /// ONNX IntraOp threads for soft-lock (default 2). InterOp is always 1.
     /// Caps CPU peg on weak dual/quad-core office PCs.
@@ -218,6 +230,8 @@ public class AppConfig
             UpdateCheckIntervalSec = Math.Max(15, int.TryParse(GetEnv("ALPHA_UPDATE_CHECK_INTERVAL_SEC"), out var updSec) ? updSec : 60),
             UpdateAutoInstall = GetEnv("ALPHA_UPDATE_AUTO_INSTALL") is not ("0" or "false" or "False"),
             TaEnabled = GetEnv("ALPHA_TA_ENABLED") is not ("0" or "false" or "False"),
+            ScheduleSyncSec = int.TryParse(GetEnv("ALPHA_TA_SCHEDULE_SYNC_SEC"), out var schedSec)
+                ? Math.Clamp(schedSec, 60, 21600) : 300,
             IdleThresholdSeconds = Math.Max(10, int.TryParse(GetEnv("ALPHA_IDLE_THRESHOLD_SEC"), out var idleTh) ? idleTh : 120),
             IdleAwayThresholdSeconds = Math.Max(30, int.TryParse(GetEnv("ALPHA_IDLE_AWAY_THRESHOLD_SEC"), out var idleAway) ? idleAway : 600),
             IdlePollSeconds = Math.Max(5, int.TryParse(GetEnv("ALPHA_IDLE_POLL_SEC"), out var idlePoll) ? idlePoll : 30),
@@ -234,6 +248,10 @@ public class AppConfig
                     System.Globalization.CultureInfo.InvariantCulture, out var faceTh) ? faceTh : 0.8,
                 0.05, 0.99)),
             FaceVerifyKillApps = GetEnv("ALPHA_FACE_VERIFY_KILL_APPS") is not ("0" or "false" or "False"),
+            FaceShiftGate = GetEnv("ALPHA_FACE_SHIFT_GATE") is not ("0" or "false" or "False"),
+            ShiftEndSignOut = GetEnv("ALPHA_SHIFT_END_SIGNOUT") is not ("0" or "false" or "False"),
+            FaceShiftEarlyMinutes = int.TryParse(GetEnv("ALPHA_FACE_SHIFT_EARLY_MIN"), out var earlyMin)
+                ? Math.Clamp(earlyMin, 0, 240) : 0,
             FaceOrtThreads = Math.Clamp(
                 int.TryParse(GetEnv("ALPHA_FACE_ORT_THREADS"), out var faceOrtTh) ? faceOrtTh : 2,
                 1, Math.Max(1, Environment.ProcessorCount)),

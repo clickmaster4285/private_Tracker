@@ -34,6 +34,38 @@ public static class SingleInstanceService
     public static string MutexName => $@"Global\{AppInfo.AppMutex}";
 
     /// <summary>
+    /// Per-sign-in mutex for UI that every signed-in user needs their own copy of (face lock,
+    /// GUI window, clock warning). Windows: <c>Local\</c> = this Terminal Services session, so a
+    /// second employee who used Switch user gets their own instead of being blocked (or crashing)
+    /// on the first user's. Other OSes keep <c>Global\</c> (Unix sessions differ between the
+    /// systemd unit and the desktop launch of the same user).
+    /// </summary>
+    public static string PerSessionName(string suffix) =>
+        (OperatingSystem.IsWindows() ? @"Local\" : @"Global\") + AppInfo.AppMutex + suffix;
+
+    public enum Acquire { Acquired, HeldHere, HeldByAnotherUser }
+
+    /// <summary>
+    /// Create-and-own a named mutex. A <c>Global\</c> mutex created by a process in another
+    /// user's session has a DACL that only that user can open, so the constructor throws
+    /// <see cref="UnauthorizedAccessException"/> — that is "another user's instance is running",
+    /// not a crash.
+    /// </summary>
+    public static Acquire TryAcquire(string name, out Mutex? mutex)
+    {
+        try
+        {
+            mutex = new Mutex(true, name, out var created);
+            return created ? Acquire.Acquired : Acquire.HeldHere;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            mutex = null;
+            return Acquire.HeldByAnotherUser;
+        }
+    }
+
+    /// <summary>
     /// Pipe name used for cross-instance signalling. The same name must be
     /// used by the server (running instance) and the client (second launch).
     /// Lower-case, no path separators — safe on Windows named pipes and on

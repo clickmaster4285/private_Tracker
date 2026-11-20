@@ -59,6 +59,29 @@ public sealed class DlpConfig
     /// </summary>
     public bool StartupBlock { get; private set; } = true;
     /// <summary>
+    /// Shift-account PCs: hide "Switch user" and sign out another user's session left
+    /// disconnected longer than <see cref="SingleSessionGraceSec"/> while someone works.
+    /// </summary>
+    public bool SingleSession { get; private set; } = true;
+    public int SingleSessionGraceSec { get; private set; } = 120;
+    /// <summary>
+    /// Hide "Switch user" (HideFastUserSwitching=1). Default false: Switch user stays available and
+    /// the guard signs the previous user out after the grace period instead.
+    /// </summary>
+    public bool HideSwitchUser { get; private set; }
+    /// <summary>
+    /// Sign the previous user out as soon as another user is active (checked every 2 s) and start
+    /// the new user's tracker right away. false = wait SingleSessionGraceSec.
+    /// </summary>
+    public bool SwitchImmediate { get; private set; } = true;
+    /// <summary>
+    /// Windows logon hours per employee account = that employee's shift (ALPHA_DLP_LOGON_HOURS).
+    /// Outside the shift Windows refuses the sign-in, face lock on or off.
+    /// </summary>
+    public bool LogonHours { get; private set; } = true;
+    /// <summary>Accounts never signed out by the single-session guard (IT / admin), <c>;</c>-separated.</summary>
+    public IReadOnlyList<string> SingleSessionExemptUsers { get; private set; } = [];
+    /// <summary>
     /// After tracker login (credentials appear mid-run): pre-kill non-allowlisted apps,
     /// force-apply blockers, then reboot once. Off = no reboot (still polls policy).
     /// </summary>
@@ -157,6 +180,13 @@ public sealed class DlpConfig
             DeleteBlock = GetBool("ALPHA_DLP_DELETE_BLOCK", true),
             FileTransferBlock = GetBool("ALPHA_DLP_FILE_TRANSFER_BLOCK", true),
             StartupBlock = GetBool("ALPHA_DLP_STARTUP_BLOCK", true),
+            SingleSession = GetBool("ALPHA_DLP_SINGLE_SESSION", true),
+            SingleSessionGraceSec = Math.Clamp(GetInt("ALPHA_DLP_SINGLE_SESSION_GRACE_SEC", 120), 30, 3600),
+            HideSwitchUser = GetBool("ALPHA_DLP_HIDE_SWITCH_USER", false),
+            SwitchImmediate = GetBool("ALPHA_DLP_SWITCH_IMMEDIATE", true),
+            LogonHours = GetBool("ALPHA_DLP_LOGON_HOURS", true),
+            SingleSessionExemptUsers = (Environment.GetEnvironmentVariable("ALPHA_DLP_SINGLE_SESSION_EXEMPT_USERS") ?? "")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             LoginReboot = GetBool("ALPHA_DLP_LOGIN_REBOOT", true),
             LoginRebootDelaySec = Math.Clamp(GetInt("ALPHA_DLP_LOGIN_REBOOT_DELAY_SEC", 5), 5, 120),
             MaxLocalAlerts = GetInt("ALPHA_DLP_MAX_LOCAL_ALERTS", 50_000),
@@ -239,6 +269,13 @@ public sealed class DlpConfig
         AppBlock = GetBool("ALPHA_DLP_APP_BLOCK", true);
         PortBlock = GetBool("ALPHA_DLP_PORT_BLOCK", true);
         StartupBlock = GetBool("ALPHA_DLP_STARTUP_BLOCK", true);
+        SingleSession = GetBool("ALPHA_DLP_SINGLE_SESSION", true);
+        SingleSessionGraceSec = Math.Clamp(GetInt("ALPHA_DLP_SINGLE_SESSION_GRACE_SEC", 120), 30, 3600);
+        HideSwitchUser = GetBool("ALPHA_DLP_HIDE_SWITCH_USER", false);
+        SwitchImmediate = GetBool("ALPHA_DLP_SWITCH_IMMEDIATE", true);
+        LogonHours = GetBool("ALPHA_DLP_LOGON_HOURS", true);
+        SingleSessionExemptUsers = (Environment.GetEnvironmentVariable("ALPHA_DLP_SINGLE_SESSION_EXEMPT_USERS") ?? "")
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var poll = GetInt("ALPHA_DLP_POLICY_POLL_SEC", PolicyPollSec);
         if (poll > 0) PolicyPollSec = poll;
         var enforce = GetInt("ALPHA_DLP_ENFORCE_TICK_SEC", EnforceTickSec);

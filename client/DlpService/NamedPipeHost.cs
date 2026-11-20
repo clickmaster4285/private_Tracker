@@ -384,6 +384,8 @@ public sealed class NamedPipeHost : BackgroundService
     {
         DlpSignals.RequestPull();
         DlpSignals.RequestEnforce();
+        // The server sends the same push after a shift edit / reassignment.
+        DlpSignals.RequestLogonHours();
         return JsonSerializer.Serialize(new { ok = true, queued = true });
     }
 
@@ -461,6 +463,7 @@ public sealed class NamedPipeHost : BackgroundService
             deleteBlock = _cfg.DeleteBlock,
             fileTransferBlock = _cfg.FileTransferBlock,
             startupBlock = _cfg.StartupBlock,
+            singleSession = _cfg.SingleSession,
             loginReboot = _cfg.LoginReboot,
             avEnforce = _cfg.AvEnforce,
             update = _updateState.Snapshot(),
@@ -614,6 +617,14 @@ public sealed class NamedPipeHost : BackgroundService
                     _logger.LogWarning(
                         "Teardown restored startup apps (changed={Changed}, detail={Detail})",
                         su.Changed, su.Detail);
+                    var sg = SessionGuardEnforcer.Clear();
+                    _logger.LogWarning(
+                        "Teardown restored Switch user (changed={Changed}, detail={Detail})",
+                        sg.Changed, sg.Detail);
+                    var lh = LogonHoursEnforcer.RestoreAll();
+                    _logger.LogWarning(
+                        "Teardown restored Windows logon hours (changed={Changed}, detail={Detail})",
+                        lh.Changed, lh.Detail);
                     ServiceAclHardener.TryApplyOpen(_logger);
                 }
 

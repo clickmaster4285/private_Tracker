@@ -1260,6 +1260,9 @@ export interface AttendanceRecord {
   offShiftSeconds: number;
   status: AttendanceStatus;
   lateMinutes: number;
+  /** "face_verified" when firstActiveAt is the first successful face verification. */
+  arrivalSource?: 'face_verified' | 'activity';
+  verifiedArrivalAt?: string | null;
 }
 
 export interface AttendanceRangeResponse {

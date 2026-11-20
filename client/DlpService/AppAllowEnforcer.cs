@@ -30,6 +30,8 @@ internal static class AppAllowEnforcer
     /// <summary>LOCAL SYSTEM — service Set-AppLockerPolicy / AppID helpers.</summary>
     private const string LocalSystemSid = "S-1-5-18";
     private const string EveryoneSid = "S-1-1-0";
+    /// <summary>BUILTIN\Administrators — remote-management host only (see AdminOnlyBootstrapPaths).</summary>
+    internal const string AdministratorsSid = "S-1-5-32-544";
 
     /// <summary>
     /// Microsoft Store / Appx package family names required for lock screen / Start chrome.
@@ -390,6 +392,19 @@ internal static class AppAllowEnforcer
             "*");
     }
 
+    /// <summary>
+    /// BUILTIN\Administrators only — the WinRM / PowerShell-remoting host. Remote
+    /// <c>Invoke-Command</c> / <c>Enter-PSSession</c> starts <c>wsmprovhost.exe</c> on the
+    /// target as the connecting admin; under Exe default-deny it failed with error 1260, so IT
+    /// could not manage a locked PC over the network. WinRM itself already requires an
+    /// Administrators member, so standard users gain nothing; powershell.exe / cmd.exe stay
+    /// LocalSystem-only for interactive use.
+    /// </summary>
+    internal static IEnumerable<string> AdminOnlyBootstrapPaths()
+    {
+        yield return @"%SYSTEM32%\wsmprovhost.exe";
+    }
+
     private static bool IsBroadMicrosoftPublisher(string publisher)
     {
         var p = publisher.Trim();
@@ -533,7 +548,9 @@ internal static class AppAllowEnforcer
     {
         var sb = new StringBuilder();
         // v9: msiexec SYSTEM-only; named product binaries; FileHash; canary fail-closed.
-        sb.Append("v9;");
+        // v10: Administrators-only WinRM host (wsmprovhost.exe) for remote management.
+        sb.Append("v10;");
+        foreach (var p in AdminOnlyBootstrapPaths()) sb.Append("A:").Append(p).Append(';');
         foreach (var p in paths) sb.Append("P:").Append(p).Append(';');
         foreach (var p in systemOnlyPaths) sb.Append("S:").Append(p).Append(';');
         foreach (var (pub, prod) in publishers.OrderBy(x => x.Publisher + "|" + x.Product, StringComparer.OrdinalIgnoreCase))
@@ -557,6 +574,8 @@ internal static class AppAllowEnforcer
             exeRules.Add(PathRule(path, EveryoneSid));
         foreach (var path in systemOnlyPaths)
             exeRules.Add(PathRule(path, LocalSystemSid));
+        foreach (var path in AdminOnlyBootstrapPaths())
+            exeRules.Add(PathRule(NormalizeAppLockerPath(path), AdministratorsSid));
         foreach (var (pub, prod) in publishers)
             exeRules.Add(PublisherRule(pub, prod));
         foreach (var h in fileHashes)
@@ -673,7 +692,12 @@ internal static class AppAllowEnforcer
     private static XElement PathRule(string path, string userOrGroupSid)
     {
         var id = Guid.NewGuid().ToString();
-        var sidTag = userOrGroupSid == LocalSystemSid ? "sys " : "";
+        var sidTag = userOrGroupSid switch
+        {
+            LocalSystemSid => "sys ",
+            AdministratorsSid => "admins ",
+            _ => "",
+        };
         return new XElement("FilePathRule",
             new XAttribute("Id", id),
             new XAttribute("Name", "AlphaAI " + sidTag + "path " + Truncate(path, 80)),

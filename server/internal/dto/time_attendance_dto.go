@@ -36,6 +36,10 @@ type AttendanceResponse struct {
 	OffShiftSeconds int        `json:"offShiftSeconds"`
 	Status          string     `json:"status"`
 	LateMinutes     int        `json:"lateMinutes"`
+	// ArrivalSource: "face_verified" when FirstActiveAt is the first successful face
+	// verification of the work window, "activity" when it is the first activity event.
+	ArrivalSource     string     `json:"arrivalSource,omitempty"`
+	VerifiedArrivalAt *time.Time `json:"verifiedArrivalAt,omitempty"`
 }
 
 type AttendanceRangeResponse struct {

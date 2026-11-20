@@ -67,6 +67,10 @@ public sealed class FaceVerifyController : IDisposable
                 return;
             }
 
+            // Shift gate: outside the employee's shift the camera never starts and the PC
+            // stays locked until the shift opens (re-checked every 30 s).
+            await WaitForShiftWindowAsync(_session.EmployeeId, _cts.Token);
+
             _store = new FaceBiometricStore();
             await _store.InitializeAsync(_cts.Token);
 
@@ -155,6 +159,48 @@ public sealed class FaceVerifyController : IDisposable
         finally
         {
             _running = false;
+        }
+    }
+
+    /// <summary>
+    /// Blocks until the employee's shift is open. No shift assigned / never synced → no block
+    /// (after a short wait for the tracker's first schedule pull). Toggle with
+    /// <c>ALPHA_FACE_SHIFT_GATE</c>; allow early unlock with <c>ALPHA_FACE_SHIFT_EARLY_MIN</c>.
+    /// </summary>
+    private async Task WaitForShiftWindowAsync(string employeeId, CancellationToken ct)
+    {
+        AppConfig config;
+        try { config = AppConfig.FromEnv(); }
+        catch { return; }
+        if (!config.FaceShiftGate) return;
+
+        // A just-logged-in tracker pulls the schedule within seconds; give it up to ~60 s.
+        var schedule = ShiftScheduleReader.Load(employeeId, config);
+        for (var i = 0; schedule == null && i < 12 && !ct.IsCancellationRequested; i++)
+        {
+            StatusTitle = "Checking your shift…";
+            StatusDetail = "Loading your shift schedule.";
+            RaiseChanged();
+            await Task.Delay(TimeSpan.FromSeconds(5), ct);
+            schedule = ShiftScheduleReader.Load(employeeId, config);
+        }
+
+        var checks = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var decision = ShiftUnlockGate.Evaluate(now, schedule, config.FaceShiftEarlyMinutes);
+            if (decision.Allowed) return;
+
+            StatusTitle = "Outside your shift — PC locked";
+            StatusDetail = ShiftUnlockGate.Describe(decision, now);
+            RaiseChanged();
+            // Right after sign-in the tracker is downloading the latest shift (the admin may have
+            // just moved this employee to another shift): re-check every 3 s for the first ~30 s,
+            // then every 30 s.
+            await Task.Delay(TimeSpan.FromSeconds(checks++ < 10 ? 3 : 30), ct);
+            // Admin may have changed the shift; the tracker re-mirrors it, so re-read.
+            schedule = ShiftScheduleReader.Load(employeeId, config) ?? schedule;
         }
     }
 

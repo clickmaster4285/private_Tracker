@@ -20,6 +20,42 @@ func NewDeviceRepo(pool *pgxpool.Pool) *DeviceRepo {
 }
 
 // UpsertDevice creates a new active device record or updates an existing one for the same (employee_id, machine_id).
+// FindWindowsAccountConflict returns the Windows user an employee is already bound to on
+// this PC (same device name, active device) when that binding is a DIFFERENT SID.
+// "" means no conflict. An admin releases a binding with "Remove current device".
+func (r *DeviceRepo) FindWindowsAccountConflict(ctx context.Context, employeeID, deviceName, sid string) (string, error) {
+	if sid == "" || deviceName == "" {
+		return "", nil
+	}
+	var user string
+	err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(windows_user, ''), windows_sid)
+		FROM employee_devices
+		WHERE employee_id = $1 AND lower(device_name) = lower($2)
+		  AND revoked_at IS NULL AND windows_sid <> '' AND windows_sid <> $3
+		ORDER BY last_seen_at DESC NULLS LAST
+		LIMIT 1
+	`, employeeID, deviceName, sid).Scan(&user)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find windows account binding: %w", err)
+	}
+	return user, nil
+}
+
+// SetDeviceWindowsAccount records the Windows account a device token was issued to.
+func (r *DeviceRepo) SetDeviceWindowsAccount(ctx context.Context, deviceID, sid, user string) error {
+	if deviceID == "" || sid == "" {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx,
+		`UPDATE employee_devices SET windows_sid = $2, windows_user = $3 WHERE id = $1`,
+		deviceID, sid, user)
+	return err
+}
+
 func (r *DeviceRepo) UpsertDevice(
 	ctx context.Context,
 	employeeID, machineID, platform, clientVersion, deviceName, tokenHash string,

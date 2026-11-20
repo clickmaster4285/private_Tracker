@@ -3,7 +3,7 @@
 import { Suspense, useMemo } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { CalendarDays, Loader2 } from 'lucide-react';
+import { CalendarDays, Loader2, ScanFace } from 'lucide-react';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/lib/auth';
 import {
@@ -131,6 +131,7 @@ function AttendancePageInner() {
         offShiftSeconds: record?.offShiftSeconds ?? 0,
         status: record?.status ?? 'unknown',
         lateMinutes: record?.lateMinutes ?? 0,
+        arrivalSource: record?.arrivalSource,
       };
     });
   }, [employees, attendanceQueries, date]);
@@ -279,7 +280,16 @@ function AttendancePageInner() {
                       {STATUS_LABEL[a.status]}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-foreground">{formatDateTimeInZone(a.firstActiveAt, a.timezone)}</td>
+                  <td className="px-4 py-3 text-sm text-foreground">
+                    <span className="inline-flex items-center gap-1.5">
+                      {formatDateTimeInZone(a.firstActiveAt, a.timezone)}
+                      {a.arrivalSource === 'face_verified' && (
+                        <span title="Arrival = first successful face verification" className="text-emerald-600">
+                          <ScanFace className="w-3.5 h-3.5" />
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-sm text-foreground">{formatDateTimeInZone(a.lastActiveAt, a.timezone)}</td>
                   <td className="px-4 py-3 text-sm text-success">{formatSeconds(a.activeSeconds)}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{formatSeconds(a.idleSeconds)}</td>

@@ -13,8 +13,8 @@ namespace client.Services;
 /// company_holidays - schema added in A.5). The AttendanceAggregator (A.8) reads
 /// the local mirror to compute the daily "arrival" status without re-fetching.
 ///
-/// Pull-once policy (S7): schedules change rarely, so the client PULLS on login
-/// and every 6 hours - no push channel, no WebSocket.
+/// Pull policy: on login and every ALPHA_TA_SCHEDULE_SYNC_SEC (default 5 min) — the shift
+/// drives the face lock and end-of-shift sign-out, so an edit must arrive within minutes.
 ///
 /// Graceful no-op (finalplan section 6 SVR-1): GET /api/v1/schedules/me does NOT
 /// exist yet (Phase 2). Until it does the server returns 404 and this service
@@ -27,7 +27,6 @@ namespace client.Services;
 /// </summary>
 public sealed class ScheduleCacheService : BackgroundService
 {
-    private static readonly TimeSpan PullInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan FirstPullDelay = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan PostResumeStabilization = TimeSpan.FromSeconds(10);
 
@@ -41,12 +40,16 @@ public sealed class ScheduleCacheService : BackgroundService
 
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
+    /// <summary>The running instance (one per tracker process) — lets the presence socket wake it.</summary>
+    public static ScheduleCacheService? Current { get; private set; }
+
     public ScheduleCacheService(
         ILogStore store,
         AppConfig config,
         HttpClient httpClient,
         ILogger<ScheduleCacheService> logger)
     {
+        Current = this;
         _store = store;
         _config = config;
         _httpClient = httpClient;
@@ -109,7 +112,8 @@ public sealed class ScheduleCacheService : BackgroundService
 
             try
             {
-                await _pullSignal.WaitAsync(PullInterval, stoppingToken);
+                // Short interval: face lock + end-of-shift sign-out read this cache.
+                await _pullSignal.WaitAsync(TimeSpan.FromSeconds(_config.ScheduleSyncSec), stoppingToken);
             }
             catch (OperationCanceledException) { }
         }

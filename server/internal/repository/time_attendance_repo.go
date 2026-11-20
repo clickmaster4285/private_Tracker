@@ -291,6 +291,30 @@ func (r *TimeAttendanceRepo) GetLastDeviceSeen(ctx context.Context, employeeID s
 	return &utc, nil
 }
 
+// GetFirstVerifiedAt returns the earliest successful face verification
+// (face_verify_events.result = 'verified') in [from, to), or nil when none.
+// Shift-account PCs: a Windows sign-in is not an arrival — the verified face is.
+func (r *TimeAttendanceRepo) GetFirstVerifiedAt(ctx context.Context, employeeID string, from, to time.Time) (*time.Time, error) {
+	var at *time.Time
+	err := r.pool.QueryRow(ctx, `
+		SELECT MIN(client_created_at)
+		FROM face_verify_events
+		WHERE employee_id = $1 AND result = 'verified'
+		  AND client_created_at >= $2 AND client_created_at < $3
+	`, employeeID, from, to).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get first verified arrival: %w", err)
+	}
+	if at == nil || at.IsZero() {
+		return nil, nil
+	}
+	utc := at.UTC()
+	return &utc, nil
+}
+
 // ListLastHeartbeats returns employee_id → best "last seen" time for live-stream online.
 // Uses GREATEST(parsed heartbeat value, app_status.updated_at) so a successful sync
 // counts as alive even when the embedded value is already ~1 sync-interval old.

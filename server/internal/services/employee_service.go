@@ -18,7 +18,12 @@ type EmployeeService struct {
 	repo        *repository.EmployeeRepo
 	shiftRepo   *repository.ShiftRepo
 	redisClient *goredis.Client
+	// shiftNotifier pokes connected PCs when an employee's shift assignment changes.
+	shiftNotifier func() int
 }
+
+// SetShiftChangeNotifier attaches the push sent when an update changes shift_id.
+func (s *EmployeeService) SetShiftChangeNotifier(fn func() int) { s.shiftNotifier = fn }
 
 // NewEmployeeService creates a new EmployeeService. The shiftRepo is used
 // only to look up the default "Day Shift" id when a create request omits
@@ -159,6 +164,9 @@ func (s *EmployeeService) Update(ctx context.Context, id string, req *dto.Update
 	}
 	if updated == nil {
 		return nil, nil
+	}
+	if req.ShiftID != nil && s.shiftNotifier != nil {
+		s.shiftNotifier()
 	}
 
 	resp := employeeToResponse(updated)
