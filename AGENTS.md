@@ -3,6 +3,40 @@
 > **Last audited:** 2026-11-19
 > **Changelog:**
 >
+> - 2026-11-21: **Give extra time per employee (3.0.17, server + web + DlpService + client).**
+> Admin can let ONE employee use the PC N minutes before the shift start and/or after the shift
+> end, for a day or a date range (≤ 31 days, ≤ 720 min each side), without touching the shared
+> shift. **Server:** migration **079** `shift_extensions` (soft delete, reason, created_by);
+> JWT `GET /shift-extensions?employeeId=` (current + upcoming), `POST /shift-extensions`,
+> `DELETE /shift-extensions/:id`; each change pushes `policy_changed` so PCs re-pull at once.
+> DeviceAuth `GET /schedules/me` gains `extensions:[{date, beforeMinutes, afterMinutes}]` for
+> yesterday … +8 days (overlapping grants: larger wins per side). **PC:** `ShiftUnlockGate`
+> (face lock + ShiftEndEnforcer) and `LogonHoursPlan` (Windows sign-in hours) widen that work
+> date's window by the extra minutes; the service store / `GetShift` carry it unchanged.
+> Attendance still uses the normal shift (extra time shows as overtime). The tracker's own
+> fallback cache does not hold extensions (service store does). **Web:** Employees → ⋮ →
+> **Give Extra Time…** (`GiveExtraTimeDialog`: +10/+15/+30/custom, before / after / both,
+> From–To, reason, list + remove). The Employees list shows a clickable amber badge in the
+> Shift column ("+15 min after") when the employee has extra time today — projected by the list
+> query as `extraBeforeToday` / `extraAfterToday` (shift-timezone today, one indexed probe per
+> row; Server-Projected Flags Rule). Tests: Go `shift_extension_test.go`, client
+> `ShiftExtraTimeTests`. Client **VERSION 3.0.17**. Restart API (**079**); rebuild Windows Setup.
+>
+> - 2026-11-21: **One service-owned shift store — shift changes survive a server outage / restart
+> (3.0.16, DlpService + client).** With the server down, `LogonHoursWorker` fell back to each
+> profile's tracker `employee_schedule`, which only refreshes while that employee is signed in,
+> and its fresh downloads lived only in memory — after a restart the account, face lock and
+> ShiftEndEnforcer followed the OLD shift. **Design:** new `ShiftStore` (service-only writer,
+> `%ProgramData%\…\dlp\shifts\<emp>.json`: raw `/schedules/me` answer + `fetchedAt`, or
+> "no shift") is filled by every `LogonHoursWorker` download and is its offline fallback (the
+> profile's tracker copy only before the store has anything). New pipe op **`GetShift`**
+> (`{employeeId}` → `{found, noShift, fetchedAt, schedule}`, independent of
+> `ALPHA_DLP_ENABLED`). Client `Core/ShiftSource` asks the service first and falls back to the
+> tracker's own cache (`ShiftScheduleReader`); used by the face lock and `ShiftEndEnforcer`
+> (a service copy downloaded after the tracker started counts as fresh). The service no longer
+> writes into employee databases. Flow unchanged. Tests `ShiftStoreTests`. Client
+> **VERSION 3.0.16**. Installer-Parity: rebuild Windows Setup.
+>
 > - 2026-11-20: **Shift changed while the employee is away — checked at every sign-in (3.0.15).**
 > Scenario: morning-shift employee signed out, admin moves them to Night Shift, they come back
 > at 22:00. **DlpService:** `LogonHoursWorker` re-downloads every account's shift each **1 min**

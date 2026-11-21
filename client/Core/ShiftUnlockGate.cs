@@ -13,10 +13,14 @@ namespace client.Core;
 /// </summary>
 public static class ShiftUnlockGate
 {
+    /// <summary>Extra time an admin gave for one work date ("Give extra time").</summary>
+    public sealed record Extra(int BeforeMinutes, int AfterMinutes);
+
     public sealed record Schedule(
         string Timezone,
         IReadOnlyDictionary<string, string> WeeklyPattern,
-        IReadOnlySet<string> HolidayDates);
+        IReadOnlySet<string> HolidayDates,
+        IReadOnlyDictionary<string, Extra>? Extensions = null); // key "yyyy-MM-dd" (shift timezone)
 
     public sealed record Decision(
         bool Allowed,
@@ -77,6 +81,13 @@ public static class ShiftUnlockGate
         var startLocal = localDate + s;
         var endLocal = localDate + e;
         if (endLocal <= startLocal) endLocal = endLocal.AddDays(1);
+        // Admin-granted extra time for this work date: open earlier / close later.
+        if (schedule.Extensions != null
+            && schedule.Extensions.TryGetValue(localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), out var extra))
+        {
+            startLocal = startLocal.AddMinutes(-Math.Max(0, extra.BeforeMinutes));
+            endLocal = endLocal.AddMinutes(Math.Max(0, extra.AfterMinutes));
+        }
         start = new DateTimeOffset(startLocal, zone.GetUtcOffset(startLocal));
         end = new DateTimeOffset(endLocal, zone.GetUtcOffset(endLocal));
         return true;
@@ -106,6 +117,24 @@ public static class ShiftUnlockGate
                         result[k[..3].ToLowerInvariant()] = v;
         }
         catch { /* malformed → empty (no gate) */ }
+        return result;
+    }
+
+    /// <summary>Parse the server's <c>extensions</c> array (<c>[{date, beforeMinutes, afterMinutes}]</c>).</summary>
+    public static IReadOnlyDictionary<string, Extra> ParseExtensions(JsonElement array)
+    {
+        var result = new Dictionary<string, Extra>(StringComparer.Ordinal);
+        if (array.ValueKind != JsonValueKind.Array) return result;
+        foreach (var x in array.EnumerateArray())
+        {
+            if (!x.TryGetProperty("date", out var d) || d.ValueKind != JsonValueKind.String) continue;
+            var date = (d.GetString() ?? "").Trim();
+            if (date.Length > 10) date = date[..10];
+            var before = x.TryGetProperty("beforeMinutes", out var b) && b.TryGetInt32(out var bi) ? bi : 0;
+            var after = x.TryGetProperty("afterMinutes", out var a) && a.TryGetInt32(out var ai) ? ai : 0;
+            if (date.Length == 10 && (before > 0 || after > 0))
+                result[date] = new Extra(before, after);
+        }
         return result;
     }
 

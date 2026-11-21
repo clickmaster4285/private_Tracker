@@ -13,10 +13,14 @@ namespace AlphaAITracker.Service;
 /// </summary>
 internal static class LogonHoursPlan
 {
+    /// <summary>Extra time an admin gave for one work date ("Give extra time").</summary>
+    public sealed record Extra(int BeforeMinutes, int AfterMinutes);
+
     public sealed record Shift(
         string Timezone,
         IReadOnlyDictionary<string, string> WeeklyPattern, // "mon" → "09:00-17:00"
-        IReadOnlySet<string> HolidayDates);                  // "yyyy-MM-dd" in the shift timezone
+        IReadOnlySet<string> HolidayDates,                  // "yyyy-MM-dd" in the shift timezone
+        IReadOnlyDictionary<string, Extra>? Extensions = null); // "yyyy-MM-dd" → extra minutes
 
     public const int Bytes = 21;
 
@@ -86,6 +90,13 @@ internal static class LogonHoursPlan
         var startLocal = localDate + s;
         var endLocal = localDate + e;
         if (endLocal <= startLocal) endLocal = endLocal.AddDays(1); // overnight shift
+        // Admin-granted extra time for this work date: account opens earlier / closes later.
+        if (shift.Extensions != null
+            && shift.Extensions.TryGetValue(localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), out var extra))
+        {
+            startLocal = startLocal.AddMinutes(-Math.Max(0, extra.BeforeMinutes));
+            endLocal = endLocal.AddMinutes(Math.Max(0, extra.AfterMinutes));
+        }
         start = new DateTimeOffset(startLocal, zone.GetUtcOffset(startLocal));
         end = new DateTimeOffset(endLocal, zone.GetUtcOffset(endLocal));
         return true;

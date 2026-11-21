@@ -55,25 +55,28 @@ type GenerateSecretResponse struct {
 // Shift is the resolved name (joined from shifts); ShiftID is the FK.
 // A NULL shift renders as an empty `shift` string and a null `shiftId`.
 type EmployeeResponse struct {
-	ID              string     `json:"id"`
-	EmployeeID      string     `json:"employeeId"`
-	Name            string     `json:"name"`
-	Email           string     `json:"email"`
-	Department      string     `json:"department"`
-	DepartmentID    int        `json:"departmentId"`
-	ShiftID         *int       `json:"shiftId"`
-	Shift           string     `json:"shift"`
-	TrackingEnabled bool       `json:"trackingEnabled"`
-	TrackingStatus  string     `json:"trackingStatus"`
-	IsOnline        bool       `json:"isOnline"`
-	ClientVersion   string     `json:"clientVersion"`
-	Avatar          string     `json:"avatar"`
-	AvatarColor     string     `json:"avatarColor"`
-	HasUserLogin    bool       `json:"hasUserLogin"`
-	FaceEnrolled    bool       `json:"faceEnrolled"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
-	DeletedAt       *time.Time `json:"deletedAt"`
+	ID              string `json:"id"`
+	EmployeeID      string `json:"employeeId"`
+	Name            string `json:"name"`
+	Email           string `json:"email"`
+	Department      string `json:"department"`
+	DepartmentID    int    `json:"departmentId"`
+	ShiftID         *int   `json:"shiftId"`
+	Shift           string `json:"shift"`
+	TrackingEnabled bool   `json:"trackingEnabled"`
+	TrackingStatus  string `json:"trackingStatus"`
+	IsOnline        bool   `json:"isOnline"`
+	ClientVersion   string `json:"clientVersion"`
+	Avatar          string `json:"avatar"`
+	AvatarColor     string `json:"avatarColor"`
+	HasUserLogin    bool   `json:"hasUserLogin"`
+	FaceEnrolled    bool   `json:"faceEnrolled"`
+	// Extra minutes granted for today (Employees list badge).
+	ExtraBeforeToday int        `json:"extraBeforeToday"`
+	ExtraAfterToday  int        `json:"extraAfterToday"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
+	DeletedAt        *time.Time `json:"deletedAt"`
 }
 
 // EmployeeListResponse is a paginated list response.

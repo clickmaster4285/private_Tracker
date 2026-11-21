@@ -23,6 +23,8 @@ type ScheduleResponse struct {
 	Holidays      []HolidayResponse `json:"holidays"`
 	ValidFrom     string            `json:"validFrom"`
 	ValidTo       *string           `json:"validTo"`
+	// Extra time granted to this employee per work date ("Give extra time").
+	Extensions []ShiftExtensionDay `json:"extensions"`
 }
 
 type AttendanceResponse struct {

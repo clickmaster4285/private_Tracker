@@ -322,6 +322,9 @@ export interface Employee {
   hasUserLogin: boolean;
   /** True when an active face profile exists (enrollment complete). */
   faceEnrolled?: boolean;
+  /** Extra minutes granted for today ("Give extra time"), list endpoint only. */
+  extraBeforeToday?: number;
+  extraAfterToday?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -1339,6 +1342,40 @@ export interface DaySessionEventsResponse {
   data: SessionEventRow[];
   total: number;
 }
+
+// ── Give extra time (per employee, minutes before shift start / after shift end) ──
+export interface ShiftExtension {
+  id: number;
+  employeeId: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+  beforeMinutes: number;
+  afterMinutes: number;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ShiftExtensionInput {
+  employeeId: string;
+  startDate: string;
+  endDate?: string;
+  beforeMinutes: number;
+  afterMinutes: number;
+  reason?: string;
+}
+
+export const shiftExtensionsApi = {
+  /** Current + upcoming grants for one employee (EMP-… business id). */
+  list: (employeeId: string) =>
+    request<{ data: ShiftExtension[] }>('/shift-extensions', { params: { employeeId } }),
+
+  create: (data: ShiftExtensionInput) =>
+    request<ShiftExtension>('/shift-extensions', { method: 'POST', body: data }),
+
+  delete: (id: number) =>
+    request<{ message: string }>(`/shift-extensions/${id}`, { method: 'DELETE' }),
+};
 
 export const holidaysApi = {
   list: () => request<HolidayListResponse>('/holidays'),

@@ -359,6 +359,8 @@ public sealed class NamedPipeHost : BackgroundService
                 "EnsureAvSelfProtection" => await EnsureAvSelfProtectionJson(ct),
                 "GetPolicyVersion" => await RequireDlp(() => GetPolicyVersionJson(ct)),
                 "GetEnforceStatus" => RequireDlpSync(GetEnforceStatusJson),
+                // Shift store (independent of ALPHA_DLP_ENABLED): face lock + end-of-shift check.
+                "GetShift" => GetShiftJson(doc.RootElement),
                 "Health" => await HealthJson(ct),
                 "GetWebBlockStatus" => await RequireDlp(() => GetWebBlockStatusJson(ct)),
                 // Teardown unlock must work even when ALPHA_DLP_ENABLED=false (pipe still
@@ -421,6 +423,36 @@ public sealed class NamedPipeHost : BackgroundService
         if (!_cfg.Enabled)
             return JsonSerializer.Serialize(new { ok = false, error = "dlp_disabled" });
         return await action();
+    }
+
+    /// <summary>
+    /// <c>{op:"GetShift", employeeId}</c> → the service's stored shift for that employee:
+    /// <c>{ok, found, noShift, fetchedAt, schedule}</c> (schedule = the server's
+    /// /schedules/me object). Shift times only — nothing sensitive.
+    /// </summary>
+    private static string GetShiftJson(JsonElement root)
+    {
+        var employeeId = root.TryGetProperty("employeeId", out var e) && e.ValueKind == JsonValueKind.String
+            ? e.GetString() ?? "" : "";
+        var entry = ShiftStore.Load(employeeId);
+        if (entry == null)
+            return JsonSerializer.Serialize(new { ok = true, found = false });
+        JsonElement? schedule = null;
+        if (!entry.NoShift && !string.IsNullOrWhiteSpace(entry.ScheduleJson))
+        {
+            try { using var d = JsonDocument.Parse(entry.ScheduleJson); schedule = d.RootElement.Clone(); }
+            catch { /* corrupt → treated as not found below */ }
+            if (schedule == null)
+                return JsonSerializer.Serialize(new { ok = true, found = false });
+        }
+        return JsonSerializer.Serialize(new
+        {
+            ok = true,
+            found = true,
+            noShift = entry.NoShift,
+            fetchedAt = entry.FetchedAt,
+            schedule,
+        });
     }
 
     private string RequireDlpSync(Func<string> action)

@@ -175,14 +175,14 @@ public sealed class FaceVerifyController : IDisposable
         if (!config.FaceShiftGate) return;
 
         // A just-logged-in tracker pulls the schedule within seconds; give it up to ~60 s.
-        var schedule = ShiftScheduleReader.Load(employeeId, config);
+        var schedule = (await ShiftSource.LoadAsync(employeeId, config, ct)).Schedule;
         for (var i = 0; schedule == null && i < 12 && !ct.IsCancellationRequested; i++)
         {
             StatusTitle = "Checking your shift…";
             StatusDetail = "Loading your shift schedule.";
             RaiseChanged();
             await Task.Delay(TimeSpan.FromSeconds(5), ct);
-            schedule = ShiftScheduleReader.Load(employeeId, config);
+            schedule = (await ShiftSource.LoadAsync(employeeId, config, ct)).Schedule;
         }
 
         var checks = 0;
@@ -200,7 +200,7 @@ public sealed class FaceVerifyController : IDisposable
             // then every 30 s.
             await Task.Delay(TimeSpan.FromSeconds(checks++ < 10 ? 3 : 30), ct);
             // Admin may have changed the shift; the tracker re-mirrors it, so re-read.
-            schedule = ShiftScheduleReader.Load(employeeId, config) ?? schedule;
+            schedule = (await ShiftSource.LoadAsync(employeeId, config, ct)).Schedule ?? schedule;
         }
     }
 

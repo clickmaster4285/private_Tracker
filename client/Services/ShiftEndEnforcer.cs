@@ -93,7 +93,8 @@ public sealed class ShiftEndEnforcer : BackgroundService
                         outsideSince = null;
                     }
 
-                    var schedule = ShiftScheduleReader.Load(emp.EmployeeId, _config);
+                    var source = await ShiftSource.LoadAsync(emp.EmployeeId, _config, ct);
+                    var schedule = source.Schedule;
                     var now = DateTimeOffset.UtcNow;
                     var decision = ShiftUnlockGate.Evaluate(now, schedule, _config.FaceShiftEarlyMinutes);
                     var hasSchedule = schedule != null && schedule.WeeklyPattern.Count > 0;
@@ -101,8 +102,9 @@ public sealed class ShiftEndEnforcer : BackgroundService
                     // Never sign anyone out on a stale copy: right after sign-in the tracker is
                     // downloading the current shift. Wait for that download (or 2 min if the
                     // server is unreachable, then trust the cached copy).
+                    var fresh = source.FetchedAt is { } fetched && fetched >= started.AddSeconds(-5);
                     if (!wasInShift && !decision.Allowed && now - started < TimeSpan.FromMinutes(2)
-                        && !await ScheduleFreshSinceAsync(started, ct))
+                        && !fresh && !await ScheduleFreshSinceAsync(started, ct))
                         hasSchedule = false;
 
                     if (Decide(decision, hasSchedule, ref wasInShift, ref outsideSince, now) == Action.SignOutNow)
@@ -126,11 +128,6 @@ public sealed class ShiftEndEnforcer : BackgroundService
         }
     }
 
-    /// <summary>
-    /// Member of the local Administrators group — checked through the account database, not
-    /// the token, because under UAC an admin's normal token marks Administrators deny-only
-    /// (IsInRole would say false for <c>team</c>).
-    /// </summary>
     /// <summary>True when ScheduleCacheService finished a server pull after <paramref name="since"/>.</summary>
     private async Task<bool> ScheduleFreshSinceAsync(DateTimeOffset since, CancellationToken ct)
     {
@@ -140,6 +137,11 @@ public sealed class ShiftEndEnforcer : BackgroundService
                && at >= since.AddSeconds(-5);
     }
 
+    /// <summary>
+    /// Member of the local Administrators group — checked through the account database, not
+    /// the token, because under UAC an admin's normal token marks Administrators deny-only
+    /// (IsInRole would say false for <c>team</c>).
+    /// </summary>
     private static bool IsAdministrator()
     {
         if (!OperatingSystem.IsWindows()) return false;

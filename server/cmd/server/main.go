@@ -158,6 +158,7 @@ func main() {
 	// face lock / end-of-shift sign-out use the new hours (not the 5-minute schedule timer).
 	shiftService.SetChangeNotifier(presenceHub.BroadcastPolicyChanged)
 	employeeService.SetShiftChangeNotifier(presenceHub.BroadcastPolicyChanged)
+	timeAttendanceService.SetChangeNotifier(presenceHub.BroadcastPolicyChanged)
 
 	// Phase 2: when Redis is up, share presence + watch tickets + publisher routing.
 	if redisClient != nil {

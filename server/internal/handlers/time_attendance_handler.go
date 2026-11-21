@@ -143,6 +143,49 @@ func (h *TimeAttendanceHandler) GetRange(c echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
+// ListShiftExtensions — GET /shift-extensions?employeeId=EMP-… (current + upcoming grants).
+func (h *TimeAttendanceHandler) ListShiftExtensions(c echo.Context) error {
+	out, err := h.service.ListShiftExtensions(c.Request().Context(), c.QueryParam("employeeId"))
+	if err != nil {
+		return apiError(c, http.StatusBadRequest, "Failed to load extra time", err.Error())
+	}
+	return c.JSON(http.StatusOK, out)
+}
+
+// CreateShiftExtension — POST /shift-extensions ("Give extra time").
+func (h *TimeAttendanceHandler) CreateShiftExtension(c echo.Context) error {
+	var input dto.ShiftExtensionInput
+	if err := c.Bind(&input); err != nil {
+		return apiError(c, http.StatusBadRequest, "Invalid request body", "")
+	}
+	createdBy, _ := c.Get("user_id").(string)
+	out, err := h.service.CreateShiftExtension(c.Request().Context(), input, createdBy)
+	if err != nil {
+		status := http.StatusBadRequest
+		if strings.Contains(err.Error(), "foreign key") || strings.Contains(err.Error(), "23503") {
+			return apiError(c, status, "Employee not found", "")
+		}
+		return apiError(c, status, "Failed to give extra time", err.Error())
+	}
+	return c.JSON(http.StatusCreated, out)
+}
+
+// DeleteShiftExtension — DELETE /shift-extensions/:id.
+func (h *TimeAttendanceHandler) DeleteShiftExtension(c echo.Context) error {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		return apiError(c, http.StatusBadRequest, "Invalid extra time ID", "")
+	}
+	ok, err := h.service.DeleteShiftExtension(c.Request().Context(), id)
+	if err != nil {
+		return apiError(c, http.StatusInternalServerError, "Failed to remove extra time", err.Error())
+	}
+	if !ok {
+		return apiError(c, http.StatusNotFound, "Extra time not found", "")
+	}
+	return c.JSON(http.StatusOK, map[string]string{"message": "removed"})
+}
+
 func apiError(c echo.Context, status int, message, detail string) error {
 	return c.JSON(status, dto.APIError{Code: status, Message: message, Detail: detail})
 }

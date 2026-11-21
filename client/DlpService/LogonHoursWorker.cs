@@ -131,7 +131,7 @@ internal sealed class LogonHoursWorker : BackgroundService
     private async Task<LogonHoursPlan.Shift?> GetShiftAsync(TrackerLogin login, CancellationToken ct)
     {
         if (_shiftCache.TryGetValue(login.EmployeeId, out var hit) && DateTimeOffset.UtcNow - hit.At < ShiftRefresh)
-            return hit.Shift ?? login.Cached;
+            return hit.Shift; // null = the server said "no shift"
 
         LogonHoursPlan.Shift? fresh = null;
         var reached = false;
@@ -147,11 +147,16 @@ internal sealed class LogonHoursWorker : BackgroundService
                 if (resp.IsSuccessStatusCode)
                 {
                     reached = true;
-                    fresh = ParseShift(await resp.Content.ReadAsStringAsync(timeout.Token));
+                    var body = await resp.Content.ReadAsStringAsync(timeout.Token);
+                    fresh = ParseShift(body);
+                    // The PC's single shift store (service-owned): survives restarts and server
+                    // outages; the face lock and end-of-shift check read it via pipe GetShift.
+                    if (fresh != null) ShiftStore.Save(login.EmployeeId, body);
                 }
                 else if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
                     reached = true; // server says: no shift assigned
+                    ShiftStore.Save(login.EmployeeId, null);
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
@@ -159,8 +164,16 @@ internal sealed class LogonHoursWorker : BackgroundService
         }
 
         if (reached)
+        {
             _shiftCache[login.EmployeeId] = (DateTimeOffset.UtcNow, fresh);
-        return reached ? fresh : login.Cached;
+            return fresh;
+        }
+        // Offline: the service's own store first; the profile's tracker copy only when the store
+        // has nothing yet (first run after upgrade).
+        var stored = ShiftStore.Load(login.EmployeeId);
+        if (stored != null)
+            return stored.NoShift ? null : ParseShift(stored.ScheduleJson ?? "");
+        return login.Cached;
     }
 
     internal static LogonHoursPlan.Shift? ParseShift(string json)
@@ -191,7 +204,19 @@ internal sealed class LogonHoursWorker : BackgroundService
                         holidays.Add(date.Length > 10 ? date[..10] : date);
                     }
                 }
-            return new LogonHoursPlan.Shift(tz, pattern, holidays);
+            var extensions = new Dictionary<string, LogonHoursPlan.Extra>(StringComparer.Ordinal);
+            if (root.TryGetProperty("extensions", out var ex) && ex.ValueKind == JsonValueKind.Array)
+                foreach (var x in ex.EnumerateArray())
+                {
+                    if (!x.TryGetProperty("date", out var xd) || xd.ValueKind != JsonValueKind.String) continue;
+                    var date = (xd.GetString() ?? "").Trim();
+                    if (date.Length > 10) date = date[..10];
+                    var before = x.TryGetProperty("beforeMinutes", out var b) && b.TryGetInt32(out var bi) ? bi : 0;
+                    var after = x.TryGetProperty("afterMinutes", out var a) && a.TryGetInt32(out var ai) ? ai : 0;
+                    if (date.Length == 10 && (before > 0 || after > 0))
+                        extensions[date] = new LogonHoursPlan.Extra(before, after);
+                }
+            return new LogonHoursPlan.Shift(tz, pattern, holidays, extensions);
         }
         catch
         {
@@ -235,6 +260,24 @@ internal sealed class LogonHoursWorker : BackgroundService
                     }
                 }
                 catch { /* no schedule table yet */ }
+                if (cached != null)
+                {
+                    try
+                    {
+                        using var cmd = conn.CreateCommand();
+                        cmd.CommandText = "SELECT holiday_date FROM company_holidays";
+                        using var r = cmd.ExecuteReader();
+                        var days = new HashSet<string>(StringComparer.Ordinal);
+                        while (r.Read())
+                        {
+                            if (r.IsDBNull(0)) continue;
+                            var d = r.GetString(0).Trim();
+                            days.Add(d.Length > 10 ? d[..10] : d);
+                        }
+                        cached = cached with { HolidayDates = days };
+                    }
+                    catch { /* no holiday table yet */ }
+                }
                 return new TrackerLogin(emp!, token ?? "", cached);
             }
             catch { /* locked / corrupt → try the next file */ }

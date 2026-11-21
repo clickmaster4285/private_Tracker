@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alpha-ai-tracker/server/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/alpha-ai-tracker/server/internal/models"
 )
 
 // EmployeeRepo handles database operations for employees.
@@ -103,7 +103,17 @@ func (r *EmployeeRepo) List(ctx context.Context, params EmployeeListParams) (*Em
 		                AND u.deleted_at IS NULL) AS has_user_login,
 		       EXISTS(SELECT 1 FROM employee_face_profiles p
 		              WHERE p.employee_id = e.employee_id
-		                AND p.status = 'active') AS face_enrolled
+		                AND p.status = 'active') AS face_enrolled,
+		       -- "Give extra time" granted for TODAY (in the employee's shift timezone):
+		       -- one indexed probe per row (idx_shift_extensions_employee_dates).
+		       COALESCE((SELECT MAX(x.before_minutes) FROM shift_extensions x
+		                 WHERE x.employee_id = e.employee_id AND x.deleted_at IS NULL
+		                   AND (NOW() AT TIME ZONE COALESCE(NULLIF(s.timezone, ''), 'UTC'))::DATE
+		                       BETWEEN x.start_date AND x.end_date), 0) AS extra_before_today,
+		       COALESCE((SELECT MAX(x.after_minutes) FROM shift_extensions x
+		                 WHERE x.employee_id = e.employee_id AND x.deleted_at IS NULL
+		                   AND (NOW() AT TIME ZONE COALESCE(NULLIF(s.timezone, ''), 'UTC'))::DATE
+		                       BETWEEN x.start_date AND x.end_date), 0) AS extra_after_today
 		FROM employees e
 		LEFT JOIN departments d ON e.department_id = d.id
 		LEFT JOIN shifts s ON s.id = e.shift_id AND s.deleted_at IS NULL
@@ -131,6 +141,8 @@ func (r *EmployeeRepo) List(ctx context.Context, params EmployeeListParams) (*Em
 			&e.ClientVersion,
 			&e.HasUserLogin,
 			&e.FaceEnrolled,
+			&e.ExtraBeforeToday,
+			&e.ExtraAfterToday,
 		); err != nil {
 			return nil, fmt.Errorf("scan employee row: %w", err)
 		}
@@ -529,10 +541,10 @@ func (r *EmployeeRepo) Update(ctx context.Context, id string, updates map[string
 
 	allowedFields := map[string]string{
 		"name": "name", "email": "email",
-		"department_id": "department_id",
-		"shift_id": "shift_id",
+		"department_id":    "department_id",
+		"shift_id":         "shift_id",
 		"tracking_enabled": "tracking_enabled",
-		"tracking_status": "tracking_status", "is_online": "is_online",
+		"tracking_status":  "tracking_status", "is_online": "is_online",
 	}
 
 	for field, dbCol := range allowedFields {

@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
-import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff, PauseCircle, ScanFace } from 'lucide-react';
+import { Search, Plus, MoreVertical, Loader2, Key, Copy, Check, Eye, Monitor, MonitorOff, Upload, Download, Pencil, Trash2, AlertTriangle, UserPlus, Terminal, ShieldOff, PauseCircle, ScanFace, Clock } from 'lucide-react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -11,6 +11,7 @@ import { employeesApi, departmentsApi, usersApi, shiftsApi, dlpApi, type Employe
 import { removeAccountCommands, protectedUninstallCommands } from '@/lib/client-commands';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { EnrollFaceDialog } from '@/components/employees/EnrollFaceDialog';
+import { GiveExtraTimeDialog } from '@/components/employees/GiveExtraTimeDialog';
 import { useUrlQueryState } from '@/hooks/use-url-query-state';
 import {
   DropdownMenu,
@@ -80,6 +81,7 @@ function UsersListInner() {
   const [showEdit, setShowEdit] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState<Employee | null>(null);
   const [showEnrollFace, setShowEnrollFace] = useState<Employee | null>(null);
+  const [showExtraTime, setShowExtraTime] = useState<Employee | null>(null);
   const [showDeleteFace, setShowDeleteFace] = useState<Employee | null>(null);
   const [showRemove, setShowRemove] = useState<Employee | null>(null);
   const [secretValue, setSecretValue] = useState('');
@@ -659,7 +661,23 @@ function UsersListInner() {
                   <td className="px-4 py-3 text-sm text-muted-foreground">{emp.email}</td>
                   <td className="px-4 py-3 text-sm text-foreground">{emp.department}</td>
                   <td className="px-4 py-3 text-sm text-foreground">
-                    {emp.shift || <span className="text-muted-foreground/50 italic">Unassigned</span>}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {emp.shift || <span className="text-muted-foreground/50 italic">Unassigned</span>}
+                      {((emp.extraBeforeToday ?? 0) > 0 || (emp.extraAfterToday ?? 0) > 0) && (
+                        <button
+                          type="button"
+                          onClick={() => setShowExtraTime(emp)}
+                          title="Extra time given for today — click to view or change"
+                          className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-500/20"
+                        >
+                          <Clock className="w-3 h-3" />
+                          {[
+                            (emp.extraBeforeToday ?? 0) > 0 ? `+${emp.extraBeforeToday} min before` : null,
+                            (emp.extraAfterToday ?? 0) > 0 ? `+${emp.extraAfterToday} min after` : null,
+                          ].filter(Boolean).join(' · ')}
+                        </button>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-sm font-mono text-foreground">
                     {emp.clientVersion || <span className="text-muted-foreground/50 italic">Unknown</span>}
@@ -712,6 +730,10 @@ function UsersListInner() {
                         <DropdownMenuItem onSelect={() => handleEdit(emp)} className="cursor-pointer gap-2.5 px-2.5 py-2">
                           <Pencil className="w-4 h-4 text-muted-foreground" />
                           Edit Details
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setShowExtraTime(emp)} className="cursor-pointer gap-2.5 px-2.5 py-2">
+                          <Clock className="w-4 h-4 text-muted-foreground" />
+                          Give Extra Time…
                         </DropdownMenuItem>
                         {!emp.faceEnrolled ? (
                           <DropdownMenuItem
@@ -1321,6 +1343,12 @@ function UsersListInner() {
         employee={showEnrollFace}
         open={showEnrollFace !== null}
         onOpenChange={(open) => { if (!open) setShowEnrollFace(null); }}
+      />
+
+      <GiveExtraTimeDialog
+        employee={showExtraTime}
+        open={showExtraTime !== null}
+        onOpenChange={(open) => { if (!open) setShowExtraTime(null); }}
       />
 
       <Dialog

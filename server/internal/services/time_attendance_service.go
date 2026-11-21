@@ -15,7 +15,8 @@ import (
 )
 
 type TimeAttendanceService struct {
-	repo *repository.TimeAttendanceRepo
+	repo           *repository.TimeAttendanceRepo
+	changeNotifier func() int
 }
 
 func NewTimeAttendanceService(repo *repository.TimeAttendanceRepo) *TimeAttendanceService {
@@ -36,7 +37,12 @@ func (s *TimeAttendanceService) GetSchedule(ctx context.Context, employeeID stri
 	if err != nil {
 		return nil, err
 	}
+	extensions, err := s.scheduleExtensionDays(ctx, employeeID, location)
+	if err != nil {
+		return nil, err
+	}
 	return &dto.ScheduleResponse{
+		Extensions:    extensions,
 		ID:            strconv.Itoa(schedule.ShiftID),
 		Timezone:      schedule.Timezone,
 		GraceMinutes:  schedule.GraceMinutes,

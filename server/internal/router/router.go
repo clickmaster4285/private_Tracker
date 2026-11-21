@@ -404,6 +404,12 @@ func Setup(
 	shifts.PUT("/:id", shiftHandler.UpdateShift)
 	shifts.DELETE("/:id", shiftHandler.DeleteShift)
 
+	// "Give extra time" per employee (minutes before shift start / after shift end).
+	extensions := protected.Group("/shift-extensions")
+	extensions.GET("", timeAttendanceHandler.ListShiftExtensions)
+	extensions.POST("", timeAttendanceHandler.CreateShiftExtension)
+	extensions.DELETE("/:id", timeAttendanceHandler.DeleteShiftExtension)
+
 	holidays := protected.Group("/holidays")
 	holidays.GET("", timeAttendanceHandler.ListHolidays)
 	holidays.POST("", timeAttendanceHandler.CreateHoliday)
